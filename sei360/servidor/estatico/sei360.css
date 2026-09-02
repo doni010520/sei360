@@ -1,0 +1,212 @@
+/* ===========================================================================
+   SEI360 — folha comum das telas de serviço (acesso, primeiro acesso, admin).
+   UMA paleta com o painel: os tokens desta folha carregam os MESMOS valores que
+   o Controle de Processos usa — Space Grotesk no display, Inter no texto,
+   JetBrains Mono no numero, acento ciano. Antes eram duas identidades no mesmo
+   produto (aqui Sitka serifada e verde-petroleo), e ir do painel para os
+   relatorios parecia trocar de sistema.
+   Fontes LOCAIS do Windows e zero requisição externa: a tela de login de um
+   órgão que bloqueia saída não pode depender de unpkg nem de fonts.gstatic.
+   =========================================================================== */
+:root{
+  color-scheme:light;
+  /* Mesmos valores do painel (medidos nele, em execução). O painel chama de
+     --bg/--panel/--text/--cyan; aqui os nomes locais continuam, para as regras
+     desta folha não precisarem ser reescritas uma a uma. */
+  --paper:#eef2f8; --card:#fff; --sunk:#e9eff7;
+  --ink:#101a2b; --ink-2:#45526c; --ink-3:#5c6880;
+  --rule:rgba(16,62,105,.14); --rule-2:rgba(16,62,105,.24);
+  --accent:#0d6ea8; --accent-2:#1183c4; --accent-soft:rgba(13,110,168,.10);
+  --alerta:#b3304f; --alerta-soft:rgba(179,48,79,.10);
+  --ok:#1d7a33; --ok-soft:rgba(29,122,51,.10);
+  --espera:#8a6209; --espera-soft:rgba(138,98,9,.10);
+  --sombra-1:0 1px 2px rgba(16,62,105,.06);
+  --sombra-2:0 18px 40px -26px rgba(16,62,105,.35),0 2px 6px rgba(16,62,105,.06);
+  --display:'Space Grotesk',system-ui,sans-serif;
+  --rotulo:Inter,system-ui,sans-serif;
+  --ui:Inter,system-ui,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,Consolas,monospace;
+  /* O grão de papel sai: ele pertencia à direção editorial antiga e, sobre o
+     azul do painel, vira ruído. */
+  --r:8px; --r2:10px; --grao:0;
+}
+:root[data-tema="escuro"]{
+  color-scheme:dark;
+  /* ELEVAÇÃO, não translucidez. `rgba(9,14,38,.74)` foi copiado do painel, onde
+     funciona porque o fundo de lá é um gradiente com brilhos radiais que a
+     translucidez deixa passar. Aqui o fundo é chapado e a mesma cor compõe
+     exatamente o fundo: medido, dava 1,00 de razão — tabela, cartão e gráfico
+     sem superfície, existindo só pelo fio de 1px.
+     Agora: `--sunk` abaixo do papel, `--card` acima dele. */
+  --paper:#0A0E27; --card:#141A3A; --sunk:#070B20;
+  --ink:#E8ECFF; --ink-2:#8794C0;
+  /* #5E6A95 dava 3,21:1 sobre o cartão, 3,59 sobre o papel e 3,68 sobre o
+     rebaixo — reprova AA (4,5:1) nas três, e é a cor da fatia % de cada
+     barra do gráfico, do rótulo de cada indicador e de TODO <label>.
+     #7A87B5: 4,81 / 5,39 / 5,53, mantendo a hierarquia abaixo de --ink-2. */
+  --ink-3:#7A87B5;
+  --rule:rgba(0,212,255,.12); --rule-2:rgba(0,212,255,.26);
+  --accent:#00D4FF; --accent-2:#5CE1FF; --accent-soft:rgba(0,212,255,.12);
+  --alerta:#FF5C8A; --alerta-soft:rgba(255,92,138,.12);
+  --ok:#39FF14; --ok-soft:rgba(57,255,20,.10);
+  --espera:#FFB800; --espera-soft:rgba(255,184,0,.12);
+  --sombra-2:0 22px 46px -24px rgba(0,0,0,.7),0 2px 8px rgba(0,0,0,.35);
+  --grao:0;
+}
+@media(prefers-color-scheme:dark){:root:not([data-tema="claro"]){
+  color-scheme:dark;
+  /* ELEVAÇÃO, não translucidez. `rgba(9,14,38,.74)` foi copiado do painel, onde
+     funciona porque o fundo de lá é um gradiente com brilhos radiais que a
+     translucidez deixa passar. Aqui o fundo é chapado e a mesma cor compõe
+     exatamente o fundo: medido, dava 1,00 de razão — tabela, cartão e gráfico
+     sem superfície, existindo só pelo fio de 1px.
+     Agora: `--sunk` abaixo do papel, `--card` acima dele. */
+  --paper:#0A0E27; --card:#141A3A; --sunk:#070B20;
+  --ink:#E8ECFF; --ink-2:#8794C0;
+  /* #5E6A95 dava 3,21:1 sobre o cartão, 3,59 sobre o papel e 3,68 sobre o
+     rebaixo — reprova AA (4,5:1) nas três, e é a cor da fatia % de cada
+     barra do gráfico, do rótulo de cada indicador e de TODO <label>.
+     #7A87B5: 4,81 / 5,39 / 5,53, mantendo a hierarquia abaixo de --ink-2. */
+  --ink-3:#7A87B5;
+  --rule:rgba(0,212,255,.12); --rule-2:rgba(0,212,255,.26);
+  --accent:#00D4FF; --accent-2:#5CE1FF; --accent-soft:rgba(0,212,255,.12);
+  --alerta:#FF5C8A; --alerta-soft:rgba(255,92,138,.12);
+  --ok:#39FF14; --ok-soft:rgba(57,255,20,.10);
+  --espera:#FFB800; --espera-soft:rgba(255,184,0,.12);
+  --sombra-2:0 22px 46px -24px rgba(0,0,0,.7),0 2px 8px rgba(0,0,0,.35);
+  --grao:0;
+}}
+*{box-sizing:border-box}
+html,body{background:var(--paper)}
+body{margin:0;color:var(--ink);font-family:var(--ui);font-size:14px;line-height:1.55;
+  -webkit-font-smoothing:antialiased}
+body::after{content:'';position:fixed;inset:0;z-index:999;pointer-events:none;opacity:var(--grao);
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/></filter><rect width='140' height='140' filter='url(%23n)'/></svg>")}
+a{color:var(--accent)}
+.num{font-variant-numeric:tabular-nums}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ---------------- acesso ---------------- */
+.acesso{min-height:100vh;display:grid;grid-template-columns:1.15fr .85fr}
+@media(max-width:900px){.acesso{grid-template-columns:1fr}.lateral{display:none}}
+.lateral{padding:48px 52px;display:flex;flex-direction:column;justify-content:space-between;
+  border-right:1px solid var(--rule);background:
+    radial-gradient(120% 90% at 10% 0%,var(--accent-soft),transparent 60%),var(--card)}
+.marca{font-family:var(--rotulo);font-variation-settings:"wght" 600,"wdth" 87;
+  font-size:11.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent)}
+.lateral h1{font-family:var(--display);font-size:clamp(30px,3.6vw,46px);line-height:1.03;
+  letter-spacing:-.02em;margin:14px 0 0;font-weight:600;max-width:16ch}
+.lateral h1 em{font-style:normal;color:var(--accent)}
+.lateral .sub{color:var(--ink-2);max-width:46ch;margin-top:16px;font-size:15px}
+.fio{height:3px;background:var(--ink);opacity:.9;margin:26px 0 0;max-width:120px}
+
+/* Estado da coleta no lugar onde havia contador fictício. Número inventado em
+   tela de autenticação de órgão público é declaração falsa — e some. */
+.coleta{margin-top:34px;border-top:1px solid var(--rule);padding-top:18px}
+.coleta .rot{font-family:var(--rotulo);font-variation-settings:"wght" 600,"wdth" 87;
+  font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);margin-bottom:10px}
+.un{display:flex;align-items:center;gap:9px;padding:4px 0;font-size:12.5px;color:var(--ink-2)}
+.un b{font-family:var(--mono);font-size:11.5px;color:var(--ink);min-width:44px;text-align:right}
+.pt{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.pt.verde{background:var(--ok)}.pt.amarelo{background:var(--espera)}
+.pt.vermelho{background:var(--alerta)}.pt.vazio{background:var(--rule-2)}
+.lateral footer{color:var(--ink-3);font-size:11.5px;margin-top:28px}
+
+.painel-acesso{display:flex;align-items:center;justify-content:center;padding:40px 28px}
+.caixa{width:100%;max-width:400px}
+.caixa h2{font-family:var(--display);font-size:25px;margin:0 0 4px;font-weight:600}
+.caixa .dica{color:var(--ink-3);font-size:12.5px;margin-bottom:26px}
+label{display:block;font-family:var(--rotulo);font-variation-settings:"wght" 600,"wdth" 87;
+  font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin:0 0 6px}
+.campo{margin-bottom:16px;position:relative}
+/* Fileira de campos lado a lado. Só a busca precisa: são dez filtros, e um por
+   linha empurraria o botão para fora da primeira tela. `min-width` para os campos
+   não colapsarem — flex item encolhe abaixo do conteúdo por padrão. */
+.linha-campos{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start}
+.linha-campos>.campo{flex:1 1 240px;min-width:0}
+input[type=email],input[type=password],input[type=text],select{
+  width:100%;font:inherit;font-size:14px;color:var(--ink);background:var(--card);
+  border:1px solid var(--rule);border-radius:var(--r);padding:11px 12px;transition:border-color .14s}
+input:hover,select:hover{border-color:var(--rule-2)}
+input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+input[aria-invalid=true]{border-color:var(--alerta);box-shadow:0 0 0 3px var(--alerta-soft)}
+.ver{position:absolute;right:8px;top:29px;background:none;border:0;cursor:pointer;
+  font-family:var(--rotulo);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.ver:hover{color:var(--accent)}
+.aviso{font-size:11.5px;color:var(--ink-3);margin-top:6px;line-height:1.4}
+.linha-opcao{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  font-size:12.5px;color:var(--ink-2);margin:2px 0 20px}
+.linha-opcao label{display:inline-flex;align-items:center;gap:7px;text-transform:none;
+  letter-spacing:0;font-family:var(--ui);font-size:12.5px;color:var(--ink-2);margin:0}
+button.primario, a.primario{width:100%;font-family:var(--rotulo);font-variation-settings:"wght" 600,"wdth" 87;
+  font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;cursor:pointer;
+  background:var(--ink);color:var(--paper);border:1px solid var(--ink);border-radius:var(--r);
+  padding:13px 16px;transition:background .14s,border-color .14s}
+/* `var(--paper)` e não `#fff`: o branco era certo quando --accent era o
+   verde-petróleo escuro do desenho anterior. Com o ciano deu 1,77:1 — o
+   rótulo do botão sumia exatamente quando o ponteiro chegava nele. */
+a.primario{display:block;text-align:center;text-decoration:none;box-sizing:border-box}
+button.primario:hover:not(:disabled), a.primario:hover{background:var(--accent);border-color:var(--accent);color:var(--paper)}
+button.primario:disabled{opacity:.55;cursor:progress}
+.erro{display:none;margin-bottom:16px;padding:10px 12px;border-radius:var(--r);
+  border:1px solid var(--alerta);background:var(--alerta-soft);color:var(--alerta);font-size:12.5px}
+.ok{display:none;margin-bottom:16px;padding:10px 12px;border-radius:var(--r);
+  border:1px solid var(--ok);background:var(--ok-soft);color:var(--ok);font-size:12.5px}
+.ok.on{display:block}
+/* O par forte do `.aviso`. Os dois avisos do cartão de e-mail — "CAIXA FALSA
+   LIGADA" e o último erro de envio — saíam como prosa sem cor nenhuma, com a
+   mesma aparência do texto explicativo ao lado. O da caixa falsa é justamente a
+   única defesa contra "o sistema acha que manda e-mail e não manda". */
+.aviso-forte{padding:10px 13px;border-radius:var(--r);font-size:12.5px;
+  line-height:1.45;border:1px solid var(--alerta);background:var(--alerta-soft);
+  color:var(--alerta)}
+.aviso-forte code{font-family:var(--mono,monospace);font-size:.94em}
+.erro.on{display:block}
+
+/* ---------------- páginas internas ---------------- */
+.topo-serv{display:flex;align-items:center;gap:14px;padding:12px 22px;background:var(--card);
+  border-bottom:1px solid var(--rule)}
+.topo-serv .marca{flex:1}
+.pill{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);background:var(--sunk);
+  border:1px solid var(--rule);border-radius:99px;padding:3px 10px}
+.bt{font:inherit;font-size:12.5px;cursor:pointer;border-radius:var(--r);padding:7px 13px;
+  border:1px solid var(--rule);background:var(--card);color:var(--ink-2);text-decoration:none;
+  display:inline-block;transition:border-color .14s,color .14s}
+.bt:hover{border-color:var(--accent);color:var(--accent)}
+.bt.forte{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.bt.risco{border-color:var(--alerta);color:var(--alerta)}
+.folha{max-width:1240px;margin:0 auto;padding:26px 22px 70px}
+h2.sec{font-family:var(--rotulo);font-variation-settings:"wght" 600,"wdth" 87;font-weight:400;
+  font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);
+  margin:30px 0 12px;display:flex;align-items:center;gap:10px}
+h2.sec::after{content:'';flex:1;height:1px;background:var(--rule)}
+.cartao{background:var(--card);border:1px solid var(--rule);border-radius:var(--r2);
+  box-shadow:var(--sombra-1);padding:16px 18px;margin-bottom:16px}
+table.grade{width:100%;border-collapse:collapse;font-size:13px;background:var(--card)}
+table.grade th{font-family:var(--rotulo);font-variation-settings:"wght" 600,"wdth" 87;
+  font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-2);
+  text-align:left;padding:9px 10px;background:var(--sunk);border-bottom:1px solid var(--rule)}
+table.grade td{padding:9px 10px;border-bottom:1px solid var(--rule);vertical-align:middle}
+table.grade tr:last-child td{border-bottom:0}
+table.grade .mono{font-family:var(--mono);font-size:11.5px}
+.tag{display:inline-flex;align-items:center;gap:5px;font-family:var(--rotulo);
+  font-variation-settings:"wght" 600,"wdth" 87;font-size:9.5px;letter-spacing:.12em;
+  text-transform:uppercase;border-radius:2px;padding:2px 7px;border:1px solid var(--rule);color:var(--ink-2)}
+.tag.ok{border-color:var(--ok);color:var(--ok);background:var(--ok-soft)}
+.tag.al{border-color:var(--alerta);color:var(--alerta);background:var(--alerta-soft)}
+.tag.es{border-color:var(--espera);color:var(--espera);background:var(--espera-soft)}
+.destaque{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 14px;
+  border-radius:0 var(--r) var(--r) 0;margin-bottom:16px;font-size:13px}
+.destaque code{font-family:var(--mono);font-size:13px;background:var(--card);padding:2px 7px;
+  border:1px solid var(--rule);border-radius:3px;user-select:all}
+.grade2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.grade2{grid-template-columns:1fr}}
+fieldset{border:1px solid var(--rule);border-radius:var(--r);padding:12px 14px;margin:0 0 14px}
+legend{font-family:var(--rotulo);font-variation-settings:"wght" 600,"wdth" 87;font-size:10px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);padding:0 6px}
+.chips-un{display:flex;flex-wrap:wrap;gap:6px}
+.chips-un label{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);
+  font-size:11px;text-transform:none;letter-spacing:0;color:var(--ink-2);
+  border:1px solid var(--rule);border-radius:99px;padding:4px 10px;margin:0;cursor:pointer}
+.chips-un label:hover{border-color:var(--accent)}
+.vazio-msg{padding:40px 20px;text-align:center;color:var(--ink-3)}

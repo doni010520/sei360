@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Alertas</title>
+{% include '_cabeca.html' %}
+</head><body>
+
+{% with pagina='alertas' %}{% include '_nav.html' %}{% endwith %}
+
+<div class="folha" style="max-width:1100px">
+
+  <h1 style="font-family:var(--display);font-size:27px;margin:0 0 6px;font-weight:600">Alertas</h1>
+  <div style="color:var(--ink-2);margin-bottom:20px;max-width:76ch">
+    {% if u.papel == 'admin' %}
+      Todos os alertas do sistema, inclusive os que não pertencem a nenhuma unidade
+      (falha de agente, execução travada).
+    {% else %}
+      O que precisa de decisão nas suas {{ unidades|length }} unidade(s). Quem sabe se a
+      queda de processos é real, ou se a coleta falhou de verdade, é quem trabalha na unidade —
+      por isso isto não fica só com a administração.
+    {% endif %}
+  </div>
+
+  {% if candidatos %}
+  <h2 class="sec">Coletas retidas — precisam de decisão</h2>
+  <table class="tab-rel">
+    <thead><tr><th>Unidade</th><th>Coletado em</th><th>Processos</th><th>Motivo</th><th>Decisão</th></tr></thead>
+    <tbody>
+      {% for s in candidatos %}
+      <tr>
+        <td class="num" style="font-size:11.5px">{{ s.unidade }}</td>
+        <td class="num">{{ s.coletado_em[:16].replace('T',' ') }}</td>
+        <td class="num">{{ s.unicos }}</td>
+        <td>{{ s.motivo or '—' }}</td>
+        <td style="display:flex;gap:6px">
+          <form method="post" action="/admin/snapshot"><input type="hidden" name="csrf" class="csrf">
+            <input type="hidden" name="acao" value="promover"><input type="hidden" name="id" value="{{ s.id }}">
+            <button class="bt" type="submit">Promover</button></form>
+          <form method="post" action="/admin/snapshot"><input type="hidden" name="csrf" class="csrf">
+            <input type="hidden" name="acao" value="rejeitar"><input type="hidden" name="id" value="{{ s.id }}">
+            <button class="bt risco" type="submit">Rejeitar</button></form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="rel-nota">
+    Retida porque trouxe menos de 90% dos processos da vez anterior. Promova só depois de
+    conferir no SEI que a unidade esvaziou mesmo — a alternativa é a coleta ter vindo pela
+    metade, e aí o painel passaria a esconder processo que existe.
+  </div>
+  {% endif %}
+
+  <h2 class="sec">Ocorrências</h2>
+  {# Agrupado primeiro. 78 ocorrências viram 4 linhas: a mesma falha repetida 27
+     vezes é UM problema, não 27, e a lista corrida escondia a única diferente
+     no meio das repetidas. #}
+  <table class="tab-rel" style="margin-bottom:8px">
+    <thead><tr><th>Tipo</th><th>Unidade</th><th>Abertos</th><th>Período</th>
+      <th>Exemplo</th><th>Ação</th></tr></thead>
+    <tbody>
+      {% for g in grupos %}
+      <tr style="{{ 'opacity:.55' if not g.abertos }}">
+        <td><span class="tag {{ 'al' if g.severidade == 'alta' else 'es' }}">{{ g.tipo }}</span></td>
+        <td class="num" style="font-size:11.5px">{{ g.unidade or '—' }}</td>
+        <td class="num">{{ g.abertos|length }}<span style="color:var(--ink-3)">/{{ g.n }}</span></td>
+        <td class="num" style="font-size:11.5px">
+          {{ g.primeiro[:10]|replace('-','/') }}{% if g.primeiro[:10] != g.ultimo[:10] %}
+          – {{ g.ultimo[:10]|replace('-','/') }}{% endif %}</td>
+        <td style="font-size:12.5px">{{ g.exemplo }}</td>
+        <td>
+          {% if g.abertos %}
+          <form method="post" action="/alertas/lote">
+            <input type="hidden" name="csrf" class="csrf">
+            {% for i in g.abertos %}<input type="hidden" name="ids" value="{{ i }}">{% endfor %}
+            <button class="bt" type="submit">Dar por vistos ({{ g.abertos|length }})</button></form>
+          {% else %}<span style="font-size:12px;color:var(--ink-3)">tudo visto</span>{% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="vazio-msg">Nenhum alerta. É o estado bom.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <details style="margin-top:18px">
+    <summary style="cursor:pointer;font-size:13px;color:var(--ink-2)">Ver ocorrência por
+      ocorrência ({{ alertas|length }})</summary>
+  <table class="tab-rel" style="margin-top:10px">
+    <thead><tr><th>Quando</th><th>Tipo</th><th>Unidade</th><th>O que houve</th><th>Situação</th></tr></thead>
+    <tbody>
+      {% for a in alertas %}
+      <tr style="{{ 'opacity:.55' if a.reconhecido_em }}">
+        <td class="num">{{ a.ts[:16].replace('T',' ') }}</td>
+        <td><span class="tag {{ 'al' if a.severidade == 'alta' else 'es' }}">{{ a.tipo }}</span></td>
+        <td class="num" style="font-size:11.5px">{{ a.unidade or '—' }}</td>
+        <td>{{ a.texto }}</td>
+        <td>
+          {% if a.reconhecido_em %}
+            <span style="font-size:12px;color:var(--ink-3)">
+              visto por {{ quem.get(a.reconhecido_por, '—').split('@')[0] }}
+              em {{ a.reconhecido_em[:16].replace('T',' ') }}</span>
+          {% else %}
+            <form method="post" action="/alertas/{{ a.id }}">
+              <input type="hidden" name="csrf" class="csrf">
+              <button class="bt" type="submit">Dar por visto</button></form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="vazio-msg">Nenhum alerta. É o estado bom.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </details>
+  <div class="rel-nota">
+    “Dar por visto” não conserta nada: registra que alguém leu, com nome e hora. O alerta
+    some da fila e continua no histórico — é isso que permite responder depois “quem sabia,
+    e desde quando”.
+  </div>
+</div>
+
+<script>
+const c=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+document.querySelectorAll('.csrf').forEach(i=>i.value=c);
+</script>
+</body></html>

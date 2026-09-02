@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — {{ r.titulo }}</title>
+{% include '_cabeca.html' %}
+</head><body>
+
+{% with pagina='relatorios' %}{% include '_nav.html' %}{% endwith %}
+
+<div class="folha" style="max-width:1180px">
+
+  <div style="display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px">
+    <a class="bt" href="/relatorios">← Relatórios</a>
+    <h1 style="font-family:var(--display);font-size:26px;margin:0;font-weight:600">{{ r.titulo }}</h1>
+  </div>
+  <div style="color:var(--ink-2);margin:0 0 18px">{{ r.pergunta }}</div>
+
+  {# Procedência ANTES do número. Quem lê primeiro o total e depois descobre que
+     uma unidade é de três dias atrás já tomou a decisão. #}
+  <div class="procedencia {{ 'alerta' if r.desatualizado }}">
+    <span style="font-family:var(--rotulo);font-size:9.5px;letter-spacing:.18em;
+                 text-transform:uppercase;color:var(--ink-3)">Dado de</span>
+    {% for p in r.procedencia %}
+      <span><i class="pt {{ p.cor }}" style="display:inline-block;width:7px;height:7px;
+        border-radius:50%;margin-right:5px"></i>{{ p.unidade.split('/')[-1] }}
+        <span style="color:var(--ink-3)">{{ p.texto }}</span></span>
+    {% endfor %}
+    {% if r.desatualizado %}
+    <span style="color:var(--espera);font-weight:600">— há unidade fora do dia; o total
+      soma retratos de momentos diferentes</span>
+    {% endif %}
+  </div>
+
+  <div class="rel-lado">
+    <span style="font-size:13px;color:var(--ink-2)">
+      Base: <b>{{ r.total }}</b> processo(s) ·
+      medido sobre a coleta de <b>{{ r.medido_em or '—' }}</b>
+      {%- if r.medido_varias_datas %} <span style="color:var(--espera)">a
+      {{ r.medido_ate }} — linhas medidas em datas diferentes</span>{% endif %} ·
+      <span style="color:var(--ink-3)">gerado em {{ r.gerado_em }}</span></span>
+    <div class="cob">
+      {% for c in r.cobertura %}
+      <span class="{{ 'fraca' if c.fraca }}"
+        title="{{ c.pct }}% dos processos têm '{{ c.campo }}' preenchido">{{ c.campo }} {{ c.pct }}%</span>
+      {% endfor %}
+    </div>
+    <a class="bt forte" href="/relatorios/{{ r.id }}.xlsx" style="margin-left:auto">Exportar XLSX</a>
+    <button class="bt" onclick="window.print()">Imprimir</button>
+  </div>
+
+  {# "Minha fila" vazia tem duas causas opostas: não há processo com você, ou o
+     seu nome não bate com o que o SEI grava em `atribuido_nome`. Ler a segunda
+     como a primeira é a pior leitura possível — a pessoa fecha a tela achando
+     que está em dia. #}
+  {% if r.sem_casamento %}
+  <div class="rel-nota" style="border-left:3px solid var(--espera)">
+    Não encontrei processo atribuído a <b>{{ r.quem }}</b> nesta carteira.
+    Pode ser que não haja nenhum — ou que o seu nome no SEI esteja escrito de
+    outro jeito. O nome usado aqui é o do seu cadastro; se ele diverge do SEI,
+    peça à administração para acertar antes de concluir que a fila está vazia.
+  </div>
+  {% endif %}
+
+  {% if r.destaques %}
+  <div class="rel-destaques">
+    {% for d in r.destaques %}
+    <div class="rel-dest"><b>{{ d.valor }}</b><span>{{ d.rotulo }}</span></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# GRÁFICO antes da tabela. A tabela responde "quanto em cada"; ela não responde
+     "onde está a massa" sem que alguém leia vinte números e compare de cabeça.
+     O gráfico responde num olhar — e a tabela continua logo abaixo, porque é ela
+     que se cita em despacho e é ela que vai para a planilha.
+     SVG inline, sem biblioteca: a CSP desta aplicação é `default-src 'self'` e
+     não há CDN. Barras HORIZONTAIS porque o eixo é uma categoria de nome longo
+     (unidade, responsável, classe de evento): girar rótulo é pedir para não ser
+     lido. #}
+  {% if r.grafico %}
+  <figure class="rel-graf">
+    <figcaption>{{ r.grafico.coluna }} —
+      {%- if r.grafico.agregada %} as {{ r.grafico.maiores }} maiores e o resto somado
+      {%- else %} todas as {{ r.grafico.maiores }} linhas{% endif %};
+      o percentual é sobre a base de {{ r.grafico.base }} processo(s)
+      {%- if r.grafico.soma > r.grafico.base %}, e a coluna soma
+      {{ r.grafico.soma }} porque um processo entra em mais de uma linha{% endif %}</figcaption>
+    <div class="graf-barras">
+      {% for b in r.grafico.barras %}
+      <div class="graf-linha">
+        <span class="graf-rot" title="{{ b.inteiro or b.rotulo }}">{{ b.rotulo }}</span>
+        <span class="graf-trilho">
+          <i style="width:{{ b.pct }}%"></i>
+        </span>
+        <span class="graf-val num">{{ b.valor }}<em>{{ b.fatia }}%</em></span>
+      </div>
+      {% endfor %}
+    </div>
+    {% if r.grafico.cortou %}
+    {# O que ficou de fora fica DITO. Corte silencioso faz o gráfico parecer o
+       retrato inteiro quando é o topo dele. #}
+    <figcaption class="graf-corte">As demais {{ r.grafico.cortou }} linha(s) estão
+      somadas na última barra e detalhadas na tabela abaixo.</figcaption>
+    {% endif %}
+  </figure>
+  {% endif %}
+
+  {# A coluna "Proporção" só existe onde NÃO há gráfico: com ele, ela repete a
+     mesma informação em versão menor e desordenada, gastando 109px da largura
+     que já está faltando. #}
+  {% set maior = 0 if r.grafico else
+     (r.linhas | map(attribute=1) | select('number') | list | max | default(0)) %}
+  {# A TABELA rola, não a página. Medido em 882px: a tabela ocupa 724px num
+     contêiner de 611px e empurrava o documento inteiro para 1002px — a folha
+     rolava de lado, deslocando cabeçalho e moldura. Tabela não encolhe abaixo do
+     conteúdo dela; quem rola tem de ser ela. #}
+  <div class="tab-rola">
+  <table class="tab-rel">
+    <thead><tr>
+      {% for c in r.colunas %}<th>{{ c }}</th>{% endfor %}
+      {% if maior %}<th style="width:120px">Proporção</th>{% endif %}
+    </tr></thead>
+    <tbody>
+      {% for linha in r.linhas %}
+      <tr>
+        {% for cel in linha %}
+        <td class="{{ 'num' if cel is number or (cel is string and cel.endswith('%')) }}">{{ cel }}</td>
+        {% endfor %}
+        {% if maior %}
+        <td><div class="barra-prop"><i style="width:{{ (100 * linha[1] / maior)|round(1) if linha[1] is number else 0 }}%"></i></div></td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  {% if r.nota %}<div class="rel-nota">{{ r.nota }}</div>{% endif %}
+
+  {% if r.cobertura | selectattr('fraca') | list %}
+  <div class="rel-nota" style="border-left-color:var(--espera)">
+    <b>Cobertura parcial.</b> Os campos marcados em amarelo não estão preenchidos em toda a
+    carteira. O que falta não some do mundo — some deste relatório. Antes de levar o número
+    a uma reunião, diga sobre quantos processos ele foi calculado.
+  </div>
+  {% endif %}
+
+  <h2 class="sec">Outros relatórios</h2>
+  <div class="rel-lado">
+    {% for c in catalogo %}{% if c.id != r.id %}
+    <a class="bt" href="/relatorios/{{ c.id }}">{{ c.titulo }}</a>
+    {% endif %}{% endfor %}
+  </div>
+</div>
+
+<script>
+const c=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+document.querySelectorAll('.csrf').forEach(i=>i.value=c);
+</script>
+</body></html>

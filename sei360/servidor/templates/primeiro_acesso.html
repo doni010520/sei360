@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Definir senha</title>
+<script>try{var t=localStorage.getItem('painel-tema');if(t)document.documentElement.dataset.tema=t}catch(e){}</script>
+<!-- As fontes vêm ANTES da folha que as pede. Esta tela não tem menu, então
+     não leva nav.css nem lateral.css — mas cai na mesma armadilha se as
+     famílias forem pedidas sem os @font-face. -->
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontes.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='sei360.css') }}">
+</head><body>
+<div class="acesso">
+  <section class="lateral">
+    <div>
+      <div class="marca">Sistema Eletrônico de Informações · SESAB</div>
+      <h1>Primeiro acesso.</h1>
+      <div class="fio"></div>
+      <p class="sub">A senha provisória serve uma vez. Enquanto ela continuar valendo,
+      quem a entregou consegue entrar na sua conta — por isso a troca acontece antes
+      de qualquer tela do painel, e não depois.</p>
+    </div>
+    <footer>Ao salvar, todas as sessões abertas desta conta são encerradas.</footer>
+  </section>
+
+  <section class="painel-acesso">
+    <div class="caixa">
+      <h2>Defina a sua senha</h2>
+      <div class="dica">{{ u.email }}</div>
+      {% if erro %}<div class="erro on" role="alert">{{ erro }}</div>{% endif %}
+      <form method="post" autocomplete="off">
+        <input type="hidden" name="csrf" id="csrf">
+        <div class="campo">
+          <label for="nova">Nova senha do SEI360</label>
+          <input id="nova" name="nova" type="password" required minlength="12" autofocus>
+          <div class="aviso">Mínimo de 12 caracteres. Não pode conter o seu login.
+          Esta <b>não</b> é a sua senha do SEI.</div>
+        </div>
+        <div class="campo">
+          <label for="confirma">Repita a nova senha</label>
+          <input id="confirma" name="confirma" type="password" required minlength="12">
+        </div>
+        <button class="primario" type="submit">Salvar e entrar de novo</button>
+      </form>
+    </div>
+  </section>
+</div>
+<script>
+document.getElementById('csrf').value=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+</script>
+</body></html>

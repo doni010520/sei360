@@ -1,0 +1,594 @@
+# -*- coding: utf-8 -*-
+"""
+BUSCA AVANÇADA — pedir ao SEI uma pesquisa filtrada, com o login de quem pediu.
+
+O QUE ELA É
+-----------
+Uma pergunta ao SEI, feita com a credencial da própria pessoa, cujo resultado é
+uma lista com estado honesto: completa, parcial, vazia ou falhou. Ela mostra o
+que o SEI mostraria àquela pessoa — nem mais, nem menos.
+
+O QUE ELA NÃO É
+---------------
+Um caminho de ingestão. O resultado não vira `snapshot`, não entra no poço, não
+cria linha em `processo` e não é servido a mais ninguém. O motivo não é excesso
+de zelo: a tela de resultado do SEI responde à pergunta que foi feita, e não
+prova que aquele processo pertence à mesa de quem buscou. A fronteira inteira do
+produto se apoia em `mesa_coleta`, que é campo autodeclarado pela coleta —
+deixar uma busca escrever ali seria sancionar a forja que as travas do poço
+existem para impedir.
+
+O ESTADO É CALCULADO AQUI, NUNCA ACEITO DO AGENTE
+-------------------------------------------------
+O SEI declara "N registros" na própria página do resultado. Guardar esse número
+ao lado do que veio é o que separa "607 de 607" de "607 e ninguém conferiu". O
+sistema irmão desta casa captura o total e nunca o compara — e por isso uma
+paginação que falha no meio devolve metade com cara de tudo, sem erro nenhum.
+
+UMA BUSCA POR CONTA DO SEI, DE CADA VEZ
+---------------------------------------
+Medido, não suposto: a troca de mesa no SEI é por USUÁRIO, não por sessão. Duas
+buscas simultâneas da mesma conta em mesas diferentes devolvem a carteira errada
+SEM ERRO. A trava é por `(instancia, conta)` — quem tem conta nas duas
+instalações pode buscar nas duas ao mesmo tempo, porque são sessões de servidores
+diferentes.
+"""
+import hashlib
+import json
+from datetime import timedelta
+
+import perfil_sei
+from banco import agora, registrar, TZ
+from janelas import com_fuso
+
+# Uma busca não pode ficar presa para sempre porque a estação morreu no meio.
+# 20 minutos é o mesmo teto da reserva do poço, e pela mesma razão: é mais do que
+# qualquer busca medida leva (a maior observada foi de 226 s) e menos do que a
+# paciência de quem está olhando a tela.
+TRAVA_MIN = 20
+# Teto de páginas. O sistema irmão usa 200 e, ao estourar, apenas loga um aviso —
+# o valor de retorno não carrega bandeira, então quem consome não tem como saber
+# que a lista foi cortada. Aqui o teto vira estado `parcial`, com o motivo dito.
+PAGINAS_TETO = 200
+# Teto de relógio, para o agente matar o filho. O padrão do projeto é o exit 5
+# sintético: `page.evaluate` não obedece o timeout do Playwright.
+SEGUNDOS_TETO = 10 * 60
+# Teto para ALGUÉM PEGAR o pedido — diferente do teto para EXECUTAR. Uma busca
+# parada em `pedida` significa que nada está perguntando ao servidor; esperar dez
+# minutos por isso é dez minutos dizendo "pesquisando" sobre uma fila que ninguém
+# drena. Noventa segundos é mais do que qualquer estação em atendimento leva.
+PEGAR_TETO_S = 90
+# Quanto tempo de silêncio da estação ainda conta como "viva". O agendador padrão
+# pergunta a cada 30 min; 45 dá folga de uma batida perdida sem deixar passar uma
+# estação desligada ontem.
+ESTACAO_SILENCIO_MIN = 45
+# Prazo do resultado. É lista de trabalho, não acervo.
+DIAS = 30
+
+# Os filtros que a tela oferece. `tipo` diz como o valor é validado aqui — o que
+# chega ao SEI é decidido pelo perfil da instância, que sabe os ids de cada versão.
+FILTROS = {
+    "tramitacao_unidade": "bool",
+    "tipo_processo": "texto",
+    "especificacao": "texto",
+    "contato": "texto",
+    "assunto": "texto",
+    "observacao": "texto",
+    "numero_sei": "texto",
+    "data_de": "data",
+    "data_ate": "data",
+    "tipo_data": "escolha:I,G",
+}
+# Só estes campos vêm de volta. `especificacao` fica de fora de propósito: é
+# texto que um servidor escreveu, pode citar paciente, e o consentimento para
+# tratá-lo é por unidade.
+CAMPOS_ITEM = ("id_sei", "protocolo", "tipo_processo",
+               "unidade_geradora", "usuario_gerador", "data_inclusao")
+
+
+def sha_dos_filtros(filtros):
+    """Seis hex do JSON canônico. Serve para responder "foi a mesma busca?" sem
+    expor o quê: o texto de um filtro pode citar nome próprio, e o `log_acesso` é
+    lido por gestor e admin."""
+    cru = json.dumps(filtros, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(cru.encode("utf-8")).hexdigest()[:6]
+
+
+def validar(filtros, instancia):
+    """Devolve (limpos, erro). Filtro que não dá para aplicar RECUSA a busca.
+
+    Não é rigor por rigor: filtro que não pegou muda o universo da resposta sem
+    mudar uma linha da tela. No sistema irmão, o tipo de processo é casado por
+    `String.includes` sensível a maiúscula e o log diz "Filtro aplicado" mesmo
+    quando nada casou — digitar "dispensa" em vez de "Dispensa" devolve o acervo
+    inteiro, e a tela não tem como saber.
+    """
+    if not perfil_sei.existe(instancia):
+        return None, f"instância desconhecida: {instancia}"
+    if not perfil_sei.perfil(instancia)["disponivel_busca"]:
+        return None, f"a busca não está disponível em {instancia}"
+    limpos = {}
+    for k, v in (filtros or {}).items():
+        if k not in FILTROS:
+            return None, f"filtro desconhecido: {k}"
+        tipo = FILTROS[k]
+        if tipo == "bool":
+            limpos[k] = bool(v)
+        elif tipo.startswith("escolha:"):
+            opcoes = tipo.split(":", 1)[1].split(",")
+            if v and v not in opcoes:
+                return None, f"{k} tem de ser um de {', '.join(opcoes)}"
+            limpos[k] = v or opcoes[0]
+        elif tipo == "data":
+            s = (v or "").strip()
+            if s and not _data_ok(s):
+                return None, f"{k} tem de ser DD/MM/AAAA"
+            if s:
+                limpos[k] = s
+        else:
+            s = (v or "").strip()
+            if len(s) > 200:
+                return None, f"{k} passa de 200 caracteres"
+            if s:
+                limpos[k] = s
+    # Uma busca SEM critério nenhum, com "tramitação na unidade" marcado, é uma
+    # varredura da mesa inteira disparada por um clique. No sistema irmão foi
+    # exatamente isso que rodou: 718 processos, 72 páginas, 226 s — sem ninguém
+    # ter digitado nada. A data é o único filtro que limita o tamanho na origem.
+    tem_criterio = any(k for k in limpos
+                       if k not in ("tramitacao_unidade", "tipo_data"))
+    if not tem_criterio:
+        return None, ("informe pelo menos um critério além de 'com tramitação na "
+                      "unidade' — sem nenhum, a busca varre a mesa inteira")
+    if limpos.get("data_de") and limpos.get("data_ate"):
+        if _para_ord(limpos["data_de"]) > _para_ord(limpos["data_ate"]):
+            return None, "a data inicial é posterior à final"
+    return limpos, None
+
+
+def _data_ok(s):
+    import re
+    m = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", s)
+    if not m:
+        return False
+    d, mes, a = (int(x) for x in m.groups())
+    return 1 <= d <= 31 and 1 <= mes <= 12 and 1900 <= a <= 2999
+
+
+def _para_ord(s):
+    d, m, a = s.split("/")
+    return (a, m, d)
+
+
+# ---------------------------------------------------------- quem executa
+def quem_executa(cx, usuario_id, agora_dt=None, instancia=None):
+    """Quem pode rodar uma busca desta pessoa, ou (None, motivo, como).
+
+    Chamado ANTES de aceitar o pedido. Enfileirar trabalho que ninguém tem como
+    pegar é o pior desfecho possível para uma tela interativa: a pessoa fica
+    olhando uma frase que afirma um trabalho que não existe.
+
+    HÁ DOIS EXECUTORES, e a configuração da pessoa diz qual. Em modo `estacao`, a
+    busca roda no computador dela e a pergunta é "há estação viva?". Em modo
+    `servidor`, roda aqui, e a pergunta passa a ser "há navegador nesta imagem?" —
+    que é uma propriedade do build, não da configuração. Quem responde é
+    `atendente.capacidade()`, olhando o que existe de fato no disco.
+    """
+    from datetime import datetime
+    agora_dt = agora_dt or datetime.now(TZ)
+    if _modo_servidor(cx, usuario_id, instancia):
+        # O IMPORT PODE FALHAR, e falhar aqui não pode virar 500. `app.py` já
+        # protege a SUBIDA do laço com try/except e isso dá a impressão de que a
+        # falha está tratada — mas era este import, dentro da função, que
+        # derrubava /busca e /configuracao inteiras. Recusa explicada é a resposta
+        # que este sistema tem para "não há quem execute"; 500 não é.
+        try:
+            import atendente
+            pode, motivo = atendente.capacidade()
+        except Exception as ex:                                # noqa: BLE001
+            pode, motivo = False, (f"o executor de busca deste servidor não "
+                                   f"carregou ({type(ex).__name__})")
+        if pode:
+            return ({"nome_estacao": "este servidor", "servidor": True,
+                     "id": None, "token_sha256": None}, None, None)
+        # NÃO devolve erro ainda: uma estação pareada continua sendo um executor
+        # legítimo, e recusar aqui seria esconder o caminho que funciona. Só se
+        # não houver estação é que o motivo do servidor vira a resposta.
+        de_reserva = _estacao_viva(cx, usuario_id, agora_dt)
+        if not de_reserva:
+            # A RECUSA FALA A LÍNGUA DE QUEM LÊ. O texto técnico — caminho de
+            # arquivo, nome de variável de ambiente, "rebuild da imagem" — é
+            # acionável por quem administra e por mais ninguém. Mandá-lo para um
+            # servidor da SESAB transforma um ajuste de infraestrutura em culpa
+            # dele, e a saída que o texto oferecia ("passe para o modo estação")
+            # pede instalar um agente e rodar comando de terminal: não é
+            # exequível para quem só quer triar processo.
+            #
+            # 57 das 60 contas têm papel `servidor`. O texto técnico é, na
+            # prática, o texto errado para quase todo mundo.
+            r = cx.execute("SELECT papel FROM usuarios WHERE id=?",
+                           (usuario_id,)).fetchone()
+            if r and r["papel"] in ("admin", "gestor"):
+                return None, f"a busca está em modo servidor e {motivo}", (
+                    "Ou a imagem sobe com o navegador (veja o Dockerfile e o "
+                    "ARQUITETURA_ACESSO.md §6), ou esta pessoa passa para o modo "
+                    "estação em /configuracao, com um agente vinculado.")
+            return None, "a busca avançada está indisponível neste momento", (
+                "É um ajuste do servidor, não da sua conta — quem administra o "
+                "SEI360 precisa concluir a configuração da busca. O painel e os "
+                "relatórios seguem funcionando normalmente enquanto isso.")
+        return de_reserva, None, None
+    ag = cx.execute("""SELECT * FROM agentes WHERE dono_usuario_id=? AND ativo=1
+                       ORDER BY id DESC LIMIT 1""", (usuario_id,)).fetchone()
+    if not ag:
+        return None, "nenhuma estação vinculada a você", (
+            "A busca roda no computador onde está a sua credencial do SEI. "
+            "Peça a um administrador para vincular a sua estação em /admin.")
+    if not ag["token_sha256"]:
+        return None, f"a estação {ag['nome_estacao']} ainda não foi pareada", (
+            "Ela existe no cadastro mas nunca se apresentou ao servidor. "
+            "Gere o código em /admin e rode `sei360_agente.py vincular` na estação.")
+    if ag["pausado_motivo"]:
+        return None, f"a estação {ag['nome_estacao']} está pausada", ag["pausado_motivo"]
+    if not ag["ultimo_contato_em"]:
+        return None, f"a estação {ag['nome_estacao']} nunca falou com o servidor", (
+            "Ela foi pareada mas o agente não está rodando. Inicie-o na estação.")
+    calado = _horas_desde(ag["ultimo_contato_em"], agora_dt) * 60
+    if calado > ESTACAO_SILENCIO_MIN:
+        return None, (f"a estação {ag['nome_estacao']} não fala com o servidor "
+                      f"há {int(calado)} min"), (
+            "O agente não está rodando, ou o computador está desligado. "
+            "A busca precisa dele para acontecer.")
+    return ag, None, None
+
+
+def _modo_servidor(cx, usuario_id, instancia=None):
+    """Esta pessoa pediu que a coleta/busca rode no servidor?
+
+    Sem `instancia`, basta qualquer instalação em modo servidor: a tela de busca
+    sempre sabe a instância, mas `pedir()` é chamado de mais de um lugar.
+
+    SEM LINHA NENHUMA, a resposta é SERVIDOR — porque é o padrão declarado no DDL
+    (`config_usuario.modo_coleta DEFAULT 'servidor'`) e o que `configuracao.ler()`
+    devolve a quem nunca abriu o assistente. Responder "estação" aqui mandaria as
+    59 pessoas que ainda não configuraram para uma tela dizendo "nenhuma estação
+    vinculada a você" — culpando-as por não terem uma máquina que este desenho
+    não pede mais que elas tenham.
+    """
+    if instancia:
+        r = cx.execute("SELECT modo_coleta FROM config_usuario "
+                       "WHERE usuario_id=? AND sistema=?",
+                       (usuario_id, instancia)).fetchone()
+    else:
+        r = cx.execute("SELECT modo_coleta FROM config_usuario WHERE usuario_id=? "
+                       "ORDER BY (modo_coleta='servidor') DESC LIMIT 1",
+                       (usuario_id,)).fetchone()
+    return r["modo_coleta"] == "servidor" if r else True
+
+
+def _estacao_viva(cx, usuario_id, agora_dt):
+    """A estação desta pessoa, se estiver em condições de executar. Ou None."""
+    ag = cx.execute("""SELECT * FROM agentes WHERE dono_usuario_id=? AND ativo=1
+                       AND token_sha256 IS NOT NULL AND pausado_motivo IS NULL
+                       AND ultimo_contato_em IS NOT NULL
+                       ORDER BY id DESC LIMIT 1""", (usuario_id,)).fetchone()
+    if not ag:
+        return None
+    calado = _horas_desde(ag["ultimo_contato_em"], agora_dt) * 60
+    return ag if calado <= ESTACAO_SILENCIO_MIN else None
+
+
+def _fila_pode_estar_cheia():
+    """Este processo pode AFIRMAR que a fila do executor está livre?
+
+    Devolve True quando NÃO PODE — e aí a busca em `pedida` não é morta.
+
+    Com `--workers 3`, dois workers servem painel e têm o próprio semáforo
+    intacto: para eles a fila nunca está cheia. Como a varredura é chamada pela
+    rota que a tela poleia a cada 2 s, e o pedido cai em qualquer worker, a
+    terceira busca de uma fila de duas vagas morria quase sempre — com a frase
+    errada, acusando um agente que não existe no modo servidor.
+
+    Três situações, três respostas:
+      * sou o executor  -> sei de verdade: as vagas deste processo são as vagas;
+      * há executor, mas não sou eu -> NÃO SEI, e não decido;
+      * não há executor nenhum -> a busca não vai ser pega mesmo; pode morrer.
+    """
+    try:
+        import threading
+
+        import atendente
+        if atendente.vivo():
+            return (atendente.vagas_livres() == 0
+                    and any(t.name.startswith("busca-") and t.is_alive()
+                            for t in threading.enumerate()))
+        return atendente.ha_executor()
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+def _horas_desde(iso, ate_dt):
+    try:
+        return (ate_dt - com_fuso(iso)).total_seconds() / 3600
+    except (TypeError, ValueError):
+        return 1e9
+
+
+# ------------------------------------------------------------------ a trava
+def trava_viva(cx, instancia, conta, agora_dt=None):
+    """A busca em curso desta conta, se houver. Trava vencida é apagada NA
+    LEITURA — agente que morre no meio não tranca a conta para sempre."""
+    from datetime import datetime
+    agora_dt = agora_dt or datetime.now(TZ)
+    cx.execute("DELETE FROM busca_trava WHERE ate < ?",
+               (agora_dt.isoformat(timespec="seconds"),))
+    return cx.execute("SELECT * FROM busca_trava WHERE instancia=? AND conta=?",
+                      (instancia, conta)).fetchone()
+
+
+def _travar(cx, instancia, conta, busca_id, agora_dt=None):
+    from datetime import datetime
+    agora_dt = agora_dt or datetime.now(TZ)
+    ate = (agora_dt + timedelta(minutes=TRAVA_MIN)).isoformat(timespec="seconds")
+    cx.execute("""INSERT INTO busca_trava(instancia,conta,busca_id,ate) VALUES(?,?,?,?)
+                  ON CONFLICT(instancia,conta) DO UPDATE SET
+                    busca_id=excluded.busca_id, ate=excluded.ate""",
+               (instancia, conta, busca_id, ate))
+
+
+def _destravar(cx, instancia, conta):
+    cx.execute("DELETE FROM busca_trava WHERE instancia=? AND conta=?", (instancia, conta))
+
+
+# ------------------------------------------------------------------- pedir
+def pedir(cx, usuario_id, instancia, conta, mesa, filtros, ip=None):
+    """Enfileira uma busca. Devolve (busca_id, erro, id_em_curso)."""
+    limpos, erro = validar(filtros, instancia)
+    if erro:
+        return None, erro, None
+    if not conta:
+        return None, ("nenhuma conta do SEI configurada para esta instalação — "
+                      "a busca roda com o SEU login, e sem ele não há como buscar"), None
+    # QUEM VAI EXECUTAR? Sem estação capaz, o pedido não entra na fila. Aceitar
+    # aqui e travar a conta por 20 minutos, com a tela dizendo "pesquisando", foi
+    # o defeito relatado — e é o modo de falha que este projeto persegue: parecer
+    # que funciona enquanto nada acontece.
+    _ag, _motivo, _como = quem_executa(cx, usuario_id, instancia=instancia)
+    if not _ag:
+        return None, f"{_motivo}. {_como}", None
+    em_curso = trava_viva(cx, instancia, conta)
+    if em_curso:
+        # DEGRADA, não bloqueia: devolve qual busca está em curso, para a tela
+        # mostrar o progresso dela em vez de um erro sem saída.
+        return None, "já há uma busca em curso nesta conta", em_curso["busca_id"]
+    sha = sha_dos_filtros(limpos)
+    cur = cx.execute("""INSERT INTO busca(usuario_id,instancia,conta,mesa,filtros,
+                        filtros_sha,estado,paginas_teto,pedida_em)
+                        VALUES(?,?,?,?,?,?,'pedida',?,?)""",
+                     (usuario_id, instancia, conta, mesa,
+                      json.dumps(limpos, ensure_ascii=False), sha, PAGINAS_TETO, agora()))
+    bid = cur.lastrowid
+    _travar(cx, instancia, conta, bid)
+    # O TEXTO DOS FILTROS NÃO ENTRA NO LOG. O log é lido por gestor e admin, e o
+    # filtro de uma pessoa pode citar nome próprio. O sha responde "foi a mesma
+    # busca?" sem dizer qual; o texto fica em `busca.filtros`, que é dela e tem prazo.
+    registrar(cx, usuario_id, "busca_pedida",
+              alvo=f"{instancia} · busca {bid} · {len(limpos)} filtro(s) · sha {sha}",
+              unidade=mesa, ip=ip)
+    return bid, None, None
+
+
+def entregar(cx, agente_dono_id, instancia):
+    """A próxima busca desta pessoa nesta instalação, ou None. Marca 'entregue'."""
+    r = cx.execute("""SELECT * FROM busca WHERE usuario_id=? AND instancia=?
+                      AND estado='pedida' ORDER BY id LIMIT 1""",
+                   (agente_dono_id, instancia)).fetchone()
+    if not r:
+        return None
+    # A REIVINDICAÇÃO É O PRÓPRIO UPDATE, com `AND estado='pedida'`. Sem essa
+    # guarda, o SELECT e o UPDATE eram duas operações separadas: o agente da
+    # estação lia a busca como 'pedida', o atendente do servidor a reivindicava
+    # no meio, e o agente completava o UPDATE assim mesmo e levava a tarefa. Os
+    # dois executavam a MESMA busca com a MESMA conta do SEI ao mesmo tempo — e a
+    # troca de mesa no SEI é por USUÁRIO, não por sessão: as duas voltam com zero
+    # linha, e o veredito culpa o SEI.
+    #
+    # `rowcount == 0` significa que outro executor chegou primeiro. Devolver None
+    # é o certo: quem perdeu a corrida não tem tarefa.
+    if cx.execute("UPDATE busca SET estado='entregue', entregue_em=? "
+                  "WHERE id=? AND estado='pedida'",
+                  (agora(), r["id"])).rowcount != 1:
+        return None
+    p = perfil_sei.perfil(instancia)
+    return {
+        "busca_id": r["id"], "instancia": instancia, "mesa": r["mesa"],
+        "filtros": json.loads(r["filtros"]),
+        "campos": p["campos_busca"], "versao": p["versao"],
+        "paginas_teto": r["paginas_teto"] or PAGINAS_TETO,
+        "segundos_teto": SEGUNDOS_TETO,
+    }
+
+
+def veredito(total_declarado, colhidos, paginas, teto, motivo_agente):
+    """O estado, calculado do que foi medido — nunca aceito do agente.
+
+    A ordem importa. `falhou` vem primeiro porque um agente que morreu no meio
+    não sabe quantos registros existiam; e a ausência do total declarado é
+    `falhou`, não `completa`: sem ele não há com o que reconciliar, e chamar isso
+    de completo é afirmar o que ninguém mediu.
+    """
+    if motivo_agente:
+        return "falhou", motivo_agente
+    if total_declarado is None:
+        return "falhou", "o SEI não declarou o total de registros"
+    if total_declarado == 0 and not colhidos:
+        return "vazia", None
+    if colhidos == total_declarado:
+        return "completa", None
+    if paginas and teto and paginas >= teto:
+        return "parcial", f"teto de {teto} páginas"
+    return "parcial", f"o SEI declarou {total_declarado} e vieram {colhidos}"
+
+
+def receber(cx, busca_id, envelope, ip=None):
+    """Grava o resultado. Devolve (estado, motivo)."""
+    r = cx.execute("SELECT * FROM busca WHERE id=?", (busca_id,)).fetchone()
+    if not r:
+        return None, "busca não encontrada"
+    if r["estado"] in ("completa", "parcial", "vazia", "falhou", "cancelada"):
+        # DESTRAVA MESMO ASSIM. A busca acabou — cancelada, ou morta pela
+        # varredura — e o coletor só agora devolveu. É exatamente aqui que se
+        # sabe que ninguém está mais logado naquela conta. Sem isto, todo
+        # cancelamento deixaria a conta presa os 20 min inteiros de TRAVA_MIN.
+        _destravar(cx, r["instancia"], r["conta"])
+        return r["estado"], "esta busca já foi encerrada"
+
+    itens = envelope.get("itens") or []
+    total = envelope.get("total_declarado")
+    paginas = envelope.get("paginas_lidas")
+    motivo_ag = envelope.get("motivo")
+    confirmada = envelope.get("mesa_confirmada")
+
+    # A MESA CONFIRMADA É FATO OBSERVADO, não intenção. O filtro "com tramitação
+    # na unidade" faz o resultado ser função da unidade ATIVA da sessão, e a
+    # unidade ativa é estado de servidor. Se o que o SEI relatou não é o que foi
+    # pedido, o resultado é de outra mesa — e isso é falha, não um detalhe.
+    if r["mesa"] and confirmada and confirmada != r["mesa"]:
+        estado, motivo = "falhou", (f"a mesa ativa no SEI é {confirmada}, e a busca "
+                                    f"foi pedida para {r['mesa']}")
+        itens = []
+    else:
+        estado, motivo = veredito(total, len(itens), paginas,
+                                  r["paginas_teto"] or PAGINAS_TETO, motivo_ag)
+
+    # OS ITENS PRIMEIRO, O VEREDITO POR ÚLTIMO. A ordem inversa publicava
+    # "completa · 5 de 5" com dois itens gravados quando um INSERT do laço
+    # levantava no meio — e "database is locked" é o caso ordinário, não o
+    # exótico: a ingestão escreve 1.165 linhas num commit só, no mesmo processo
+    # em que este código roda. O veredito é a última coisa que este sistema
+    # afirma sobre uma busca; afirmá-lo antes de ter o que ele descreve é
+    # exatamente o "607 de 607 e ninguém conferiu" que o cabeçalho deste arquivo
+    # existe para impedir.
+    for i, it in enumerate(itens, 1):
+        cx.execute(f"""INSERT OR REPLACE INTO busca_item(busca_id,ordem,
+                       {','.join(CAMPOS_ITEM)})
+                       VALUES(?,?,{','.join('?' * len(CAMPOS_ITEM))})""",
+                   [busca_id, i] + [it.get(c) for c in CAMPOS_ITEM])
+    cx.execute("""UPDATE busca SET estado=?, motivo=?, mesa_confirmada=?,
+                  total_declarado=?, colhidos=?, paginas_lidas=?,
+                  terminada_em=?, duracao_s=? WHERE id=?""",
+               (estado, motivo, confirmada, total, len(itens), paginas,
+                agora(), envelope.get("duracao_s"), busca_id))
+    _destravar(cx, r["instancia"], r["conta"])
+    registrar(cx, r["usuario_id"], "busca_resultado",
+              alvo=(f"busca {busca_id} · {estado} · {len(itens)}/{total} · "
+                    f"{paginas} pág · {envelope.get('duracao_s')} s"),
+              unidade=confirmada or r["mesa"], ip=ip)
+    return estado, motivo
+
+
+def cancelar(cx, busca_id, usuario_id, ip=None):
+    r = cx.execute("SELECT * FROM busca WHERE id=? AND usuario_id=?",
+                   (busca_id, usuario_id)).fetchone()
+    if not r:
+        return False
+    if r["estado"] in ("completa", "parcial", "vazia", "falhou", "cancelada"):
+        return False
+    cx.execute("UPDATE busca SET estado='cancelada', motivo=?, terminada_em=? WHERE id=?",
+               ("cancelada por quem pediu", agora(), busca_id))
+    # SO DESTRAVA SE NINGUEM PEGOU. Cancelar uma busca ja ENTREGUE soltava a
+    # conta enquanto o coletor continuava logado no SEI: a pessoa pedia outra na
+    # hora, e dois Chromium entravam na MESMA conta. A troca de mesa no SEI e por
+    # USUARIO, nao por sessao — as duas voltam com zero linha, e o veredito culpa
+    # o SEI. Quando ja pegaram, a trava cai em `receber()`, que e o instante em
+    # que se sabe que ninguem esta mais logado naquela conta.
+    if r["estado"] == "pedida":
+        _destravar(cx, r["instancia"], r["conta"])
+    registrar(cx, usuario_id, "busca_cancelada", alvo=f"busca {busca_id}",
+              unidade=r["mesa"], ip=ip)
+    return True
+
+
+def ler(cx, busca_id, usuario_id, com_itens=True, ip=None):
+    """A busca e seus itens — SÓ para quem pediu.
+
+    Não há leitura por gestor nem por admin. Uma busca é a pergunta de uma
+    pessoa, feita com o login dela; abrir isso para terceiros seria transformar
+    uma ferramenta de trabalho em registro de comportamento.
+    """
+    r = cx.execute("SELECT * FROM busca WHERE id=? AND usuario_id=?",
+                   (busca_id, usuario_id)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    d["filtros"] = json.loads(d["filtros"] or "{}")
+    d["itens"] = []
+    if com_itens:
+        d["itens"] = [dict(x) for x in cx.execute(
+            "SELECT * FROM busca_item WHERE busca_id=? ORDER BY ordem", (busca_id,))]
+        if d["itens"]:
+            registrar(cx, usuario_id, "busca_lida",
+                      alvo=f"busca {busca_id} · {len(d['itens'])} itens",
+                      unidade=d.get("mesa_confirmada") or d.get("mesa"), ip=ip)
+    return d
+
+
+def minhas(cx, usuario_id, limite=20):
+    return [dict(r) for r in cx.execute(
+        """SELECT id,instancia,mesa,mesa_confirmada,filtros_sha,estado,motivo,
+                  total_declarado,colhidos,pedida_em,terminada_em,duracao_s
+           FROM busca WHERE usuario_id=? ORDER BY id DESC LIMIT ?""",
+        (usuario_id, limite))]
+
+
+def varrer(cx, agora_dt=None):
+    """Busca que empacou. DOIS prazos, porque são dois problemas diferentes.
+
+    `pedida` sem ninguém pegar significa que NADA está perguntando ao servidor —
+    e isso se sabe em segundos, não em dez minutos. `entregue` sem voltar
+    significa que a estação pegou e morreu no meio, e aí o prazo é o da execução.
+
+    Um prazo só para os dois casos faz a tela dizer "pesquisando" por dez minutos
+    sobre uma fila que ninguém drena.
+    """
+    from datetime import datetime
+    agora_dt = agora_dt or datetime.now(TZ)
+    n = 0
+    corte_pegar = (agora_dt - timedelta(seconds=PEGAR_TETO_S)).isoformat(timespec="seconds")
+    fila_cheia = _fila_pode_estar_cheia()
+    for b in cx.execute("SELECT * FROM busca WHERE estado='pedida' AND pedida_em < ?",
+                        (corte_pegar,)).fetchall():
+        no_servidor = _modo_servidor(cx, b["usuario_id"], b["instancia"])
+        # FILA CHEIA NÃO É PEDIDO ABANDONADO. No modo servidor, `pedida` com as
+        # vagas todas ocupadas significa que a busca está na fila — ela nem
+        # chegou a ser tentada. Matá-la aos 90 s manda a pessoa procurar um
+        # agente que não existe nesse modo, e a própria tela é quem dispara a
+        # varredura (ela poleia a cada 2 s, e a rota chama `varrer`): o ato de
+        # esperar mataria a espera. A maior busca medida neste projeto levou
+        # 226 s, então uma vaga ocupada não abre em 90 s.
+        if no_servidor and fila_cheia:
+            continue
+        # E QUANDO MATAR, DIZER QUEM FALTOU. No modo servidor não há estação; a
+        # frase do agente só é verdadeira no modo estação.
+        motivo = (f"o executor de busca deste servidor não pegou o pedido em "
+                  f"{PEGAR_TETO_S} s" if no_servidor else
+                  f"nenhuma estação pegou o pedido em {PEGAR_TETO_S} s — "
+                  f"o agente não está rodando")
+        cx.execute("""UPDATE busca SET estado='falhou', motivo=?, terminada_em=?
+                      WHERE id=?""", (motivo, agora(), b["id"]))
+        _destravar(cx, b["instancia"], b["conta"])
+        n += 1
+    corte_exec = (agora_dt - timedelta(seconds=SEGUNDOS_TETO)).isoformat(timespec="seconds")
+    for b in cx.execute("""SELECT * FROM busca WHERE estado IN ('entregue','em_curso')
+                           AND COALESCE(entregue_em, pedida_em) < ?""",
+                        (corte_exec,)).fetchall():
+        cx.execute("""UPDATE busca SET estado='falhou', motivo=?, terminada_em=?
+                      WHERE id=?""",
+                   ((f"o executor de busca deste servidor não devolveu resultado "
+                     f"em {SEGUNDOS_TETO // 60} min"
+                     if _modo_servidor(cx, b["usuario_id"], b["instancia"]) else
+                     f"a estação pegou o pedido e não devolveu resultado em "
+                     f"{SEGUNDOS_TETO // 60} min"), agora(), b["id"]))
+        _destravar(cx, b["instancia"], b["conta"])
+        n += 1
+    return n

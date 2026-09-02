@@ -1,0 +1,6 @@
+{
+  "_o_que_e": "A unidade de lotacao da titular da credencial. A coleta percorre as mesas da conta e TEM de devolver a sessao para ca.",
+  "_por_que_existe": "Ate 27/08/2026 a origem era lida do DOM vivo, isto e, do residuo da execucao anterior: as 13 execucoes de 13/08 a 27/08 terminaram todas em SESAB/SAIS/DGGUP/UMA-CMA, mesa onde a titular praticou ZERO atos nos 31 meses anteriores.",
+  "_sobrepor_por_ambiente": "SEI_UNIDADE_ORIGEM",
+  "origem": "SESAB/SAIS/DGGUP/DGESS"
+}

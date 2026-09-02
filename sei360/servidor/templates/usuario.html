@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — {{ alvo.email }}</title>
+{% include '_cabeca.html' %}
+</head><body>
+
+{% with pagina='usuarios' %}{% include '_nav.html' %}{% endwith %}
+
+<div class="folha" style="max-width:1000px">
+
+  {% if aviso %}<div class="destaque">{{ aviso }}</div>{% endif %}
+  {% if provisoria %}
+  <div class="destaque"><b>Senha provisória:</b> <code>{{ provisoria }}</code>
+    <div style="font-size:12px;color:var(--ink-3);margin-top:4px">Aparece uma única vez.
+    A pessoa troca no primeiro acesso, antes de ver qualquer tela.</div></div>
+  {% endif %}
+
+  <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+    <a class="bt" href="/admin/usuarios">← Usuários</a>
+    <h1 style="font-family:var(--display);font-size:24px;margin:0;font-weight:600">
+      {{ alvo.nome or alvo.email.split('@')[0] }}</h1>
+    <span class="pill">{{ alvo.email }}</span>
+    <span class="tag {{ 'ok' if alvo.ativo and alvo.senha_hash else 'al' }}">
+      {% if not alvo.ativo %}inativo{% elif not alvo.senha_hash %}sem senha
+      {% elif not alvo.senha_trocada_em %}senha provisória{% else %}ativo{% endif %}</span>
+  </div>
+
+  <div class="grade2" style="margin-top:22px">
+    <div class="cartao">
+      <h2 class="sec" style="margin-top:0">O que esta conta enxerga</h2>
+      <div style="font-size:13px;color:var(--ink-2);margin-bottom:12px">
+        {% if alvo.papel == 'admin' and not vinculos %}
+          Nenhuma carteira. É o padrão para admin: administrar não é ler.
+        {% elif vinculos %}
+          A carteira de <b>{{ vinculos|length }}</b> unidade(s). Nada além.
+        {% else %}
+          <span style="color:var(--alerta)">Nenhuma unidade vinculada — esta pessoa entra e
+          não vê processo nenhum.</span>
+        {% endif %}
+      </div>
+      {% if u.papel == 'admin' %}
+<form method="post" action="/admin/usuario">
+        <input type="hidden" name="csrf" class="csrf">
+        <input type="hidden" name="acao" value="unidades"><input type="hidden" name="id" value="{{ alvo.id }}">
+        <div class="chips-un">
+          {% for un in unidades %}
+          <label><input type="checkbox" name="unidades" value="{{ un }}"
+            {% if un in vinculos %}checked{% endif %}>{{ un }}</label>
+          {% endfor %}
+        </div>
+        <div style="margin-top:12px"><button class="bt forte" type="submit">Salvar vínculo</button></div>
+      </form>
+    </div>
+
+    <div class="cartao">
+      <h2 class="sec" style="margin-top:0">Papel e acesso</h2>
+      <form method="post" action="/admin/usuario" style="margin-bottom:14px">
+        <input type="hidden" name="csrf" class="csrf">
+        <input type="hidden" name="acao" value="papel"><input type="hidden" name="id" value="{{ alvo.id }}">
+        <label>Papel</label>
+        <select name="papel" {% if alvo.id == u.usuario_id %}disabled title="você não altera o próprio papel"{% endif %}>
+          {% for p in ['servidor','gestor','admin'] %}
+          <option value="{{ p }}" {% if alvo.papel == p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+        </select>
+        {% if alvo.id != u.usuario_id %}
+        <button class="bt" type="submit" style="margin-top:10px">Salvar papel</button>{% endif %}
+      </form>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <form method="post" action="/admin/usuario"><input type="hidden" name="csrf" class="csrf">
+          <input type="hidden" name="acao" value="nova_senha"><input type="hidden" name="id" value="{{ alvo.id }}">
+          <button class="bt" type="submit">Nova senha provisória</button></form>
+        <form method="post" action="/admin/usuario"><input type="hidden" name="csrf" class="csrf">
+          <input type="hidden" name="acao" value="revogar"><input type="hidden" name="id" value="{{ alvo.id }}">
+          <button class="bt risco" type="submit">Encerrar sessões ({{ sessoes|length }})</button></form>
+        {% if alvo.id != u.usuario_id %}
+        <form method="post" action="/admin/usuario"><input type="hidden" name="csrf" class="csrf">
+          <input type="hidden" name="acao" value="ativar"><input type="hidden" name="id" value="{{ alvo.id }}">
+          <button class="bt {{ 'risco' if alvo.ativo }}" type="submit">
+            {{ 'Desativar conta' if alvo.ativo else 'Ativar conta' }}</button></form>
+{% else %}
+<div class="rel-nota">Você está vendo esta conta como <b>gestor</b>: dá para
+  conferir o que ela enxerga e por quê, mas mudar papel, vínculo de unidade ou
+  senha é ato de administração. Vínculo de unidade define o que a pessoa vê —
+  quem concede tem de ser quem responde por isso.</div>
+{% endif %}
+        {% endif %}
+      </div>
+      <div style="font-size:12px;color:var(--ink-3);margin-top:12px;line-height:1.5">
+        Último acesso: {{ (alvo.ultimo_login_em or 'nunca')[:16].replace('T',' ') }}.
+        Criada em {{ (alvo.criado_em or '—')[:10] }} ({{ alvo.origem or 'origem não registrada' }}).
+        {% if alvo.bloqueado_ate %}<br><b style="color:var(--alerta)">Bloqueada até
+        {{ alvo.bloqueado_ate[:16].replace('T',' ') }}</b> por tentativas erradas.{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">Coleta desta conta</h2>
+  <div class="cartao">
+    {% if config.nova %}
+      <div style="color:var(--ink-3);font-size:13px">Ainda não configurou a própria coleta.
+      Enquanto isso, vê o que a coleta de outra pessoa trouxe para as unidades acima.</div>
+    {% else %}
+    <div class="grade2" style="font-size:13.5px">
+      <div><b>Sistema:</b> {{ config.sistema }}<br>
+        <b>Entra como:</b> <span class="mono">{{ config.sei_login or '—' }}</span><br>
+        <b>Senha:</b>
+        {% if config.modo_coleta == 'estacao' %}na estação da pessoa, fora do servidor
+        {% elif credencial %}cifrada no cofre desde {{ credencial.criado_em[:10] }}
+          ({{ credencial.usos }} uso(s))
+        {% else %}<span style="color:var(--alerta)">não guardada — a coleta não roda</span>{% endif %}
+      </div>
+      <div><b>Mesas:</b>
+        {{ 'todas as da conta' if config.mesas_modo == 'todas' else config.mesas|join(', ') }}<br>
+        <b>Horários:</b> <span class="mono">{{ config.janelas|join(', ') }}</span>
+        ({{ 'dias úteis' if config.dias == 'uteis' else 'todos os dias' }})<br>
+        <b>Concluída em:</b> {{ (config.concluida_em or '—')[:10] }}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <h2 class="sec">Histórico desta conta</h2>
+  <table class="grade">
+    <tr><th>Quando</th><th>Ação</th><th>Alvo</th><th>IP</th></tr>
+    {% for l in historico %}
+    <tr><td class="mono" style="font-size:11px">{{ l.ts[:19].replace('T',' ') }}</td>
+      <td>{{ l.acao }}</td>
+      <td class="mono" style="font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis">{{ l.alvo or '—' }}</td>
+      <td class="mono" style="font-size:11px">{{ l.ip or '—' }}</td></tr>
+    {% else %}
+    <tr><td colspan="4" class="vazio-msg">Nenhum registro.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<script>
+const c=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+document.querySelectorAll('.csrf').forEach(i=>i.value=c);
+</script>
+</body></html>

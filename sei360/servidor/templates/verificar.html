@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Código de acesso</title>
+<script>try{var t=localStorage.getItem('painel-tema');if(t)document.documentElement.dataset.tema=t}catch(e){}</script>
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontes.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='sei360.css') }}">
+</head><body>
+<div class="acesso">
+  <section class="lateral">
+    <div>
+      <div class="marca">Sistema Eletrônico de Informações · SESAB</div>
+      <h1>Código de acesso.</h1>
+      <div class="fio"></div>
+      <p class="sub">A sua senha confere. Falta o segundo fator: um código de
+      {{ digitos }} dígitos enviado para a sua caixa institucional, válido por
+      {{ minutos }} minutos.</p>
+      <p class="sub"><b>Se você não tentou entrar agora</b>, alguém digitou a sua
+      senha corretamente. Troque-a e avise quem administra o sistema.</p>
+    </div>
+    <footer>Esta <b>não</b> é a sua senha do SEI. O SEI360 nunca pede a senha do SEI.</footer>
+  </section>
+
+  <section class="painel-acesso">
+    <div class="caixa">
+      <h2>Digite o código</h2>
+      <div class="dica">Enviado para {{ destino }}</div>
+      {% if erro %}<div class="erro on" role="alert">{{ erro }}</div>{% endif %}
+      <form method="post" autocomplete="off">
+        <input type="hidden" name="csrf" id="csrf">
+        <div class="campo">
+          <label for="codigo">Código de {{ digitos }} dígitos</label>
+          {# `inputmode=numeric` e `autocomplete=one-time-code` fazem o teclado do
+             celular abrir numérico e o iOS/Android oferecerem o código lido do
+             SMS/e-mail. `pattern` é validação da tela, não do servidor. #}
+          <input id="codigo" name="codigo" type="text" required autofocus
+                 inputmode="numeric" autocomplete="one-time-code"
+                 pattern="[0-9]*" maxlength="{{ digitos }}"
+                 style="letter-spacing:.35em;font-size:1.3em;text-align:center">
+        </div>
+        <button class="primario" type="submit">Entrar</button>
+      </form>
+      <div class="dica" style="margin-top:14px">
+        Não chegou? <a href="{{ url_for('entrar') }}">Entre de novo</a> para receber
+        outro código — o anterior deixa de valer.
+      </div>
+    </div>
+  </section>
+</div>
+<script>
+var c=document.getElementById('csrf');
+if(c)c.value=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+</script>
+</body></html>

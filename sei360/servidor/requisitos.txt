@@ -1,0 +1,25 @@
+# Dependências do SERVIDOR. Tudo o mais é biblioteca padrão: scrypt, hmac,
+# sqlite3, urllib, http.cookiejar.
+#
+# Esta lista já esteve errada, e o modo de falha é o pior possível: o código
+# roda na estação (onde os pacotes estão instalados por outros projetos) e
+# quebra só no container, com 500 ao guardar a senha do SEI e em toda exportação
+# de planilha. Quem confere isto é `python -c "import ast..."` sobre os imports
+# reais, não a memória de quem escreveu.
+Flask==3.0.3
+gunicorn==23.0.0
+
+# cofre.py e ia.py — AES-256-GCM para a credencial do SEI e para a chave de API.
+# Sem isto, guardar senha no modo padrão devolve 500 dentro do container.
+cryptography==46.0.7
+
+# relatorios.py — exportação XLSX com o cabeçalho de procedência.
+openpyxl==3.1.5
+
+# atendente.py — o servidor executa a busca avançada, então o navegador está
+# nesta imagem. Isto entrou em 21/08/2026, com a decisão de hospedar em VPS
+# próprio; o §6.1 do ARQUITETURA_ACESSO.md registra a revogação e o custo.
+# A VERSÃO É FIXA de propósito: o `playwright install chromium` do Dockerfile
+# baixa o navegador que ESTA versão espera, e um pip solto traria outra a cada
+# build — quebrando só na primeira busca depois do redeploy.
+playwright==1.58.0

@@ -1,0 +1,7 @@
+_dados/
+*.db*
+__pycache__/
+*.pyc
+agente.json
+agente.lock
+execucoes.json

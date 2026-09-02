@@ -1,0 +1,35 @@
+{
+  "_leia_me": "Tabela ÚNICA de casos para as duas implementações da mesma regra: camposDaMesa() em automacao_sei.js e poco.campos_da_mesa() em Python. _teste_camposdamesa.js imprime o resultado do lado JS; teste_poco.py roda o lado Python sobre ESTES mesmos casos e compara campo a campo. Duas implementações da mesma regra só se justificam se alguém conferir que continuam sendo a mesma regra — e conferir exit code de um teste que nem conhece o outro lado não é conferir.",
+  "movimentos": [
+    { "dh": "19/08/2026 07:30", "un": "SESAB/SAIS/DGGUP/DGESS/COMASUP", "us": "ana.souza",
+      "de": "Processo recebido na unidade" },
+    { "dh": "18/08/2026 16:10", "un": "SESAB/SAIS/DAE", "us": "willian.damascena",
+      "de": "Processo remetido pela unidade SESAB/SAIS/DGGUP/DGESS/CESS" },
+    { "dh": "07/08/2026 15:39", "un": "SESAB/SAIS/DGGUP/DGESS/CESS", "us": "willian.damascena",
+      "de": "Processo recebido na unidade" },
+    { "dh": "28/07/2025 08:58", "un": "SESAB/SAIS/DGGUP/DGESS/ASTEC", "us": "joao.lima",
+      "de": "Processo público gerado" }
+  ],
+  "reabertura": [
+    { "dh": "19/08/2026 07:30", "un": "SESAB/SAIS/DGGUP/DGESS/CESS", "us": "ana.souza",
+      "de": "Reabertura do processo na unidade" },
+    { "dh": "28/07/2025 08:58", "un": "SESAB/SAIS/DGGUP/DGESS/CESS", "us": "joao.lima",
+      "de": "Processo recebido na unidade" }
+  ],
+  "casos": [
+    { "nome": "unidade que recebeu e depois remeteu",
+      "mov": "movimentos", "unidade": "SESAB/SAIS/DGGUP/DGESS/CESS" },
+    { "nome": "unidade que recebeu por ultimo, sem nunca remeter",
+      "mov": "movimentos", "unidade": "SESAB/SAIS/DGGUP/DGESS/COMASUP" },
+    { "nome": "unidade que GEROU o processo",
+      "mov": "movimentos", "unidade": "SESAB/SAIS/DGGUP/DGESS/ASTEC" },
+    { "nome": "unidade que so aparece como DESTINO da remessa",
+      "mov": "movimentos", "unidade": "SESAB/SAIS/DAE" },
+    { "nome": "unidade ausente do historico: nao sei, e nao sem divergencia",
+      "mov": "movimentos", "unidade": "SESAB/SAIS/DGGUP/UMA-CMA" },
+    { "nome": "reabertura conta como chegada nova na mesma mesa",
+      "mov": "reabertura", "unidade": "SESAB/SAIS/DGGUP/DGESS/CESS" },
+    { "nome": "unidade vazia devolve vazio, sem explodir",
+      "mov": "movimentos", "unidade": "" }
+  ]
+}

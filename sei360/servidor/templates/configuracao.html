@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Configuração da coleta</title>
+{% include '_cabeca.html' %}
+<style>
+/* Um passo por vez. A versão anterior era um acordeão com cinco formulários:
+   dava para abrir todos, preencher fora de ordem e sair sem saber se ficou
+   pronto. Aqui a trilha fica à esquerda, sempre visível, e à direita só existe
+   o passo atual — com um botão principal e nenhuma dúvida sobre o que fazer. */
+.duas{display:grid;grid-template-columns:250px 1fr;gap:30px;align-items:start}
+@media(max-width:860px){.duas{grid-template-columns:1fr}}
+
+.trilha{position:sticky;top:24px}
+.trilha ol{list-style:none;margin:0;padding:0}
+.trilha li{display:flex;gap:12px;padding:12px 0;position:relative}
+.trilha li::before{content:'';position:absolute;left:13px;top:34px;bottom:-12px;width:1px;
+  background:var(--rule)}
+.trilha li:last-child::before{display:none}
+.trilha .n{width:27px;height:27px;border-radius:50%;flex:0 0 auto;display:flex;
+  align-items:center;justify-content:center;font-size:12px;font-weight:700;
+  background:var(--sunk);color:var(--ink-3);border:1px solid var(--rule);z-index:1}
+/* `var(--paper)`: no escuro --ok é verde-neon e o branco dava 1,36:1 — um
+     disco verde-limão com um algarismo que praticamente não existe. A linha
+     de baixo já fazia certo. */
+  .trilha li.ok .n{background:var(--ok);color:var(--paper);border-color:var(--ok)}
+.trilha li.agora .n{background:var(--accent);color:var(--paper);border-color:var(--accent);
+  box-shadow:0 0 0 4px var(--accent-soft)}
+.trilha b{display:block;font-size:13.5px;color:var(--ink)}
+.trilha li:not(.ok):not(.agora) b{color:var(--ink-3)}
+.trilha span{font-size:11.5px;color:var(--ink-3)}
+.trilha a{text-decoration:none;display:flex;gap:12px;flex:1}
+
+.cartao-passo{background:var(--card);border:1px solid var(--rule);border-radius:var(--r2);
+  box-shadow:var(--sombra-1);padding:26px 28px}
+.cartao-passo h2{font-family:var(--display);font-size:22px;margin:0 0 6px;font-weight:600}
+.cartao-passo .lede{color:var(--ink-2);margin:0 0 22px;max-width:62ch;line-height:1.55}
+
+.opcao{display:flex;gap:13px;align-items:flex-start;padding:14px 16px;border:1px solid var(--rule);
+  border-radius:var(--r);margin-bottom:10px;cursor:pointer;transition:border-color .14s,background .14s}
+.opcao:hover{border-color:var(--accent)}
+.opcao:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.opcao input{margin-top:3px;flex:0 0 auto}
+.opcao b{display:block;margin-bottom:2px}
+.opcao span{font-size:12.5px;color:var(--ink-3);line-height:1.5;display:block}
+.opcao.off{opacity:.45;cursor:not-allowed}
+
+.acoes-passo{display:flex;gap:10px;align-items:center;margin-top:22px;flex-wrap:wrap}
+.nota{font-size:12.5px;color:var(--ink-3);line-height:1.55}
+.nota b{color:var(--ink-2)}
+.cmd{font-family:var(--mono);font-size:12.5px;background:var(--sunk);border:1px solid var(--rule);
+  border-radius:var(--r);padding:11px 13px;margin:10px 0;user-select:all;overflow-x:auto;white-space:pre}
+.grade-mesas{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:7px;margin:12px 0 0}
+.grade-mesas label{display:flex;gap:9px;align-items:center;font-family:var(--mono);font-size:11.5px;
+  border:1px solid var(--rule);border-radius:var(--r);padding:9px 11px;cursor:pointer;
+  text-transform:none;letter-spacing:0;color:var(--ink-2);margin:0}
+.grade-mesas label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.resumo{display:grid;grid-template-columns:170px 1fr;gap:2px 16px;font-size:13.5px;margin:4px 0 22px}
+.resumo dt{color:var(--ink-3);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+  font-family:var(--rotulo);font-variation-settings:"wght" 600,"wdth" 87;padding-top:4px}
+.resumo dd{margin:0;padding:2px 0}
+.teste{margin-top:16px;padding:14px 16px;border-radius:var(--r);border:1px solid var(--rule);
+  background:var(--sunk);font-size:13px}
+.teste.ok{border-color:var(--ok);background:var(--ok-soft)}
+.teste.ruim{border-color:var(--alerta);background:var(--alerta-soft)}
+.aviso-cofre{border-left:3px solid var(--espera);background:var(--espera-soft);padding:12px 14px;
+  border-radius:0 var(--r) var(--r) 0;font-size:12.5px;margin:14px 0}
+</style>
+</head><body>
+
+{% with pagina='configuracao' %}{% include '_nav.html' %}{% endwith %}
+
+<div class="folha" style="max-width:1040px">
+
+  {% if erro %}<div class="destaque" style="border-left-color:var(--alerta);background:var(--alerta-soft)">{{ erro }}</div>{% endif %}
+
+  <h1 style="font-family:var(--display);font-size:28px;margin:0 0 6px;font-weight:600">
+    {% if completa and not passo_ativo %}Sua coleta está configurada{% else %}Configurar a coleta{% endif %}</h1>
+  <div style="color:var(--ink-2);margin-bottom:26px">
+    {% if completa and not passo_ativo %}
+      O SEI360 entra no SEI nos horários que você definiu, traz os seus processos e mostra
+      aqui o que é ação sua. Clique em qualquer passo para mudar.
+    {% else %}
+      Passo {{ prontos + 1 if prontos < total else total }} de {{ total }}.
+      Enquanto não terminar, o painel mostra apenas o que a coleta de outra pessoa
+      já trouxe para as suas unidades.
+    {% endif %}
+  </div>
+
+  <div class="duas">
+    <nav class="trilha">
+      <ol>
+        {% for p in passos %}
+        <li class="{{ 'ok' if p.ok else '' }} {{ 'agora' if p.chave == ativo else '' }}">
+          <a href="?passo={{ p.chave }}">
+            <span class="n">{{ '✓' if p.ok else loop.index }}</span>
+            <span><b>{{ p.titulo }}</b><span>{{ p.sub }}</span></span>
+          </a>
+        </li>
+        {% endfor %}
+      </ol>
+    </nav>
+
+    <div>
+    {# ---------------------------------------------------------------- SISTEMA #}
+    {% if ativo == 'sistema' %}
+    <div class="cartao-passo">
+      <h2>De qual sistema vêm os processos?</h2>
+      <p class="lede">O SEI360 não substitui o SEI — ele entra no SEI, lê a sua carteira e
+      organiza. Escolha a instância em que você trabalha.</p>
+      <form method="post" action="/configuracao">
+        <input type="hidden" name="csrf" class="csrf"><input type="hidden" name="passo" value="sistema">
+        {% for chave, s in sistemas.items() %}
+        <label class="opcao {{ '' if s.disponivel else 'off' }}">
+          <input type="radio" name="sistema" value="{{ chave }}"
+                 {% if config.sistema == chave %}checked{% endif %}
+                 {% if not s.disponivel %}disabled{% endif %}>
+          <span><b>{{ s.nome }}{% if not s.disponivel %} — ainda não disponível{% endif %}</b>
+          <span>{{ s.descricao }}</span></span>
+        </label>
+        {% endfor %}
+        <div class="acoes-passo"><button class="bt forte" type="submit">Continuar</button></div>
+      </form>
+    </div>
+
+    {# ---------------------------------------------------------------- ACESSO #}
+    {% elif ativo == 'acesso' %}
+    <div class="cartao-passo">
+      <h2>Com qual conta a coleta entra no {{ sistema.nome }}?</h2>
+      <p class="lede">O SEI não tem chave de integração: o SEI360 entra como você entraria,
+      preenchendo login e senha na tela de acesso. Por isso ele precisa da sua senha — e por
+      isso importa decidir onde ela fica guardada.</p>
+
+      <form method="post" action="/configuracao">
+        <input type="hidden" name="csrf" class="csrf"><input type="hidden" name="passo" value="acesso">
+
+        {# UMA OPÇÃO NO CAMINHO, NÃO DUAS. O modo estação continua existindo —
+           recusar entregar a senha ao servidor é uma escolha legítima sobre a
+           senha da própria pessoa —, mas ele exige instalar um agente e rodar
+           comando de terminal, e apresentá-lo como igual fazia o assistente
+           pedir a um servidor da SESAB uma decisão de infraestrutura. Agora ele
+           é uma saída declarada, atrás de uma revelação, com o custo dito. #}
+        <label class="opcao">
+          <input type="radio" name="modo_coleta" value="servidor"
+                 {% if config.modo_coleta != 'estacao' %}checked{% endif %}
+                 {% if not cofre_disponivel %}disabled{% endif %}>
+          <span><b>Guardar no SEI360 {% if not cofre_disponivel %}— indisponível neste servidor{% endif %}</b>
+          <span>A coleta roda sozinha, mesmo com o seu computador desligado. A senha fica
+          cifrada (AES-256), e a chave que abre a cifra <b>não</b> fica no banco — cópia do
+          banco ou backup do volume não abre nada. Quem administra o servidor, porém, consegue
+          usar a sua credencial, e o SEI vai registrar esses acessos com o seu nome.</span></span>
+        </label>
+
+        <details style="margin:10px 0 4px" {% if config.modo_coleta == 'estacao' %}open{% endif %}>
+          <summary style="cursor:pointer;color:var(--ink-2);font-size:13px">
+            Prefiro que a minha senha não fique no servidor
+          </summary>
+          <label class="opcao" style="margin-top:9px">
+            <input type="radio" name="modo_coleta" value="estacao"
+                   {% if config.modo_coleta == 'estacao' %}checked{% endif %}>
+            <span><b>Guardar só no meu computador</b>
+            <span>A senha vai para o Gerenciador de Credenciais do Windows e nunca chega ao
+            servidor. Em troca, três coisas: a coleta só acontece com a sua máquina
+            <b>ligada</b>; é preciso <b>instalar um programa</b> nela e rodar dois comandos no
+            terminal; e isso normalmente exige <b>ajuda de quem cuida da TI</b>. Se você não
+            faz ideia de como fazer isso, a primeira opção é a certa para você.</span></span>
+          </label>
+        </details>
+
+        {% if not cofre_disponivel %}
+        <div class="aviso-cofre">
+          O cofre do servidor está desligado porque a chave mestra não foi configurada.
+          Quem administra resolve com <code>python cofre.py --nova-chave</code> e a variável
+          <code>SEI360_CHAVE_MESTRA</code>. Enquanto isso, só o modo “no meu computador” funciona —
+          e é assim de propósito: sem chave, guardar senha aqui seria guardar em texto puro.
+        </div>
+        {% endif %}
+
+        <div style="margin-top:20px">
+          <label for="sei_login">Seu login no {{ sistema.nome }}</label>
+          <input id="sei_login" name="sei_login" type="email" required style="max-width:420px"
+                 value="{{ config.sei_login or '' }}" autocomplete="off"
+                 placeholder="{{ sistema.exemplo_login }}">
+        </div>
+
+        <div id="campoSenha" style="margin-top:14px">
+          <label for="sei_senha">Sua senha do {{ sistema.nome }}</label>
+          <input id="sei_senha" name="sei_senha" type="password" style="max-width:420px"
+                 autocomplete="new-password"
+                 placeholder="{% if credencial %}guardada — preencha só para trocar{% else %}a senha com que você entra no SEI{% endif %}">
+          <div class="nota" style="margin-top:7px">
+            {% if credencial %}Guardada em {{ credencial.criado_em[:10]|replace('-','/') }},
+            {{ credencial.usos }} uso(s){% if credencial.ultimo_uso_em %},
+            último em {{ credencial.ultimo_uso_em[:16].replace('T',' ') }}{% endif %}.
+            Deixe em branco para manter.{% else %}
+            Esta é a senha do <b>SEI</b>, não a do SEI360. Ela nunca aparece em tela,
+            em log ou em exportação depois de guardada.{% endif %}
+          </div>
+        </div>
+
+        <div class="acoes-passo">
+          <button class="bt forte" type="submit">Salvar acesso</button>
+          {% if credencial %}
+          <button class="bt" type="submit" formaction="/configuracao/testar">Testar acesso agora</button>
+          <button class="bt risco" type="submit" formaction="/configuracao/esquecer">Apagar credencial</button>
+          {% endif %}
+        </div>
+      </form>
+
+      {% if teste %}
+      <div class="teste {{ 'ok' if teste.ok else 'ruim' }}">
+        <b>{{ teste.mensagem }}</b>
+        {% if teste.detalhe %}<div class="nota" style="margin-top:5px">{{ teste.detalhe }}</div>{% endif %}
+      </div>
+      {% endif %}
+
+      {% if config.modo_coleta == 'estacao' %}
+      <div class="teste">
+        <b>Falta parear o seu computador.</b>
+        <div class="nota" style="margin-top:6px">A coleta roda na sua máquina, com a sua
+        credencial. Gere o código, cole no agente e informe a senha lá — ela não passa por aqui.</div>
+        <form method="post" action="/configuracao/estacao" style="margin-top:10px;display:flex;gap:9px;flex-wrap:wrap">
+          <input type="hidden" name="csrf" class="csrf">
+          <input name="nome_estacao" style="max-width:260px"
+                 value="{{ agente.nome_estacao if agente else '' }}"
+                 placeholder="ESTACAO-{{ u.email.split('@')[0]|upper }}">
+          <button class="bt forte" type="submit">
+            {{ 'Gerar novo código' if agente else 'Gerar código de pareamento' }}</button>
+        </form>
+        {% if request.args.get('codigo') %}
+        <div class="cmd">python sei360_agente.py vincular --codigo {{ request.args.get('codigo') }} --servidor {{ request.host_url|trim('/') }}
+python sei360_agente.py instalar-tarefa</div>
+        <div class="nota">O código vale 2 horas e uma vez só. Ele autoriza aquela máquina a
+        publicar a sua coleta — <b>não</b> é a sua senha do SEI.</div>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+
+    {# ---------------------------------------------------------------- MESAS #}
+    {% elif ativo == 'mesas' %}
+    <div class="cartao-passo">
+      <h2>Quais mesas coletar?</h2>
+      <p class="lede">Mesa é a unidade em que o processo está aberto no SEI. A coleta percorre
+      uma por uma, então menos mesas significa coleta mais curta.</p>
+      <form method="post" action="/configuracao">
+        <input type="hidden" name="csrf" class="csrf"><input type="hidden" name="passo" value="mesas">
+        <label class="opcao">
+          <input type="radio" name="mesas_modo" value="todas" {% if config.mesas_modo == 'todas' %}checked{% endif %}>
+          <span><b>Todas as mesas da minha conta</b>
+          <span>A coleta descobre sozinha onde você está lotado. Se amanhã você for incluído
+          numa unidade nova, ela entra sem ninguém precisar lembrar de marcar aqui.</span></span>
+        </label>
+        <label class="opcao">
+          <input type="radio" name="mesas_modo" value="selecionadas" {% if config.mesas_modo == 'selecionadas' %}checked{% endif %}>
+          <span><b>Só as que eu escolher</b>
+          <span>Coleta mais rápida. O que ficar de fora não aparece no painel — e não há aviso
+          de que existe processo parado lá.</span></span>
+        </label>
+        {% if unidades %}
+        <div class="grade-mesas">
+          {% for un in unidades %}
+          <label><input type="checkbox" name="mesas" value="{{ un }}"
+            {% if un in config.mesas %}checked{% endif %}>{{ un }}</label>
+          {% endfor %}
+        </div>
+        <div class="nota" style="margin-top:10px">Estas são as mesas que o <b>seu</b> login
+        mostrou no SEI, da última vez que o acesso foi testado. Se você foi incluído numa
+        unidade nova, teste o acesso de novo em <a href="/configuracao?passo=acesso">Acesso</a>
+        e ela aparece aqui.</div>
+        {% else %}
+        {# Lista vazia aqui não é "ainda não coletamos": é "ainda não sabemos quais são as
+           suas". Quais mesas alguém alcança é propriedade da conta DELE no SEI, e só se
+           descobre entrando lá. Antes esta tela oferecia as unidades que a coleta de outra
+           pessoa tinha trazido — e por isso mostrava as mesmas seis para todo mundo. #}
+        <div class="nota" style="margin-top:12px">
+          <b>Ainda não sei quais são as suas mesas.</b> Elas não vêm de uma lista do sistema:
+          são as unidades que o <b>seu</b> login enxerga no SEI, e isso só se descobre
+          entrando lá com a sua credencial.
+          <div style="margin-top:8px"><a class="bt" href="/configuracao?passo=acesso">Testar
+            o acesso ao SEI</a></div>
+        </div>
+        {% endif %}
+        <div class="acoes-passo"><button class="bt forte" type="submit">Continuar</button></div>
+      </form>
+    </div>
+
+    {# ---------------------------------------------------------------- HORÁRIOS #}
+    {% elif ativo == 'horarios' %}
+    <div class="cartao-passo">
+      <h2>Quando a coleta roda?</h2>
+      <p class="lede">Uma coleta leva cerca de 15 minutos e faz milhares de requisições ao SEI
+      com o seu login. Como um processo fica em média 9 dias na mesma unidade, coletar de hora
+      em hora não mostraria nada de novo — por isso o teto de duas vezes por dia.</p>
+      <form method="post" action="/configuracao">
+        <input type="hidden" name="csrf" class="csrf"><input type="hidden" name="passo" value="horarios">
+        <label for="janelas">Horários (até dois, formato HH:MM)</label>
+        <input id="janelas" name="janelas" style="max-width:280px"
+               value="{{ config.janelas|join(', ') }}" placeholder="07:30, 19:00">
+        <div style="margin-top:14px"><label for="dias">Dias</label>
+          <select id="dias" name="dias" style="max-width:420px">
+            <option value="uteis" {% if config.dias == 'uteis' %}selected{% endif %}>Somente dias úteis (feriados da Bahia inclusos)</option>
+            <option value="todos" {% if config.dias == 'todos' %}selected{% endif %}>Todos os dias</option>
+          </select></div>
+        <div class="nota" style="margin-top:16px">
+          <b>Tolerância de 90 minutos:</b> se a coleta não puder rodar às 07:30, ela ainda
+          acontece até as 09:00. Passou disso, a janela é registrada como perdida e aparece
+          para você — coleta que não aconteceu deixa de ser invisível.
+          {% if config.modo_coleta != 'estacao' %}
+          <br><br><b>Sobre o horário:</b> a coleta usa a sua conta do SEI e troca a unidade
+          ativa da sessão. Se você estiver trabalhando no SEI naquele momento, vai ver a
+          unidade mudar sozinha — fora do expediente é mais tranquilo.
+          {% endif %}
+        </div>
+        <div class="acoes-passo"><button class="bt forte" type="submit">Concluir</button></div>
+      </form>
+    </div>
+
+    {# ---------------------------------------------------------------- RESUMO #}
+    {% else %}
+    <div class="cartao-passo">
+      <h2>Tudo pronto</h2>
+      <p class="lede">É isto que vai acontecer, sem você precisar fazer mais nada.</p>
+      <dl class="resumo">
+        <dt>Sistema</dt><dd>{{ sistema.nome }}</dd>
+        <dt>Entra como</dt><dd class="mono">{{ config.sei_login }}</dd>
+        <dt>Senha</dt><dd>
+          {% if config.modo_coleta == 'estacao' %}no seu computador, fora do servidor
+          {% else %}cifrada no SEI360{% if credencial %} desde {{ credencial.criado_em[:10]|replace('-','/') }}{% endif %}{% endif %}</dd>
+        <dt>Mesas</dt><dd>{{ 'todas as da conta' if config.mesas_modo == 'todas' else config.mesas|join(', ') }}</dd>
+        <dt>Horários</dt><dd class="mono">{{ config.janelas|join(', ') }} ·
+          {{ 'dias úteis' if config.dias == 'uteis' else 'todos os dias' }}</dd>
+        <dt>Última coleta</dt><dd>
+          {% if ultima_execucao %}{{ ultima_execucao.estado }} em
+            {{ (ultima_execucao.terminado_em or ultima_execucao.entregue_em or '')[:16].replace('T',' ') }}
+          {% else %}ainda não houve{% endif %}</dd>
+      </dl>
+      <div class="acoes-passo">
+        <a class="bt forte" href="/">Ir para o painel</a>
+        {% if credencial %}
+        <form method="post" action="/configuracao/testar" style="display:inline">
+          <input type="hidden" name="csrf" class="csrf">
+          <button class="bt" type="submit">Testar acesso agora</button></form>
+        {% endif %}
+        <a class="bt" href="?passo=acesso">Trocar senha</a>
+      </div>
+      {% if teste %}
+      <div class="teste {{ 'ok' if teste.ok else 'ruim' }}">
+        <b>{{ teste.mensagem }}</b>
+        {% if teste.detalhe %}<div class="nota" style="margin-top:5px">{{ teste.detalhe }}</div>{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+    </div>
+  </div>
+</div>
+
+<script>
+const c=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+document.querySelectorAll('.csrf').forEach(i=>i.value=c);
+// Marcar uma mesa e esquecer de trocar o modo é o erro mais fácil desta tela.
+// Corrigir antes de o servidor recusar é mais barato que recusar.
+document.querySelectorAll('input[name="mesas"]').forEach(cb=>cb.addEventListener('change',()=>{
+  if([...document.querySelectorAll('input[name="mesas"]')].some(x=>x.checked)){
+    const r=document.querySelector('input[name="mesas_modo"][value="selecionadas"]');
+    if(r) r.checked=true;
+  }
+}));
+// O campo de senha só faz sentido quando a senha vai ficar aqui.
+const sincSenha=()=>{
+  const est=document.querySelector('input[name="modo_coleta"][value="estacao"]');
+  const campo=document.getElementById('campoSenha');
+  if(est&&campo) campo.style.display=est.checked?'none':'';
+};
+document.querySelectorAll('input[name="modo_coleta"]').forEach(r=>r.addEventListener('change',sincSenha));
+sincSenha();
+</script>
+</body></html>

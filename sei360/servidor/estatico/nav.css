@@ -1,0 +1,151 @@
+/* ===========================================================================
+   Navegação única e telas de relatório.
+   Arquivo separado do sei360.css de propósito: aquele é a base (tokens, forma,
+   tipografia) e muda pouco; este é a camada de navegação e relatório, que ainda
+   vai mexer bastante. Misturar faria toda mudança de menu tocar no arquivo de
+   que todas as telas dependem.
+   =========================================================================== */
+
+/* ---------------- navegação ----------------
+   Uma barra só, em todas as telas de serviço, com as portas na mesma ordem.
+   Antes cada tela tinha a sua, e "gerenciar usuários" só existia dentro de
+   /admin: quem não soubesse a URL simplesmente não chegava lá. */
+/* A barra de topo `.nav-topo` foi substituída pelo MENU LATERAL
+   (`lateral.css` + `templates/_nav.html`). O motivo está escrito lá:
+   o painel já tem uma `.barra` sticky em top:0, e duas barras
+   disputando o topo deslocam o cabeçalho de colunas e o rail. */
+
+.procedencia{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;
+  padding:11px 15px;border-radius:var(--r2);border:1px solid var(--rule);
+  background:var(--card);font-size:12px;margin-bottom:18px}
+.procedencia.alerta{border-color:var(--espera);background:var(--espera-soft)}
+.procedencia b{font-family:var(--mono);font-size:11.5px}
+
+/* Quem rola é a TABELA. Sem isto ela empurrava o documento inteiro para a
+   horizontal: medido em 882px, tabela de 724px num contêiner de 611px
+   levava a página a 1002px, deslocando cabeçalho e moldura junto.
+   `overscroll-behavior-x` impede que o gesto de rolar a tabela até o fim
+   vire "voltar página" no trackpad. */
+.tab-rola{overflow-x:auto;overscroll-behavior-x:contain;
+  border-radius:var(--r2)}
+/* max-content: a tabela toma a largura que o conteudo dela pede e o contentor
+   rola. Com um minimo CHUMBADO (640px) as colunas eram espremidas e o texto de
+   procedencia quebrava em quatro linhas — a linha ia a 105px de altura e a
+   tabela virava uma escada. O numero certo depende do relatorio, entao quem
+   decide e o conteudo. */
+.tab-rola .tab-rel{min-width:max-content}
+.tab-rel{width:100%;border-collapse:collapse;background:var(--card);font-size:13.5px;
+  border:1px solid var(--rule);border-radius:var(--r2);overflow:hidden}
+.tab-rel th{font-family:var(--rotulo);font-variation-settings:"wght" 600,"wdth" 87;
+  font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2);
+  text-align:left;padding:11px 14px;background:var(--sunk);border-bottom:1px solid var(--rule)}
+.tab-rel td{padding:10px 14px;border-bottom:1px solid var(--rule);vertical-align:middle}
+.tab-rel tr:last-child td{border-bottom:0}
+.tab-rel tbody tr:hover td{background:var(--accent-soft)}
+.tab-rel td.num{font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12.5px}
+.barra-prop{height:6px;background:var(--sunk);border-radius:99px;overflow:hidden;min-width:80px}
+.barra-prop i{display:block;height:100%;background:var(--accent);border-radius:99px}
+.rel-nota{font-size:12.5px;color:var(--ink-3);line-height:1.55;margin-top:14px;
+  border-left:2px solid var(--rule);padding-left:12px}
+.rel-lado{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:18px}
+
+/* Numeros que a tabela nao entrega de graca: "241 unidades de destino" so
+   aparece se alguem contar as linhas. Ficam ACIMA da tabela porque sao a
+   resposta; a tabela e a demonstracao. */
+.rel-destaques{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.rel-dest{flex:1 1 170px;background:var(--card);border:1px solid var(--rule);
+  border-radius:var(--r2);padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.rel-dest b{font-family:var(--mono);font-size:22px;line-height:1.1;
+  font-variant-numeric:tabular-nums}
+.rel-dest span{font-family:var(--rotulo);font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-3)}
+
+/* ---------------- catálogo de relatórios ----------------
+   Estas três classes eram usadas por `relatorios.html` e não existiam em folha
+   nenhuma: `.rel-grade` computava `display:block` e `.rel-cartao`, `display:inline`
+   com filhos de bloco dentro. A segunda porta do menu era a tela mais crua do
+   sistema — catorze links sublinhados empilhados numa coluna. */
+.rel-grade{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));
+  gap:12px;margin-bottom:26px}
+.rel-cartao{display:flex;flex-direction:column;gap:5px;padding:15px 17px;
+  background:var(--card);border:1px solid var(--rule);border-radius:var(--r2);
+  text-decoration:none;color:inherit;transition:border-color .15s,transform .15s}
+.rel-cartao:hover{border-color:var(--accent);transform:translateY(-1px)}
+.rel-cartao h3{margin:0;font-family:var(--display);font-size:16px;font-weight:600;
+  line-height:1.25;color:var(--ink)}
+.rel-cartao p{margin:0;font-size:12.5px;color:var(--ink-2);line-height:1.45}
+/* Destaque é do CARTÃO, não de um selo solto: o relatório em destaque é o que
+   responde a pergunta que o sistema existe para responder. */
+.rel-cartao.destaque{border-color:var(--accent);background:var(--accent-soft)}
+/* Inviável não some da tela: dizer "não dá, e por quê" é mais útil que deixar a
+   pessoa procurar o relatório que não existe. Mas não pode parecer clicável. */
+.rel-cartao.inviavel{opacity:.55;pointer-events:none}
+.rel-cartao.inviavel h3::after{content:' — dado insuficiente';font-family:var(--rotulo);
+  font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--espera)}
+
+/* Cobertura de cada campo, medida. É o que impede alguém de defender numa
+   reunião um número construído sobre metade da base sem saber. */
+.cob{display:flex;flex-wrap:wrap;gap:5px;margin-top:2px}
+.cob span{font-family:var(--mono);font-size:10px;letter-spacing:.02em;
+  padding:2px 7px;border-radius:99px;background:var(--sunk);color:var(--ink-3);
+  border:1px solid var(--rule);white-space:nowrap}
+.cob span.fraca{color:var(--espera);border-color:var(--espera)}
+
+
+/* ---------------- gráfico do relatório ----------------
+   Barras horizontais em grade de três colunas: rótulo, trilho, número. A grade
+   é o que mantém todos os trilhos começando na MESMA coluna — com `flex` o
+   início de cada barra andava conforme o tamanho do nome, e comparar
+   comprimentos deixava de funcionar, que é a única coisa que uma barra faz.
+
+   O número fica à direita, em tabular, com a fatia em cima: quem quer o valor
+   exato não precisa voltar à tabela, e quem quer a proporção lê a barra. */
+.rel-graf{margin:0 0 22px;padding:16px 18px 14px;background:var(--card);
+  border:1px solid var(--rule);border-radius:var(--r2)}
+.rel-graf figcaption{font-family:var(--rotulo);font-size:10px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-3);margin-bottom:12px}
+.rel-graf figcaption.graf-corte{margin:12px 0 0;letter-spacing:0;text-transform:none;
+  font-size:11.5px;line-height:1.5}
+.graf-barras{display:flex;flex-direction:column;gap:7px}
+.graf-linha{display:grid;grid-template-columns:minmax(90px,220px) 1fr 86px;
+  gap:12px;align-items:center}
+.graf-rot{font-size:12.5px;color:var(--ink-2);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;text-align:right}
+.graf-trilho{display:block;height:16px;background:var(--sunk);border-radius:4px;
+  overflow:hidden}
+.graf-trilho i{display:block;height:100%;border-radius:4px;
+  background:linear-gradient(90deg,var(--accent),var(--accent-2));
+  min-width:2px}
+.graf-val{font-family:var(--mono);font-size:12.5px;color:var(--ink);
+  display:flex;flex-direction:column;line-height:1.15}
+.graf-val em{font-style:normal;font-size:10px;color:var(--ink-3)}
+
+/* Abaixo de 640px o rótulo sai de cima da barra e vira linha própria: 90px de
+   nome de unidade não diz qual unidade é. */
+@media(max-width:640px){
+  .graf-linha{grid-template-columns:1fr 70px;grid-template-areas:'rot rot' 'trilho val'}
+  .graf-rot{grid-area:rot;text-align:left;white-space:normal}
+  .graf-trilho{grid-area:trilho}
+  .graf-val{grid-area:val}
+}
+
+/* ---------------- impressão ----------------
+   O painel já tinha um @media print cuidado; as telas de serviço, nenhum. Elas
+   herdam o tema do painel pelo mesmo localStorage, e o padrão dele é o ESCURO:
+   o navegador suprime o FUNDO na impressão, mas não o texto claro. O relatório
+   saía branco no branco. */
+@media print{
+  :root{ color-scheme: light }
+  html, body{ background:#fff !important; color:#111 !important; margin-left:0 !important }
+  body::after{ display:none !important }        /* a película de grão, z-index 999 */
+  .bt, .rel-lado button, .moldura{ display:none !important }
+  .tab-rel{ border-color:#999 !important }
+  .tab-rel th{ background:#eee !important; color:#000 !important }
+  .tab-rel td{ color:#111 !important; border-color:#ccc !important }
+  .graf-trilho i{background:#555 !important}
+  .graf-trilho{background:#eee !important}
+  .rel-nota, .procedencia, .rel-dest, .rel-graf{ color:#333 !important; background:#fff !important;
+    border-color:#999 !important }
+  .rel-dest b{ color:#000 !important }
+  a{ color:#111 !important; text-decoration:none }
+}

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Usuários</title>
+{% include '_cabeca.html' %}
+<style>
+.filtros{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px}
+.filtros a{text-decoration:none;font-size:12.5px;padding:6px 12px;border-radius:99px;
+  border:1px solid var(--rule);color:var(--ink-2);background:var(--card);display:inline-flex;
+  align-items:center;gap:7px}
+.filtros a:hover{border-color:var(--accent)}
+.filtros a.on{background:var(--accent);border-color:var(--accent);color:var(--paper)}
+.filtros a .c{font-family:var(--mono);font-size:11px;background:var(--sunk);color:var(--ink-2);
+  padding:1px 6px;border-radius:99px}
+.filtros a.on .c{background:color-mix(in srgb,var(--paper) 25%,transparent);color:var(--paper)}
+.filtros a.zero{opacity:.45}
+.busca-linha{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+.lote{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:11px 14px;
+  background:var(--sunk);border:1px solid var(--rule);border-radius:var(--r);margin-bottom:14px}
+.lote.escondido{display:none}
+.pag{display:flex;gap:6px;align-items:center;margin-top:16px;flex-wrap:wrap}
+.pag a{text-decoration:none;padding:6px 11px;border:1px solid var(--rule);border-radius:var(--r);
+  color:var(--ink-2);font-size:12.5px}
+.pag a.on{background:var(--accent);border-color:var(--accent);color:var(--paper)}
+</style>
+</head><body>
+
+{% with pagina='usuarios' %}{% include '_nav.html' %}{% endwith %}
+
+<div class="folha" style="max-width:1240px">
+
+  {% if aviso %}<div class="destaque">{{ aviso }}</div>{% endif %}
+  {% if provisoria %}
+  <div class="destaque"><b>Senha provisória de {{ novo }}:</b> <code>{{ provisoria }}</code>
+    <div style="font-size:12px;color:var(--ink-3);margin-top:4px">Aparece uma única vez, aqui.</div>
+  </div>
+  {% endif %}
+
+  {% if provisorias %}
+  {# APARECEM UMA VEZ SÓ. Não vão para a URL nem para o log — quem sair desta
+     tela sem copiar precisa gerar de novo, e é assim que deve ser. #}
+  <div class="destaque">
+    <b>{{ provisorias|length }} senha(s) provisória(s) — copie agora</b>
+    <div style="font-size:12px;color:var(--ink-3);margin:4px 0 10px">
+      Aparecem <b>uma única vez</b>, aqui. Cada pessoa é obrigada a trocar no
+      primeiro acesso. Se você sair desta tela sem copiar, gere de novo em
+      “Nova senha” na ficha de cada uma.
+    </div>
+    <div class="tab-rola">
+      <table class="tab" id="tabProv">
+        <thead><tr><th>Conta</th><th>Senha provisória</th></tr></thead>
+        <tbody>
+        {% for p in provisorias %}
+          <tr><td>{{ p.email }}</td><td><code style="user-select:all">{{ p.senha }}</code></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <button class="bt" type="button" id="btCopiar" style="margin-top:10px">Copiar tudo</button>
+    <script>
+    document.getElementById('btCopiar').onclick = () => {
+      const linhas = [...document.querySelectorAll('#tabProv tbody tr')]
+        .map(tr => [...tr.cells].map(c => c.textContent.trim()).join('\t')).join('\n');
+      navigator.clipboard.writeText(linhas).then(
+        () => { document.getElementById('btCopiar').textContent = 'copiado'; },
+        () => { document.getElementById('btCopiar').textContent = 'não consegui copiar'; });
+    };
+    </script>
+  </div>
+  {% endif %}
+
+  <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:4px">
+    <h1 style="font-family:var(--display);font-size:27px;margin:0;font-weight:600">Usuários</h1>
+    <a class="bt" href="/admin">← Operação</a>
+  </div>
+  <div style="color:var(--ink-2);margin-bottom:18px;max-width:76ch">
+    Quem entra no SEI360 e o que cada um enxerga. O <b>vínculo de unidade</b> é a decisão que
+    define a fronteira: a pessoa vê a carteira das unidades vinculadas a ela, e nada além.
+    Papel <b>admin</b> não recebe carteira por padrão — administrar não é ler.
+  </div>
+
+  <div class="filtros">
+    {# `spec[0]`, e não desempacotar em par: alguns filtros trazem um terceiro
+       item marcando que a condição pede parâmetro — é o caso de "Bloqueados
+       agora", que compara contra o agora no mesmo formato em que a data foi
+       gravada. Desempacotar em `(rotulo, _)` quebrava a tela inteira com 500
+       assim que um filtro ganhasse o terceiro item. #}
+    {% for chave, spec in filtros.items() %}
+    <a class="{{ 'on' if filtro == chave }} {{ 'zero' if not contagens[chave] }}"
+       href="?f={{ chave }}{% if busca %}&q={{ busca }}{% endif %}">
+      {{ spec[0] }} <span class="c">{{ contagens[chave] }}</span></a>
+    {% endfor %}
+  </div>
+
+  <form class="busca-linha" method="get">
+    <input type="hidden" name="f" value="{{ filtro }}">
+    <input name="q" value="{{ busca }}" placeholder="Buscar por e-mail ou nome…" style="max-width:340px">
+    <button class="bt" type="submit">Buscar</button>
+    {% if busca %}<a class="bt" href="?f={{ filtro }}">Limpar</a>{% endif %}
+    <span style="margin-left:auto;color:var(--ink-3);font-size:12.5px">
+      {{ total }} conta(s){% if paginas > 1 %} · página {{ pagina }} de {{ paginas }}{% endif %}</span>
+  </form>
+
+  {# O <form> continua envolvendo a tabela para todo mundo — ele É a tabela. O que
+     depende de papel são os CONTROLES; escondendo o form inteiro, a lista sumia
+     e o gestor via a tela vazia, que é a leitura oposta da pretendida. #}
+  <form method="post" action="/admin/usuarios/lote" id="formLote">
+    <input type="hidden" name="csrf" class="csrf">
+
+    {# Ação em lote existe por um motivo concreto: são 57 contas semeadas da
+       própria carteira, inativas. Aprovar uma a uma é trabalho que ninguém faz,
+       e o resultado seria o sistema ficar com um usuário só. #}
+    {% if u.papel == 'admin' %}
+    <div class="lote escondido" id="barraLote">
+      <b id="contaSel">0</b> selecionada(s)
+      <button class="bt" type="submit" name="acao" value="ativar">Ativar</button>
+      <button class="bt risco" type="submit" name="acao" value="desativar">Desativar</button>
+      <span style="margin-left:10px">Vincular unidade:</span>
+      <select name="unidade" style="max-width:280px">
+        {% for un in unidades %}<option value="{{ un }}">{{ un }}</option>{% endfor %}
+      </select>
+      <button class="bt" type="submit" name="acao" value="vincular">Aplicar</button>
+    </div>
+    {% endif %}
+
+    <table class="grade">
+      <tr>
+        <th style="width:28px"><input type="checkbox" id="todos" title="Marcar todos desta página"></th>
+        <th>Conta</th><th>Papel</th><th>Unidades</th><th>Situação</th><th>Último acesso</th><th></th>
+      </tr>
+      {% for x in usuarios %}
+      <tr>
+        <td>{% if u.papel == 'admin' and x.id != u.usuario_id %}
+          <input type="checkbox" name="ids" value="{{ x.id }}" class="sel">{% endif %}</td>
+        <td>
+          <a href="/admin/usuarios/{{ x.id }}" style="font-family:var(--mono);font-size:12px">{{ x.email }}</a>
+          {% if x.nome %}<div style="font-size:11.5px;color:var(--ink-3)">{{ x.nome }}</div>{% endif %}
+        </td>
+        <td><span class="tag">{{ x.papel }}</span></td>
+        <td class="mono" style="font-size:11.5px">
+          {% if x.n_unidades %}{{ x.n_unidades }}{% else %}
+          <span style="color:var(--ink-3)">nenhuma</span>{% endif %}</td>
+        <td>
+          {% if not x.ativo %}<span class="tag al">inativo</span>
+          {% elif not x.senha_hash %}<span class="tag al">sem senha</span>
+          {% elif not x.senha_trocada_em %}<span class="tag es">provisória</span>
+          {% else %}<span class="tag ok">ativo</span>{% endif %}
+          {% if x.bloqueado_ate %}<span class="tag al">bloqueado</span>{% endif %}
+          {% if x.origem == 'auto_snapshot' and not x.ativo %}
+          <div style="font-size:11px;color:var(--ink-3);margin-top:2px">veio da carteira</div>{% endif %}
+        </td>
+        <td class="mono" style="font-size:11px">{{ (x.ultimo_login_em or '—')[:16].replace('T',' ') }}</td>
+        <td><a class="bt" href="/admin/usuarios/{{ x.id }}">Abrir</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="vazio-msg">Nenhuma conta neste filtro.</td></tr>
+      {% endfor %}
+    </table>
+  </form>
+
+  {% if paginas > 1 %}
+  <div class="pag">
+    {% for n in range(1, paginas + 1) %}
+      {% if n <= 3 or n > paginas - 2 or (n - pagina)|abs <= 1 %}
+      <a class="{{ 'on' if n == pagina }}" href="?f={{ filtro }}&q={{ busca }}&p={{ n }}">{{ n }}</a>
+      {% elif n == 4 and pagina > 5 %}<span style="color:var(--ink-3)">…</span>{% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="cartao" style="margin-top:22px">
+    {% if u.papel == 'admin' %}<form method="post" action="/admin/usuario">
+      <input type="hidden" name="csrf" class="csrf"><input type="hidden" name="acao" value="criar">
+      <fieldset><legend>Nova conta</legend>
+        <div class="grade2">
+          <div><label>E-mail institucional</label><input name="email" type="email" required></div>
+          <div><label>Nome</label><input name="nome" type="text"></div>
+        </div>
+        <div style="margin:12px 0 8px"><label>Papel</label>
+          <select name="papel">
+            <option value="servidor">servidor — lê a carteira das unidades vinculadas</option>
+            <option value="gestor">gestor — idem, e reconhece alertas</option>
+            <option value="admin">admin — administra; não lê carteira sem vínculo</option>
+          </select></div>
+        <label>Unidades</label>
+        <div class="chips-un">
+          {% for un in unidades %}
+          <label><input type="checkbox" name="unidades" value="{{ un }}">{{ un.split('/')[-1] }}</label>
+          {% endfor %}
+        </div>
+        <div style="margin-top:14px"><button class="bt forte" type="submit">Criar conta</button></div>
+      </fieldset>
+    </form>{% endif %}
+  </div>
+</div>
+
+<script>
+const c=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+document.querySelectorAll('.csrf').forEach(i=>i.value=c);
+const sel=()=>[...document.querySelectorAll('.sel')].filter(x=>x.checked);
+const barra=document.getElementById('barraLote'), conta=document.getElementById('contaSel');
+const sincroniza=()=>{const n=sel().length;conta.textContent=n;barra.classList.toggle('escondido',!n)};
+document.querySelectorAll('.sel').forEach(x=>x.addEventListener('change',sincroniza));
+document.getElementById('todos').addEventListener('change',e=>{
+  document.querySelectorAll('.sel').forEach(x=>x.checked=e.target.checked);sincroniza()});
+sincroniza();
+</script>
+</body></html>

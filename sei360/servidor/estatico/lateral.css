@@ -1,0 +1,236 @@
+/* =========================================================================
+   MENU LATERAL — a moldura de navegação do SEI360.
+
+   Substitui a barra de topo. O motivo não é gosto: o painel é a tela inicial e
+   a mais usada, e era a ÚNICA sem navegação nenhuma — quem entrava nele só saía
+   pelo dropdown da conta ou pelo link "configure a sua coleta". Barra de topo no
+   painel também não servia: ele já tem uma `.barra` sticky em top:0, e duas
+   barras disputando o topo deslocam o cabeçalho de colunas e o rail de filtros.
+   Na lateral não há disputa nenhuma.
+
+   ARMADILHA QUE ESTE ARQUIVO EVITA DE PROPÓSITO
+   ---------------------------------------------
+   O desenho de referência monta o shell com `display:flex; height:100vh;
+   overflow:hidden`. Copiar isso quebraria TODO o `position:sticky` do painel —
+   `.rail`, `.cols` e `.grupo-cab` —, porque ancestral com overflow vira o
+   contêiner de rolagem e o sticky passa a grudar nele, não na janela. O painel
+   já traz um comentário sobre isso no CSS dele, e o defeito é silencioso: nada
+   quebra, os elementos só param de grudar.
+   Por isso aqui: a lateral é `position:fixed` e o conteúdo ganha `margin-left`.
+   A rolagem continua sendo a do documento, e todo sticky continua valendo.
+
+   A lateral é SEMPRE escura, nos dois temas. É a moldura; o papel é o conteúdo.
+   Isso também resolve, sem escolher um vencedor, o fato de o painel e as telas
+   de serviço terem tipografias e acentos diferentes — a moldura é uma só.
+   ========================================================================= */
+
+/* SEM ANIMAÇÃO no recolhimento, e por medida, não por preguiça.
+   Transicionar `width`/`margin-left` derivadas de `var()` prende a propriedade no
+   valor antigo: com `--lat-w` em 256px a moldura computava 68px, e bastava
+   desligar a transição para ela saltar ao valor certo. Registrar `--lat-w` com
+   `@property` e animar a variável apenas moveu o congelamento para a variável.
+   Nos dois casos o sintoma é o mesmo, e é o pior que uma interface pode ter: a
+   pessoa clica em "Expandir menu", o rótulo do botão muda, e nada se mexe.
+   Uma deslizada de 300ms não paga um controle que mente. */
+:root{
+  --lat-w: 256px;
+  --lat-fundo: #0f172a;
+  --lat-linha: rgba(51,65,85,.6);
+  --lat-texto: #94a3b8;   /* 6,96:1 sobre o fundo — rótulo em repouso */
+  /* O subtítulo estava em #475569: 2,36:1, quase metade do mínimo AA de 4,5:1
+     para texto. Justamente o texto que `portas.py` defende como não-enfeite era
+     o primeiro a sumir em tela de brilho baixo ou projetor. */
+  --lat-fraco: #8496ad;   /* 5,91:1 */
+  --lat-icone: #64748b;   /* SÓ traço de ícone: 3,75:1 passa em não-texto, não em texto */
+  --lat-texto-2: #94a3b8; /* texto secundário que antes reusava a cor de ícone */
+  --lat-ciano: #22d3ee;
+}
+:root[data-lateral="recolhido"]{ --lat-w: 68px; }
+
+/* Sem `transition` aqui: quem anima é `--lat-w` lá em cima. Transicionar
+   `margin-left` derivada de var() reproduziria o mesmo congelamento. */
+body{ margin-left: var(--lat-w); }
+
+/* `.moldura`, e NÃO `.lateral`: `sei360.css` já usava `.lateral` para a coluna
+   do split-screen da tela de acesso — com padding de 48px, borda à direita e
+   `display:none` abaixo de 900px. As telas de serviço carregam as duas folhas,
+   e este menu não redeclara padding: a regra antiga vencia a cascata e a barra
+   ficava com 105px de largura e itens de 18px em /relatorios, /alertas e
+   /configuracao. Dois componentes diferentes não podem ter o mesmo nome. */
+.moldura{
+  position: fixed; inset: 0 auto 0 0; width: var(--lat-w);
+  /* ABAIXO do véu da gaveta (z-index 55) e da gaveta (60), e ACIMA da
+     `.barra` sticky do painel (30). A moldura não é modal e não pode ficar
+     por cima de um: com 90, abrir a ficha de um processo escurecia tudo
+     menos a coluna esquerda, e clicar "fora" pela esquerda não fechava a
+     ficha — acertava o menu, a poucos pixels do "Sair" em vermelho. */
+  z-index: 50;
+  display: flex; flex-direction: column;
+  background: var(--lat-fundo); color: #fff;
+  /* O fio da direita não é enfeite: no tema ESCURO a moldura (#0f172a) e o papel
+     (#0A0E27) ficam a 1,06 de razão — sem ele, a moldura dissolve na página e
+     deixa de ser moldura. No claro ele apenas assenta a borda. */
+  border-right: 1px solid rgba(148,163,184,.16);
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;                 /* aqui pode: a lateral não contém sticky */
+}
+
+/* ---------- marca ---------- */
+.lat-marca{
+  display: flex; align-items: center; gap: 12px; padding: 20px 16px;
+  border-bottom: 1px solid var(--lat-linha); text-decoration: none; color: inherit;
+  flex: 0 0 auto;
+}
+:root[data-lateral="recolhido"] .lat-marca{ justify-content: center; padding: 20px 8px; }
+/* A MARCA, e não um quadradinho com degradê. O quadrado era o recurso do painel
+   de leitos que serviu de referência; a marca deste produto é o olho, e ela tem
+   proporção 44:32 — enfiá-la num quadrado de 36px a espremeria. Fica solta, na
+   cor da marca, como na tela de acesso. */
+.lat-marca-icone{
+  flex: 0 0 auto; width: 44px; height: 32px; display: inline-flex;
+  color: var(--lat-ciano);
+  filter: drop-shadow(0 0 7px rgba(34,211,238,.35));
+}
+.lat-marca-icone svg{ width: 100%; height: 100%; display: block }
+/* O "IA" da íris é VAZADO: ele toma a cor do fundo da moldura, não uma cor
+   própria. Assim continua legível se a moldura mudar de tom, e não vira um
+   terceiro tom no meio da marca. */
+.lat-marca-icone .lat-ia{ fill: var(--lat-fundo); font-family: 'Space Grotesk', system-ui, sans-serif }
+/* Recolhida, a moldura tem 68px e sobram 52 de área útil: a marca encolhe para
+   caber inteira em vez de ser cortada. */
+:root[data-lateral="recolhido"] .lat-marca-icone{ width: 38px; height: 28px }
+.lat-marca-txt{ min-width: 0 }
+.lat-marca-txt b{ display: block; font-size: 14px; font-weight: 700; line-height: 1.25;
+  letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.lat-marca-txt i{ display: block; font-style: normal; font-size: 11.5px; font-weight: 500;
+  color: var(--lat-ciano); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+
+/* ---------- portas ---------- */
+.lat-nav{ flex: 1 1 auto; padding: 14px 8px; overflow-y: auto; overscroll-behavior: contain }
+.lat-nav::-webkit-scrollbar{ width: 8px }
+.lat-nav::-webkit-scrollbar-thumb{ background: #1e293b; border-radius: 8px }
+.lat-nav > * + *{ margin-top: 4px }
+
+.lat-i{
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 11px 12px; border: 1px solid transparent; border-radius: 12px;
+  color: var(--lat-texto); text-decoration: none; text-align: left;
+  transition: background .15s, color .15s, border-color .15s;
+}
+:root[data-lateral="recolhido"] .lat-i{ justify-content: center; padding: 11px 8px }
+.lat-i:hover{ background: rgba(30,41,59,.7); color: #fff }
+.lat-i svg{ flex: 0 0 auto; width: 20px; height: 20px; color: var(--lat-icone);
+  transition: color .15s }
+.lat-i:hover svg{ color: #cbd5e1 }
+.lat-i-txt{ min-width: 0 }
+.lat-i-txt b{ display: block; font-size: 13.5px; font-weight: 600; line-height: 1.25;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.lat-i-txt i{ display: block; font-style: normal; font-size: 10px; line-height: 1.45;
+  margin-top: 2px; color: var(--lat-fraco);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.lat-i:hover .lat-i-txt i{ color: #a8b6c8 }   /* nunca abaixo do repouso */
+
+/* Item ATIVO: a pessoa precisa saber onde está sem ler. Fundo, borda, ícone e
+   subtítulo mudam juntos — cor sozinha não é sinal suficiente para quem não a
+   distingue. A barrinha à direita é o reforço não-cromático. */
+.lat-i.on{
+  background: linear-gradient(90deg, rgba(8,145,178,.3), rgba(37,99,235,.2));
+  border-color: rgba(6,182,212,.3);
+}
+.lat-i.on svg{ color: var(--lat-ciano) }
+.lat-i.on .lat-i-txt b{ color: #fff }
+.lat-i.on .lat-i-txt i{ color: rgba(34,211,238,.8) }
+.lat-i-marca{ margin-left: auto; flex: 0 0 auto; width: 5px; height: 20px;
+  border-radius: 99px; background: var(--lat-ciano) }
+:root[data-lateral="recolhido"] .lat-i-marca{ display: none }
+
+/* ---------- rodapé ---------- */
+.lat-pe{ flex: 0 0 auto; padding: 12px 8px; border-top: 1px solid var(--lat-linha) }
+.lat-pe > * + *{ margin-top: 4px }
+
+.lat-quem{ display: flex; align-items: center; gap: 9px; padding: 9px 12px;
+  border-radius: 12px; background: rgba(30,41,59,.5) }
+.lat-av{ flex: 0 0 auto; width: 26px; height: 26px; border-radius: 99px;
+  background: #0891b2; display: grid; place-items: center;
+  font-family: Consolas, ui-monospace, monospace; font-size: 10.5px; font-weight: 600;
+  color: #fff; letter-spacing: .02em }
+.lat-quem-txt{ min-width: 0 }
+.lat-quem-txt b{ display: block; font-size: 11.5px; font-weight: 600; color: #e2e8f0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.lat-quem-txt i{ display: block; font-style: normal; font-size: 9.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--lat-texto-2) }
+
+.lat-bt{
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 10px 12px; border: 0; border-radius: 12px; background: none; cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 500; text-align: left;
+  transition: background .15s, color .15s;
+}
+:root[data-lateral="recolhido"] .lat-bt{ justify-content: center }
+.lat-bt svg{ flex: 0 0 auto; width: 17px; height: 17px }
+.lat-sair{ color: #f87171 }
+.lat-sair:hover{ color: #fff; background: rgba(220,38,38,.2) }
+.lat-dobrar{ color: var(--lat-texto-2) }
+.lat-dobrar:hover{ color: #fff; background: rgba(30,41,59,.7) }
+:root[data-lateral="recolhido"] .lat-dobrar svg{ transform: scaleX(-1) }
+
+:root[data-lateral="recolhido"] .lat-marca-txt,
+:root[data-lateral="recolhido"] .lat-i-txt,
+/* O que some é o TEXTO de quem está logado, não o bloco inteiro. Escondendo
+   `.lat-quem`, a moldura recolhida apagava a única indicação de conta que existe
+   nas telas de serviço — a barra de topo, que mostrava o e-mail, saiu. O avatar
+   de 26px com as iniciais cabe nos 68px e o e-mail continua no `title`. */
+:root[data-lateral="recolhido"] .lat-quem-txt,
+:root[data-lateral="recolhido"] .lat-bt span{ display: none }
+:root[data-lateral="recolhido"] .lat-quem{ justify-content: center; padding: 9px 0;
+  background: none }
+
+/* Tela estreita: a lateral recolhe sozinha. Abaixo de 1100px o painel já empilha
+   o rail de filtros, e 256px de moldura sairiam da largura útil da lista. */
+/* Tela estreita: a moldura recolhe sozinha só abaixo de 1000px.
+   Estava em 1400px, para proteger a largura da lista — e o preço foi pior que a
+   doença: o notebook de 1366px, que é a maioria das estações, abria com a barra
+   reduzida a cinco ícones anônimos, sem rótulo, num estado que ninguém escolheu.
+   Trocar a legibilidade do menu pela da lista não é escolha; é o mesmo defeito
+   empurrado para o outro lado.
+   O aperto da lista foi consertado onde ele nascia — na grade do painel, que
+   agora dá piso de 240px à coluna que precisa ser lida. Abaixo de 1000px a
+   moldura recolhe porque aí 256px de fato não cabem, e mesmo assim quem quiser
+   ainda pode expandir.
+
+   `:root:not([data-lateral="aberto"])` em vez de `:root`: assim a tela estreita
+   ABRE recolhida, mas quem quiser expandir ainda consegue. Antes o botão
+   "Expandir menu" anunciava `aria-expanded=true` sem nada expandir — um controle
+   que mente sobre o próprio estado. */
+@media (max-width: 1000px){
+  :root:not([data-lateral="aberto"]){ --lat-w: 68px }
+  :root:not([data-lateral="aberto"]) .lat-marca-txt,
+  :root:not([data-lateral="aberto"]) .lat-i-txt,
+  :root:not([data-lateral="aberto"]) .lat-quem-txt,
+  :root:not([data-lateral="aberto"]) .lat-bt span{ display: none }
+  :root:not([data-lateral="aberto"]) .lat-marca,
+  :root:not([data-lateral="aberto"]) .lat-i,
+  :root:not([data-lateral="aberto"]) .lat-bt{ justify-content: center }
+  :root:not([data-lateral="aberto"]) .lat-i{ padding: 11px 8px }
+  :root:not([data-lateral="aberto"]) .lat-marca-icone{ width: 38px; height: 28px }
+  :root:not([data-lateral="aberto"]) .lat-i-marca{ display: none }
+  :root:not([data-lateral="aberto"]) .lat-quem{ justify-content: center; padding: 9px 0;
+    background: none }
+}
+
+/* Impressão: a moldura não vai para o papel, e a margem tem de sumir junto —
+   senão a folha sai com 256px de branco à esquerda. */
+@media print{
+  .moldura{ display: none }
+  body{ margin-left: 0 }
+  :root{ --lat-w: 0px }
+}
+
+/* FOCO DE TECLADO dentro da moldura. A regra global `:focus-visible` das telas de
+   serviço desenha o anel com `--accent`, que é verde-petróleo escolhido para
+   papel claro: sobre o #0f172a da moldura dá 2,01:1, e 1,33:1 quando o item já é
+   o ativo. A norma pede 3:1. Pior que a nota: essa regra global substitui o anel
+   bicolor do navegador, feito justamente para aparecer em qualquer fundo. */
+.lat-i:focus-visible, .lat-bt:focus-visible, .lat-marca:focus-visible{
+  outline: 2px solid var(--lat-ciano); outline-offset: 2px; border-radius: 12px;
+}

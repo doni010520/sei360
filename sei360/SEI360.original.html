@@ -1,0 +1,2155 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>SEI360 — Acesso</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://unpkg.com/gsap@3.12.5/dist/gsap.min.js"></script>
+<style>
+  :root{
+    --bg:#0A0E27;
+    --bg-2:#070A1C;
+    --bg-3:#05081A;
+    --cyan:#00D4FF;
+    --cyan-dim:rgba(0,212,255,.35);
+    --neon:#39FF14;
+    --amber:#FFB800;
+    --rose:#FF5C8A;
+    --text:#E8ECFF;
+    --muted:#7A86B8;
+    --line:rgba(0,212,255,.10);
+    --line-strong:rgba(0,212,255,.22);
+    --panel:rgba(10,14,39,.72);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;min-height:100%;background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif}
+  html,body{overflow-x:hidden;overflow-y:auto;height:auto}
+  body{
+    background:
+      radial-gradient(900px 600px at 18% 28%, rgba(0,212,255,.07), transparent 60%),
+      radial-gradient(700px 500px at 88% 78%, rgba(57,255,20,.04), transparent 60%),
+      linear-gradient(180deg, #0A0E27 0%, #060920 100%);
+  }
+  .mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+  .display{font-family:'Space Grotesk',Inter,sans-serif;letter-spacing:-.01em}
+
+  canvas.particles{position:fixed;inset:0;z-index:1;pointer-events:none}
+
+  /* ===== page split ===== */
+  .page{position:relative;min-height:100vh;display:grid;grid-template-columns:minmax(0,1fr) 460px;z-index:5;align-items:stretch}
+
+  /* ===== LEFT: showcase ===== */
+  .showcase{
+    position:relative;overflow:hidden;min-width:0;
+    display:grid;
+    grid-template-rows:auto minmax(0,1fr) auto;
+    grid-template-columns:minmax(0,1fr);
+  }
+  /* ambient neural web fills the whole left side */
+  .web{position:absolute;inset:0;z-index:1}
+  .web svg{position:absolute;inset:0;width:100%;height:100%;display:block;opacity:.42}
+  .web::after{
+    content:"";position:absolute;inset:0;
+    background:radial-gradient(55% 55% at 50% 55%, rgba(10,14,39,.12) 0%, rgba(10,14,39,.78) 100%);
+    pointer-events:none;
+  }
+
+  /* integration overlay: source nodes -> SEI360 (the demo card) */
+  .integ{position:absolute;inset:0;z-index:2;pointer-events:none;opacity:.65}
+  .integ svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .integ-line{fill:none;stroke:rgba(0,212,255,.20);stroke-width:.8;stroke-dasharray:3 4;transition:stroke .3s, stroke-width .3s}
+  .integ-line.amber{stroke:rgba(255,184,0,.25)}
+  .integ-line.green{stroke:rgba(57,255,20,.28)}
+  .integ-line.hot{stroke:rgba(0,212,255,.7);stroke-width:1.1;stroke-dasharray:none;filter:drop-shadow(0 0 6px rgba(0,212,255,.6))}
+  .integ-line.amber.hot{stroke:rgba(255,184,0,.8);filter:drop-shadow(0 0 6px rgba(255,184,0,.6))}
+  .integ-line.green.hot{stroke:rgba(57,255,20,.85);filter:drop-shadow(0 0 6px rgba(57,255,20,.6))}
+
+  /* central scan ring at hub */
+  .hub-ring{fill:none;stroke:rgba(0,212,255,.4);stroke-width:1;opacity:0}
+
+  /* source labels around the perimeter */
+  .src{position:absolute;z-index:2;pointer-events:none;transform:translate(-50%,-50%);font-family:'Space Grotesk'}
+  .src-dot{
+    position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:12px;height:12px;border-radius:50%;
+    background:var(--cyan);
+    box-shadow:0 0 14px var(--cyan), 0 0 0 5px rgba(0,212,255,.12);
+  }
+  .src.amber .src-dot{background:var(--amber);box-shadow:0 0 14px var(--amber), 0 0 0 5px rgba(255,184,0,.14)}
+  .src.green .src-dot{background:var(--neon);box-shadow:0 0 14px var(--neon), 0 0 0 5px rgba(57,255,20,.14)}
+  .src-dot::before{
+    content:"";position:absolute;inset:-3px;border-radius:50%;
+    border:1px solid rgba(0,212,255,.35);animation:srcpulse 2.2s infinite ease-out;
+  }
+  .src.amber .src-dot::before{border-color:rgba(255,184,0,.4)}
+  .src.green .src-dot::before{border-color:rgba(57,255,20,.4)}
+  @keyframes srcpulse{
+    0%{transform:scale(1);opacity:.9}
+    100%{transform:scale(2.2);opacity:0}
+  }
+  .src-text{
+    position:absolute;top:50%;transform:translateY(-50%);white-space:nowrap;
+    padding:4px 0;
+  }
+  .src-text[data-side="right"]{left:calc(50% + 16px)}
+  .src-text[data-side="left"]{right:calc(50% + 16px);text-align:right}
+  .src-name{font-weight:600;font-size:12px;letter-spacing:.04em;color:var(--text)}
+  .src-meta{font-family:'JetBrains Mono';font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin-top:2px;text-transform:uppercase}
+
+  /* top brand bar (left side only) */
+  .brand{
+    position:relative;z-index:3;
+    padding:22px 32px 0 32px;
+    display:flex;align-items:center;justify-content:space-between;gap:24px;
+  }
+  .logo{display:flex;align-items:center;gap:12px;font-family:'Space Grotesk';font-weight:600;font-size:20px;letter-spacing:.01em;white-space:nowrap}
+  .logo .mark{
+    width:50px;height:36px;flex-shrink:0;display:inline-flex;color:var(--cyan);
+    filter:drop-shadow(0 0 8px rgba(0,212,255,.45));
+  }
+  .logo .mark svg{width:100%;height:100%;display:block}
+  .logo .mark svg .ai-mark{fill:var(--bg);font-family:'Space Grotesk',system-ui,sans-serif}
+  .login .logo .mark{color:#0066B3;filter:drop-shadow(0 0 6px rgba(0,102,179,.2))}
+  .login .logo .mark svg .ai-mark{fill:#FFFFFF}
+  .logo b{color:var(--cyan);font-weight:700}
+  .brand .meta{display:flex;align-items:center;gap:16px;color:var(--muted);font-size:11px;letter-spacing:.18em;text-transform:uppercase;white-space:nowrap}
+  .brand .meta .dot{width:6px;height:6px;border-radius:50%;background:var(--neon);box-shadow:0 0 8px var(--neon);animation:livepulse 1.4s infinite}
+  @keyframes livepulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+  /* main showcase centerpiece */
+  .stage{
+    position:relative;z-index:5;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    width:100%;min-width:0;min-height:0;
+    padding:18px 28px;
+    gap:12px;
+  }
+  .stage-title{
+    margin:0 0 4px 0;
+    display:flex;align-items:center;gap:10px;
+    color:var(--muted);font-family:'JetBrains Mono';font-size:10px;letter-spacing:.2em;text-transform:uppercase;
+  }
+  .stage-title .bar{flex:1;max-width:70px;height:1px;background:linear-gradient(90deg, transparent, var(--cyan-dim), transparent)}
+  .stage-title b{color:var(--cyan)}
+
+  /* parsing demo: raw -> AI -> structured */
+  .demo{
+    width:100%;max-width:840px;
+    display:grid;grid-template-columns:minmax(0,1fr) 60px minmax(0,1fr);gap:12px;align-items:stretch;
+    position:relative;z-index:6;
+  }
+
+  .doc{
+    background:linear-gradient(180deg, rgba(7,10,28,.985), rgba(5,8,26,.985));
+    border:1px solid var(--line-strong);
+    border-radius:12px;
+    overflow:hidden;
+    box-shadow:0 14px 40px rgba(0,0,0,.55), 0 0 22px rgba(0,212,255,.08);
+    display:flex;flex-direction:column;min-width:0;
+    position:relative;z-index:5;
+  }
+  .doc .head{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:8px 12px;border-bottom:1px solid var(--line);
+    background:rgba(0,212,255,.04);
+  }
+  .doc .head .lbl{font-family:'JetBrains Mono';font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+  .doc .head .lbl b{color:var(--cyan)}
+  .doc .head .badge{
+    font-family:'JetBrains Mono';font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+    padding:3px 8px;border-radius:4px;border:1px solid var(--line-strong);color:var(--muted)
+  }
+
+  .doc.raw .body{
+    padding:12px 14px;font-family:'JetBrains Mono';font-size:10.5px;line-height:1.55;color:#A9B3DF;
+    white-space:pre-wrap;flex:1;overflow:hidden;position:relative;
+  }
+  .doc.raw .body::before{
+    content:"";position:absolute;left:14px;right:14px;top:14px;bottom:14px;
+    background:repeating-linear-gradient(180deg, transparent 0 18px, rgba(0,212,255,.025) 18px 19px);
+    pointer-events:none;
+  }
+  .tok{position:relative;padding:1px 3px;border-radius:3px;transition:all .3s ease;color:#9aa6d4}
+  .tok.hit{color:var(--text);background:rgba(0,212,255,.16);box-shadow:inset 0 -1px 0 var(--cyan)}
+  .tok.hit.k-val{background:rgba(57,255,20,.16);box-shadow:inset 0 -1px 0 var(--neon)}
+  .tok.hit.k-date{background:rgba(255,184,0,.16);box-shadow:inset 0 -1px 0 var(--amber)}
+  .tok.hit.k-risk{background:rgba(255,92,138,.18);box-shadow:inset 0 -1px 0 var(--rose)}
+
+  /* arrow column */
+  .arrow{
+    position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+    color:var(--cyan);
+  }
+  .arrow .pipe{
+    width:2px;flex:1;
+    background:linear-gradient(180deg, transparent 0%, var(--cyan-dim) 20%, var(--cyan) 50%, var(--cyan-dim) 80%, transparent 100%);
+    position:relative;overflow:hidden;
+    box-shadow:0 0 12px rgba(0,212,255,.5);
+  }
+  .arrow .pipe .pkt{
+    position:absolute;left:-3px;width:8px;height:18px;border-radius:8px;
+    background:linear-gradient(180deg, transparent, var(--cyan), transparent);
+    filter:blur(.5px);
+    animation:flow 1.6s linear infinite;
+  }
+  .arrow .pipe .pkt:nth-child(2){animation-delay:.5s;background:linear-gradient(180deg, transparent, var(--neon), transparent)}
+  .arrow .pipe .pkt:nth-child(3){animation-delay:1s;background:linear-gradient(180deg, transparent, var(--amber), transparent)}
+  @keyframes flow{0%{top:-20px;opacity:0}10%{opacity:1}90%{opacity:1}100%{top:100%;opacity:0}}
+  .arrow .chip{
+    width:64px;text-align:center;
+    padding:8px 0;border-radius:8px;
+    background:rgba(0,212,255,.06);border:1px solid var(--line-strong);
+    font-family:'Space Grotesk';font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--cyan);
+    box-shadow:0 0 18px rgba(0,212,255,.18);
+  }
+  .arrow .chip small{display:block;font-family:'JetBrains Mono';font-size:8.5px;color:var(--muted);letter-spacing:.18em;margin-top:2px;font-weight:400;text-transform:uppercase}
+
+  /* structured panel */
+  .doc.out .body{padding:6px 0;flex:1;display:flex;flex-direction:column}
+  .field{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    align-items:baseline;
+    column-gap:10px;row-gap:3px;
+    padding:9px 16px 10px;border-bottom:1px solid rgba(255,255,255,.04);
+    opacity:0;transform:translateX(-8px);
+  }
+  .field:last-of-type{border-bottom:none}
+  .field .k{
+    grid-column:1;grid-row:1;
+    font-family:'JetBrains Mono';font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);
+  }
+  .field .conf{
+    grid-column:2;grid-row:1;
+    font-family:'JetBrains Mono';font-size:9.5px;letter-spacing:.08em;color:var(--muted);
+    padding:2px 6px;border-radius:4px;border:1px solid var(--line);
+  }
+  .field .conf.hi{color:var(--neon);border-color:rgba(57,255,20,.4)}
+  .field .v{
+    grid-column:1 / -1;grid-row:2;
+    font-family:'Inter';font-size:13.5px;color:var(--text);font-weight:500;
+    line-height:1.35;word-break:break-word;
+  }
+  .field .v.mono{font-family:'JetBrains Mono';font-weight:500;font-size:13px;letter-spacing:.01em}
+  .field .v.cyan{color:var(--cyan)}
+  .field .v.neon{color:var(--neon)}
+  .field .v.amber{color:var(--amber)}
+  .field .v.rose{color:var(--rose)}
+  .field.kind-risk{background:linear-gradient(90deg, rgba(255,92,138,.08), transparent)}
+  .field.kind-risk .k{color:var(--rose)}
+
+  .out .foot{
+    padding:10px 16px;border-top:1px solid var(--line);
+    display:flex;align-items:center;justify-content:space-between;
+    font-family:'JetBrains Mono';font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+  }
+  .out .foot b{color:var(--cyan)}
+  .out .foot .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--neon);box-shadow:0 0 8px var(--neon);margin-right:6px;vertical-align:middle}
+
+  /* ===== mode: AI summary ===== */
+  .summary-body{padding:14px 16px;flex:1;display:flex;flex-direction:column;gap:10px;min-height:0}
+  .summary-avatar{display:flex;align-items:center;gap:10px}
+  .summary-avatar .av{
+    width:34px;height:34px;border-radius:50%;
+    background:radial-gradient(circle at 30% 30%, var(--cyan), #0066B3 70%);
+    display:flex;align-items:center;justify-content:center;
+    font-family:'Space Grotesk';font-weight:700;font-size:12.5px;color:#03121a;letter-spacing:.04em;
+    box-shadow:0 0 12px rgba(0,212,255,.4), inset 0 1px 0 rgba(255,255,255,.25);
+    flex-shrink:0;
+  }
+  .summary-avatar .meta .ttl{font-family:'Space Grotesk';font-size:13px;font-weight:600;color:var(--text)}
+  .summary-avatar .meta .sub{font-family:'JetBrains Mono';font-size:10px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-top:1px}
+
+  /* fact strip (Nº processo, objeto, mesa, próx pendência) */
+  .summary-facts{
+    display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;
+    padding:10px 12px;
+    border:1px solid var(--line-strong);border-radius:8px;
+    background:rgba(0,212,255,.04);
+  }
+  .summary-facts .fact{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .summary-facts .fact .k{font-family:'JetBrains Mono';font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .summary-facts .fact .v{font-family:'Inter';font-size:12.5px;color:var(--text);font-weight:500;line-height:1.3;word-break:break-word}
+  .summary-facts .fact .v.mono{font-family:'JetBrains Mono'}
+  .summary-facts .fact.pending{position:relative;padding-left:10px}
+  .summary-facts .fact.pending::before{
+    content:"";position:absolute;left:0;top:2px;bottom:2px;width:2px;border-radius:2px;
+    background:var(--amber);box-shadow:0 0 6px rgba(255,184,0,.6);
+  }
+  .summary-facts .fact.pending .k{color:var(--amber)}
+
+  .summary-text{
+    margin:0;font-family:'Inter';font-size:13px;line-height:1.55;color:#C8D0F0;
+    border-left:2px solid var(--cyan);padding-left:12px;
+    min-height:70px;
+  }
+  .summary-text .cursor{display:inline-block;width:8px;height:14px;background:var(--cyan);vertical-align:text-bottom;animation:blink 1s infinite}
+  @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+  .summary-text b{color:var(--text);font-weight:600}
+  .summary-text em{font-style:normal;color:var(--cyan)}
+  .summary-text em.amber{color:var(--amber)}
+  .summary-text em.rose{color:var(--rose)}
+
+  .summary-tags{display:flex;gap:6px;flex-wrap:wrap}
+  .summary-tags .stag{
+    font-family:'JetBrains Mono';font-size:10px;letter-spacing:.06em;
+    padding:4px 8px;border-radius:4px;
+    border:1px solid var(--line-strong);background:rgba(0,212,255,.05);color:var(--text);
+    display:inline-flex;align-items:center;gap:6px;
+  }
+  .summary-tags .stag::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--cyan)}
+  .summary-tags .stag.ok::before{background:var(--neon)}
+  .summary-tags .stag.warn::before{background:var(--amber)}
+  .summary-tags .stag.risk::before{background:var(--rose)}
+  .summary-tags .stag.ok{border-color:rgba(57,255,20,.3);background:rgba(57,255,20,.06)}
+  .summary-tags .stag.warn{border-color:rgba(255,184,0,.3);background:rgba(255,184,0,.06)}
+  .summary-tags .stag.risk{border-color:rgba(255,92,138,.3);background:rgba(255,92,138,.06)}
+
+  .summary-action{
+    padding:10px 12px;border-radius:8px;
+    background:linear-gradient(90deg, rgba(57,255,20,.08), rgba(0,212,255,.04));
+    border:1px solid rgba(57,255,20,.25);
+    margin-top:auto;
+  }
+  .summary-action .al{font-family:'JetBrains Mono';font-size:9.5px;color:var(--neon);letter-spacing:.14em;text-transform:uppercase;margin-bottom:3px;display:flex;align-items:center;gap:6px}
+  .summary-action .al::before{content:"▸";color:var(--neon)}
+  .summary-action .av{font-family:'Inter';font-size:13px;font-weight:500;color:var(--text);line-height:1.4}
+
+  /* ===== mode: painel consolidado (lista de processos) ===== */
+  .panel-body{
+    flex:1;
+    display:grid;
+    grid-template-columns:repeat(3, minmax(0,1fr));
+    gap:8px;
+    padding:10px 12px;
+    min-height:0;overflow:hidden;
+    align-content:start;
+  }
+  @media (max-width:1280px){.panel-body{grid-template-columns:repeat(2, minmax(0,1fr))}}
+  @media (max-width:760px){.panel-body{grid-template-columns:1fr}}
+  .panel-card{
+    position:relative;
+    padding:8px 10px 8px 13px;
+    border:1px solid var(--line);
+    background:linear-gradient(180deg, rgba(7,11,32,.7), rgba(7,11,32,.45));
+    border-radius:7px;
+    display:flex;flex-direction:column;gap:3px;
+    min-width:0;
+  }
+  .panel-card::before{
+    content:"";position:absolute;left:0;top:8px;bottom:8px;
+    width:3px;border-radius:0 3px 3px 0;
+    background:var(--cyan);box-shadow:0 0 8px rgba(0,212,255,.5);
+  }
+  .panel-card.amber::before{background:var(--amber);box-shadow:0 0 8px rgba(255,184,0,.5)}
+  .panel-card.green::before{background:var(--neon);box-shadow:0 0 8px rgba(57,255,20,.5)}
+  .panel-card.rose::before{background:var(--rose);box-shadow:0 0 8px rgba(255,92,138,.5)}
+  .pc-top{display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap}
+  .pc-left{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
+  .pc-num{font-family:'JetBrains Mono';font-size:10.5px;color:var(--cyan);font-weight:500;letter-spacing:.02em;flex-shrink:0;white-space:nowrap}
+  .pc-kind{font-family:'JetBrains Mono';font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);padding:2px 5px;border:1px solid var(--line);border-radius:3px;flex-shrink:0}
+  .pc-status{
+    font-family:'JetBrains Mono';font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;
+    padding:2px 6px;border-radius:3px;flex-shrink:0;
+    background:rgba(0,212,255,.1);color:var(--cyan);border:1px solid rgba(0,212,255,.3);
+    display:inline-flex;align-items:center;gap:4px;
+  }
+  .pc-status::before{content:"";width:4px;height:4px;border-radius:50%;background:currentColor;box-shadow:0 0 5px currentColor}
+  .pc-status.amber{background:rgba(255,184,0,.1);color:var(--amber);border-color:rgba(255,184,0,.3)}
+  .pc-status.green{background:rgba(57,255,20,.1);color:var(--neon);border-color:rgba(57,255,20,.3)}
+  .pc-status.rose{background:rgba(255,92,138,.1);color:var(--rose);border-color:rgba(255,92,138,.3)}
+  .pc-obj{font-family:'Inter';font-size:12px;color:var(--text);font-weight:500;line-height:1.25;
+    overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-clamp:2;}
+  .pc-spec{font-family:'JetBrains Mono';font-size:9px;color:var(--muted);letter-spacing:.04em;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .pc-mesa{font-family:'Inter';font-size:10.5px;color:#B7C0E6;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap}
+  .pc-mesa .k{font-family:'JetBrains Mono';font-size:8px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+  .pc-mesa .v{font-family:'JetBrains Mono';font-weight:500;color:var(--cyan);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;font-size:10.5px;letter-spacing:.02em}
+  .pc-row{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .pc-valor{font-family:'JetBrains Mono';font-size:11px;color:var(--neon);font-weight:500}
+  .pc-valor.muted{color:var(--muted);font-size:9.5px}
+  .pc-summary{
+    font-family:'Inter';font-size:10.5px;color:#B7C0E6;line-height:1.35;
+    padding:5px 8px;margin-top:2px;
+    border-left:2px solid var(--cyan);background:rgba(0,212,255,.05);
+    border-radius:0 4px 4px 0;
+    overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-clamp:2;
+  }
+  .panel-card.amber .pc-summary{border-left-color:var(--amber);background:rgba(255,184,0,.05)}
+  .panel-card.green .pc-summary{border-left-color:var(--neon);background:rgba(57,255,20,.05)}
+  .panel-card.rose .pc-summary{border-left-color:var(--rose);background:rgba(255,92,138,.05)}
+  .pc-summary::before{content:"resumo IA · ";color:var(--cyan);font-family:'JetBrains Mono';font-size:8px;letter-spacing:.1em;text-transform:uppercase;font-weight:600}
+  .panel-card.amber .pc-summary::before{color:var(--amber)}
+  .panel-card.green .pc-summary::before{color:var(--neon)}
+  .panel-card.rose .pc-summary::before{color:var(--rose)}
+  .pc-action{
+    font-family:'Inter';font-size:10.5px;color:var(--text);font-weight:500;line-height:1.3;
+    margin-top:3px;
+    padding:5px 8px;border-radius:4px;
+    background:linear-gradient(90deg, rgba(57,255,20,.1), transparent);
+    border:1px solid rgba(57,255,20,.25);
+    overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-clamp:2;
+  }
+  .pc-action::before{content:"IA SUGERE ▸ ";color:var(--neon);font-family:'JetBrains Mono';font-size:8px;letter-spacing:.1em;font-weight:700;text-transform:uppercase}
+
+  /* panel mode: hide raw doc + arrow, let structured panel take full width */
+  .demo.is-panel .doc.raw{display:none}
+  .demo.is-panel .arrow{display:none}
+  .demo.is-panel{grid-template-columns:1fr;max-width:920px}
+  .demo.is-panel .doc.out{min-height:440px}
+  @media (max-width:880px){
+    .demo.is-panel .doc.out{min-height:auto}
+  }
+
+  /* ============= COMPACT MODE (short viewports) ============= */
+  @media (max-height:900px){
+    .brand{padding:14px 28px 0}
+    .brand .meta{font-size:10.5px}
+    .stage{padding:14px 28px;gap:10px}
+    .stage-title{margin:0}
+    .demo{max-width:760px;gap:10px}
+    .doc .head{padding:6px 11px}
+    .doc .head .lbl{font-size:10px}
+    .doc.raw .body{padding:9px 12px;font-size:10px;line-height:1.45;max-height:none}
+    .doc.raw .body::before{display:none}
+    .arrow .chip{padding:5px 0;font-size:10px}
+    .arrow .chip small{font-size:7.5px}
+    .field{padding:6px 14px 7px}
+    .field .k{font-size:9.5px}
+    .field .v{font-size:12px}
+    .field .v.mono{font-size:11.5px}
+    .out .foot{padding:6px 12px;font-size:9.5px}
+    .summary-body{padding:10px 12px;gap:7px}
+    .summary-avatar .av{width:30px;height:30px;font-size:11px}
+    .summary-avatar .meta .ttl{font-size:12px}
+    .summary-avatar .meta .sub{font-size:9.5px}
+    .summary-facts{padding:7px 10px;gap:5px 10px}
+    .summary-facts .fact .k{font-size:8.5px}
+    .summary-facts .fact .v{font-size:11.5px}
+    .summary-text{font-size:11.5px;line-height:1.45;min-height:auto;padding-left:10px}
+    .summary-tags .stag{font-size:9.5px;padding:3px 7px}
+    .summary-action{padding:7px 10px}
+    .summary-action .al{font-size:9px}
+    .summary-action .av{font-size:11.5px}
+    .cortex-body{min-height:240px}
+    .cortex-legend{padding:6px 14px 8px;font-size:9px;gap:10px}
+    .panel-body{padding:8px 10px;gap:6px}
+    .panel-card{padding:6px 9px 6px 12px;gap:2px}
+    .panel-card::before{top:6px;bottom:6px}
+    .pc-obj{font-size:11px}
+    .pc-spec{font-size:8.5px}
+    .pc-mesa{font-size:10px}
+    .pc-summary{font-size:10px;padding:4px 7px}
+    .pc-action{font-size:10px;padding:4px 7px}
+    .demo.is-panel .doc.out{min-height:360px}
+    .explainers{margin-top:8px;gap:7px}
+    .ex{padding:8px 10px}
+    .ex .num{margin-bottom:3px;font-size:9px}
+    .ex h5{font-size:11.5px;margin-bottom:2px}
+    .ex p{font-size:10px;line-height:1.35}
+    .slogan{padding:14px 28px 16px}
+    .slogan h1{font-size:24px}
+    .slogan .sub{font-size:12px}
+  }
+
+  @media (max-height:720px){
+    .brand{padding:10px 24px 0}
+    .brand .meta{font-size:10px}
+    .stage{padding:10px 24px;gap:7px}
+    .stage-title{font-size:9px}
+    .doc.raw .body{font-size:9.5px;line-height:1.4}
+    .field{padding:5px 12px 5px}
+    .field .v{font-size:11px}
+    .summary-body{padding:8px 11px;gap:5px}
+    .summary-text{font-size:11px}
+    .summary-action .av{font-size:11px}
+    .cortex-body{min-height:200px}
+    .demo.is-panel .doc.out{min-height:300px}
+    .panel-card{padding:5px 8px 5px 11px}
+    .pc-summary,.pc-action{-webkit-line-clamp:1;line-clamp:1}
+    .explainers{display:none}
+    .slogan{padding:10px 24px 12px}
+    .slogan h1{font-size:20px;line-height:1}
+    .slogan .sub{display:none}
+  }
+
+  /* ===== mode: cortex (living organism) ===== */
+  .cortex-body{
+    position:relative;flex:1;display:flex;flex-direction:column;padding:6px 0 0;min-height:300px;
+  }
+  .cortex-svg{flex:1;width:100%;display:block}
+  .cortex-node-text{font-family:'JetBrains Mono';font-size:8.5px;fill:var(--text);text-anchor:middle;letter-spacing:.04em;font-weight:500}
+  .cortex-node-meta{font-family:'JetBrains Mono';font-size:7px;fill:var(--muted);text-anchor:middle;letter-spacing:.06em;text-transform:uppercase}
+  .cortex-sub-text{font-family:'JetBrains Mono';font-size:6.5px;fill:var(--muted);text-anchor:middle;letter-spacing:.04em}
+  .cortex-link-label{font-family:'JetBrains Mono';font-size:7.5px;fill:#9DA8D9;text-anchor:middle;letter-spacing:.04em}
+  .cortex-link-label.amber{fill:var(--amber)}
+  .cortex-link-label.green{fill:var(--neon)}
+  .cortex-link-label.rose{fill:var(--rose)}
+
+  .cortex-link{stroke:rgba(0,212,255,.45);stroke-width:1;fill:none;stroke-dasharray:3 2.5;animation:dashdrift 22s linear infinite}
+  .cortex-link.amber{stroke:rgba(255,184,0,.55)}
+  .cortex-link.green{stroke:rgba(57,255,20,.55)}
+  .cortex-link.rose{stroke:rgba(255,92,138,.6)}
+  .cortex-sublink{stroke:rgba(0,212,255,.3);stroke-width:.7;stroke-dasharray:2 2;animation:dashdrift 28s linear infinite}
+  .cortex-sublink.amber{stroke:rgba(255,184,0,.4)}
+  .cortex-sublink.green{stroke:rgba(57,255,20,.4)}
+  .cortex-sublink.rose{stroke:rgba(255,92,138,.45)}
+  .cortex-cross{stroke:rgba(0,212,255,.1);stroke-width:.6;fill:none;stroke-dasharray:1.5 3;animation:dashdrift 40s linear infinite reverse}
+
+  @keyframes dashdrift{
+    to{stroke-dashoffset:-120}
+  }
+
+  .cortex-ring.med{animation:rotateRing 38s linear infinite;transform-origin:center}
+  .cortex-ring.slow{animation:rotateRing 90s linear infinite reverse;transform-origin:center}
+  @keyframes rotateRing{to{transform:rotate(360deg)}}
+
+  .cortex-pulse{animation:cortexpulse 1.8s infinite ease-out;transform-origin:center;transform-box:fill-box}
+  @keyframes cortexpulse{0%,100%{opacity:.9}50%{opacity:1}}
+
+  .cortex-star{animation:starblink 4s infinite ease-in-out;transform-origin:center;transform-box:fill-box}
+  @keyframes starblink{
+    0%,100%{opacity:.15;transform:scale(.8)}
+    50%{opacity:.85;transform:scale(1.4)}
+  }
+
+  /* dot universe (all-SEI monitor) */
+  .ctx-dot{
+    animation:ctxdotpulse 2.6s infinite ease-in-out;
+    transform-origin:center;transform-box:fill-box;
+    filter:drop-shadow(0 0 4px currentColor);
+  }
+  @keyframes ctxdotpulse{
+    0%,100%{opacity:.7;transform:scale(1)}
+    50%{opacity:1;transform:scale(1.35)}
+  }
+
+  /* knowledge graph (new cortex) */
+  .ctx-edge{stroke:rgba(125,185,255,.18);stroke-width:.45;fill:none}
+  .ctx-hubline{stroke:rgba(0,212,255,.35);stroke-width:.85;fill:none;stroke-dasharray:4 3;animation:dashdrift 24s linear infinite}
+  .ctx-hub-core{
+    filter:drop-shadow(0 0 8px #00D4FF);
+    animation:hubcorepulse 2.4s infinite ease-in-out;
+    transform-origin:center;transform-box:fill-box;
+  }
+  @keyframes hubcorepulse{
+    0%,100%{opacity:.85;transform:scale(1)}
+    50%{opacity:1;transform:scale(1.18)}
+  }
+  .ctx-sat{
+    opacity:.85;
+    animation:satblink 3.2s infinite ease-in-out;
+    transform-origin:center;transform-box:fill-box;
+    filter:drop-shadow(0 0 2.5px currentColor);
+  }
+  .ctx-sat.amber{filter:drop-shadow(0 0 4px #FFB800)}
+  .ctx-sat.rose{filter:drop-shadow(0 0 5px #FF5C8A);animation-duration:1.6s}
+  .ctx-sat.green{filter:drop-shadow(0 0 4px #39FF14)}
+  @keyframes satblink{
+    0%,100%{opacity:.5;transform:scale(.9)}
+    50%{opacity:1;transform:scale(1.15)}
+  }
+  .ctx-ambient{
+    animation:ambblink 5s infinite ease-in-out;
+    transform-origin:center;transform-box:fill-box;
+  }
+  @keyframes ambblink{
+    0%,100%{opacity:.15}
+    50%{opacity:.55}
+  }
+
+  .ctx-monitor{
+    font-family:'JetBrains Mono';
+    font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;
+    fill:rgba(0,212,255,.7);
+  }
+  .ctx-stat-lbl{
+    font-family:'JetBrains Mono';
+    font-size:7.5px;letter-spacing:.16em;text-transform:uppercase;
+    fill:var(--muted);
+  }
+  .ctx-stat-val{
+    font-family:'JetBrains Mono';
+    font-size:11px;letter-spacing:.04em;font-weight:600;
+    fill:var(--cyan);
+  }
+
+  .cortex-legend{
+    padding:8px 16px 12px;display:flex;gap:14px;flex-wrap:wrap;
+    font-family:'JetBrains Mono';font-size:9.5px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;
+    border-top:1px dashed rgba(255,255,255,.05);
+  }
+  .cortex-legend .lg{display:flex;align-items:center;gap:6px}
+  .cortex-legend .lg::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--cyan)}
+  .cortex-legend .lg.amber::before{background:var(--amber)}
+  .cortex-legend .lg.green::before{background:var(--neon)}
+  .cortex-legend .lg.rose::before{background:var(--rose)}
+
+  /* mode chip indicator at top of demo */
+  .mode-chip{
+    display:inline-flex;align-items:center;gap:6px;
+    padding:3px 8px;border-radius:999px;
+    border:1px solid var(--line-strong);background:rgba(0,212,255,.06);
+    font-family:'JetBrains Mono';font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--cyan);
+    margin-left:8px;
+  }
+  .mode-chip::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--cyan);animation:livepulse 1.4s infinite}
+
+  /* explainers under demo */
+  .explainers{
+    margin-top:14px;width:100%;max-width:840px;
+    display:grid;grid-template-columns:repeat(4,1fr);gap:10px;
+  }
+  .ex{
+    padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+    background:rgba(7,11,32,.55);backdrop-filter:blur(6px);
+  }
+  .ex .num{
+    font-family:'JetBrains Mono';font-size:9.5px;color:var(--cyan);letter-spacing:.16em;
+    display:flex;align-items:center;gap:6px;margin-bottom:5px;
+  }
+  .ex .num::before{content:"";display:inline-block;width:6px;height:6px;background:var(--cyan);border-radius:50%;box-shadow:0 0 6px var(--cyan)}
+  .ex h5{margin:0 0 3px 0;font-family:'Space Grotesk';font-size:12px;font-weight:600;letter-spacing:.01em;color:var(--text)}
+  .ex p{margin:0;font-size:10.5px;color:var(--muted);line-height:1.45}
+
+  /* slogan strip */
+  .slogan{
+    position:relative;z-index:3;
+    padding:20px 32px 26px 32px;
+    border-top:1px solid var(--line);
+    background:linear-gradient(180deg, rgba(10,14,39,.45), rgba(5,8,26,.85));
+    backdrop-filter:blur(8px);
+    display:flex;align-items:flex-end;justify-content:space-between;gap:24px;
+  }
+  .slogan h1{
+    margin:0;font-family:'Space Grotesk';font-weight:600;font-size:28px;line-height:1.05;letter-spacing:-.02em;
+    text-wrap:balance;
+  }
+  .slogan h1 .accent{color:var(--cyan);text-shadow:0 0 24px rgba(0,212,255,.35)}
+  .slogan h1 .strike{color:var(--muted);text-decoration:line-through;text-decoration-color:rgba(122,134,184,.4);text-decoration-thickness:1px}
+  .slogan h1 b{font-weight:600;color:var(--neon);text-shadow:0 0 18px rgba(57,255,20,.3)}
+  .slogan .sub{margin-top:6px;color:var(--muted);font-size:13px;max-width:640px}
+  .slogan .stats{display:flex;gap:18px;flex-shrink:0}
+  .slogan .stat .v{display:block;font-family:'JetBrains Mono';font-size:18px;color:var(--cyan);font-weight:600;text-shadow:0 0 10px rgba(0,212,255,.4);line-height:1.1}
+  .slogan .stat .v.neon{color:var(--neon);text-shadow:0 0 10px rgba(57,255,20,.4)}
+  .slogan .stat .l{display:block;font-family:'JetBrains Mono';font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin-top:4px}
+
+  /* HUD corners on left side */
+  .hud{position:absolute;font-family:'JetBrains Mono';font-size:10px;letter-spacing:.1em;color:var(--muted);z-index:3;pointer-events:none}
+  .hud.bl{bottom:130px;left:24px}
+  .hud.br{bottom:130px;right:24px;text-align:right}
+  .hud b{color:var(--cyan)}
+
+  /* scanline */
+  .scanline{position:fixed;left:0;right:0;height:120px;pointer-events:none;z-index:6;top:-200px;
+    background:linear-gradient(180deg, transparent 0%, rgba(0,212,255,.04) 45%, rgba(0,212,255,.12) 50%, rgba(0,212,255,.04) 55%, transparent 100%);
+    mix-blend-mode:screen;
+  }
+
+  /* ===== RIGHT: login (institutional white) ===== */
+  .login{
+    position:sticky;top:0;align-self:start;
+    height:100vh;max-height:100vh;
+    z-index:10;
+    background:#FFFFFF;
+    display:flex;flex-direction:column;
+    color:#0A0E27;
+    box-shadow:-30px 0 60px rgba(0,0,0,.35);
+  }
+  .login::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+    background:linear-gradient(180deg, var(--cyan) 0%, #0066B3 55%, var(--cyan) 100%);
+    box-shadow:0 0 14px rgba(0,212,255,.45);
+  }
+  .login-inner{
+    flex:1;display:flex;flex-direction:column;justify-content:center;
+    padding:40px 48px 28px 48px;
+    overflow-y:auto;
+  }
+  .login-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:34px}
+  .login-top .gov{
+    font-family:'JetBrains Mono';font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#6B7280;
+    padding:4px 10px;border-radius:4px;border:1px solid #E5E7EB;background:#F9FAFB;
+  }
+  .login-top .gov b{color:#0066B3}
+
+  /* logo on white */
+  .login .logo{color:#0A0E27}
+  .login .logo b{color:#0066B3}
+
+  .login h2{margin:0 0 8px 0;font-family:'Space Grotesk';font-size:28px;font-weight:600;letter-spacing:-.01em;color:#0A0E27}
+  .login .lede{margin:0 0 30px 0;color:#5B6478;font-size:14px;line-height:1.55}
+  .login .lede b{color:#0A0E27;font-weight:600}
+
+  .form{display:flex;flex-direction:column;gap:14px}
+  .field-in{
+    position:relative;
+    background:#FFFFFF;
+    border:1px solid #D9DEE7;
+    border-radius:8px;
+    padding:10px 14px 9px 14px;
+    transition:border .15s, box-shadow .15s, background .15s;
+  }
+  .field-in:focus-within{
+    border-color:#0066B3;background:#FFFFFF;
+    box-shadow:0 0 0 3px rgba(0,102,179,.14);
+  }
+  .field-in label{
+    display:block;font-family:'JetBrains Mono';font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:#6B7280;
+    margin-bottom:3px;
+  }
+  .field-in input{
+    width:100%;background:transparent;border:none;outline:none;color:#0A0E27;
+    font-family:'Inter';font-size:15px;font-weight:500;letter-spacing:.005em;padding:0;
+  }
+  .field-in input::placeholder{color:#9CA3AF;font-weight:400}
+  .field-in .toggle-pw{
+    position:absolute;right:12px;top:50%;transform:translateY(-50%);
+    background:none;border:none;color:#6B7280;cursor:pointer;font-family:'JetBrains Mono';font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  }
+  .field-in .toggle-pw:hover{color:#0066B3}
+
+  .row-opts{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;color:#5B6478;margin-top:4px}
+  .row-opts label{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+  .row-opts input[type="checkbox"]{appearance:none;width:14px;height:14px;border:1px solid #C8CED9;border-radius:3px;background:#FFFFFF;position:relative;cursor:pointer;flex-shrink:0}
+  .row-opts input[type="checkbox"]:checked{background:#0066B3;border-color:#0066B3}
+  .row-opts input[type="checkbox"]:checked::after{content:"";position:absolute;left:3px;top:0px;width:6px;height:10px;border:solid #FFFFFF;border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .row-opts a{color:#0066B3;text-decoration:none;font-weight:500}
+  .row-opts a:hover{text-decoration:underline}
+
+  .submit{
+    margin-top:12px;
+    padding:14px 16px;border-radius:8px;border:1px solid #0A0E27;cursor:pointer;
+    background:linear-gradient(180deg, #131A3D 0%, #0A0E27 100%);
+    color:#FFFFFF;
+    font-family:'Space Grotesk';font-weight:600;font-size:14px;letter-spacing:.04em;text-transform:uppercase;
+    box-shadow:0 8px 22px rgba(10,14,39,.18), inset 0 1px 0 rgba(255,255,255,.08);
+    transition:transform .12s, box-shadow .2s, background .2s;
+    display:flex;align-items:center;justify-content:center;gap:10px;
+  }
+  .submit:hover{transform:translateY(-1px);box-shadow:0 12px 28px rgba(10,14,39,.28), inset 0 1px 0 rgba(255,255,255,.12)}
+  .submit:active{transform:translateY(0)}
+  .submit .ar{transition:transform .2s;color:var(--cyan)}
+  .submit:hover .ar{transform:translateX(4px)}
+
+  .login-foot{
+    padding:18px 48px 24px;border-top:1px solid #E5E7EB;
+    display:flex;flex-direction:column;gap:10px;
+    background:#F8FAFC;
+  }
+  .login-foot .stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .login-foot .st{padding:6px 0}
+  .login-foot .st .l{font-family:'JetBrains Mono';font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#6B7280}
+  .login-foot .st .v{font-family:'JetBrains Mono';font-size:14px;color:#0A0E27;font-weight:600;margin-top:2px}
+  .login-foot .v.neon{color:#057A55;display:flex;align-items:center;gap:6px}
+  .login-foot .v.neon::before{content:"";width:7px;height:7px;border-radius:50%;background:#10B981;box-shadow:0 0 0 3px rgba(16,185,129,.18)}
+  .login-foot .legal{font-size:11px;color:#6B7280;display:flex;align-items:center;justify-content:space-between;margin-top:4px}
+  .login-foot .legal .build{font-family:'JetBrains Mono'}
+  .login-foot .legal a{color:#6B7280;text-decoration:none}
+  .login-foot .legal a:hover{color:#0066B3}
+
+  /* request access link */
+  .request{
+    margin-top:18px;
+    text-align:center;font-size:12.5px;color:#5B6478;
+    padding-top:18px;border-top:1px solid #EEF1F5;
+  }
+  .request a{color:#0066B3;text-decoration:none;font-weight:500}
+  .request a:hover{text-decoration:underline}
+
+  /* ===== responsive ===== */
+
+  /* desktop trim */
+  @media (max-width:1280px){
+    .page{grid-template-columns:minmax(0,1fr) 420px}
+    .demo{grid-template-columns:minmax(0,1fr) 60px minmax(0,1fr);gap:10px}
+    .explainers{grid-template-columns:repeat(2,1fr)}
+    .slogan h1{font-size:28px}
+    .slogan .stats{display:none}
+    .login-inner{padding:28px 32px}
+    .login-foot{padding:16px 32px 20px}
+  }
+
+  /* hide orbital integration labels at narrower viewports — needs room to breathe */
+  @media (max-width:1300px){
+    .integ{display:none}
+  }
+
+  /* tablet portrait — stack login under showcase, keep neural web ambient */
+  @media (max-width:1000px){
+    .page{grid-template-columns:minmax(0,1fr)}
+    .stage{padding:20px 24px 4px 24px}
+    .login{
+      position:static;height:auto;max-height:none;
+      box-shadow:0 -24px 50px rgba(0,0,0,.45);
+    }
+    /* move the accent strip from side to top in stacked layout */
+    .login::before{
+      left:0;right:0;top:0;bottom:auto;width:auto;height:3px;
+      background:linear-gradient(90deg, var(--cyan) 0%, #0066B3 55%, var(--cyan) 100%);
+    }
+    .login-inner{padding:40px 32px 24px;max-width:560px;margin:0 auto;width:100%}
+    .login-foot{padding:16px 32px 24px;max-width:560px;margin:0 auto;width:100%;border-top:1px solid #E5E7EB}
+    .hud{display:none}
+  }
+
+  /* narrow tablet / phablet — demo stacks vertically */
+  @media (max-width:880px){
+    .integ{display:none}
+    .brand{padding:18px 22px 0;flex-wrap:wrap;gap:10px}
+    .brand .meta{font-size:10px;letter-spacing:.14em}
+    .stage{padding:18px 22px 4px}
+    .stage-title{font-size:10px;letter-spacing:.18em}
+    .stage-title .bar{display:none}
+    .demo{
+      grid-template-columns:1fr;
+      grid-template-rows:auto auto auto;gap:6px;
+    }
+    .arrow{flex-direction:row;height:56px;padding:4px 0}
+    .arrow .pipe{
+      width:auto;height:2px;flex:1;
+      background:linear-gradient(90deg, transparent 0%, var(--cyan-dim) 20%, var(--cyan) 50%, var(--cyan-dim) 80%, transparent 100%);
+    }
+    .arrow .pipe .pkt{
+      width:18px;height:8px;border-radius:8px;left:auto;top:-3px;
+      background:linear-gradient(90deg, transparent, var(--cyan), transparent);
+      animation:flowH 1.6s linear infinite;
+    }
+    .arrow .pipe .pkt:nth-child(2){background:linear-gradient(90deg, transparent, var(--neon), transparent)}
+    .arrow .pipe .pkt:nth-child(3){background:linear-gradient(90deg, transparent, var(--amber), transparent)}
+    @keyframes flowH{0%{left:-20px;opacity:0}10%{opacity:1}90%{opacity:1}100%{left:100%;opacity:0}}
+    .doc.raw .body{font-size:11.5px;max-height:240px;overflow:hidden}
+    .explainers{grid-template-columns:repeat(2,1fr);gap:10px;margin-top:14px}
+    .ex{padding:11px 13px}
+    .ex h5{font-size:13px}
+    .ex p{font-size:11.5px}
+    .slogan{padding:18px 22px 22px;flex-direction:column;align-items:flex-start}
+    .slogan h1{font-size:26px}
+    .slogan .sub{font-size:13px}
+    .login-inner{padding:32px 24px}
+    .login-foot{padding:16px 24px 22px}
+    .login h2{font-size:23px}
+  }
+
+  /* phone */
+  @media (max-width:600px){
+    .brand .logo{font-size:18px}
+    .brand .meta{display:none}
+    .stage-title{margin-bottom:10px}
+    .explainers{grid-template-columns:1fr}
+    .slogan h1{font-size:22px}
+    .login h2{font-size:21px}
+    .field-in input{font-size:14px}
+    .doc.raw .body{font-size:11px;max-height:200px}
+  }
+
+  /* short heights — let page scroll rather than overflow */
+  @media (max-height:680px){
+    html,body{height:auto;overflow-y:auto;overflow-x:hidden}
+    .page{position:relative;height:auto;min-height:100vh}
+    .stage{padding:14px 24px}
+    .slogan{padding:14px 24px 18px}
+    .slogan h1{font-size:22px}
+  }
+</style>
+</head>
+<body>
+<canvas class="particles" id="particles"></canvas>
+
+<div class="page">
+
+  <!-- ===================== LEFT SHOWCASE ===================== -->
+  <section class="showcase">
+    <div class="web" id="web">
+      <svg id="graph">
+        <defs>
+          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="2.2" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+      </svg>
+    </div>
+
+    <!-- integration overlay: data sources -> SEI360 (the demo card is the hub) -->
+    <div class="integ" id="integ">
+      <svg id="integSvg" aria-hidden="true">
+        <defs>
+          <filter id="pktGlow" x="-100%" y="-100%" width="300%" height="300%">
+            <feGaussianBlur stdDeviation="2.4" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <g id="integLines"></g>
+        <circle class="hub-ring" id="hubRing" r="80"></circle>
+        <g id="integPackets"></g>
+      </svg>
+      <div id="integLabels"></div>
+    </div>
+
+    <div class="brand">
+      <div class="logo">
+        <span class="mark"><svg viewBox="0 0 44 32" fill="none" aria-hidden="true"><circle cx="22" cy="16" r="14" stroke="currentColor" stroke-width=".8" stroke-dasharray="2 1.6" opacity=".5" fill="none"/><path d="M3 16 Q22 3 41 16 Q22 29 3 16 Z" stroke="currentColor" stroke-width="2" fill="none" stroke-linejoin="round" stroke-linecap="round"/><g stroke="currentColor" stroke-width=".9" opacity=".55" stroke-linecap="round"><path d="M22 6.5 L22 8.4"/><path d="M22 23.6 L22 25.5"/><path d="M9 16 L10.9 16"/><path d="M33.1 16 L35 16"/></g><circle cx="22" cy="16" r="8.4" fill="currentColor" opacity=".16"/><circle cx="22" cy="16" r="7" fill="currentColor"/><text class="ai-mark" x="22" y="19.4" text-anchor="middle" font-weight="700" font-size="9" letter-spacing=".3">IA</text><circle cx="24.6" cy="13.2" r="1" fill="#FFFFFF" opacity=".85"/></svg></span>
+        <span>SEI<b>360</b></span>
+      </div>
+      <div class="meta">
+        <span class="dot"></span>
+        <span>Sistema integrado · <b id="cntProc">847.392</b> processos · <b id="cntVal">R$ 4,21 bi</b> mapeados</span>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-title">
+        <span class="bar"></span>
+        <span>Como o SEI360 vê — <b>dados brutos → estrutura por IA</b></span>
+        <span class="bar"></span>
+      </div>
+
+      <!-- DEMO -->
+      <div class="demo">
+
+        <!-- RAW DOC -->
+        <div class="doc raw">
+          <div class="head">
+            <div class="lbl">DOCUMENTO BRUTO · <b id="docKind">Ata de Registro</b></div>
+            <div class="badge" id="docBadge">PDF + OCR · 12 págs</div>
+          </div>
+          <div class="body" id="rawBody"></div>
+        </div>
+
+        <!-- ARROW -->
+        <div class="arrow">
+          <div class="pipe"><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span></div>
+          <div class="chip">SEI360<small>IA · NLP</small></div>
+          <div class="pipe"><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span></div>
+        </div>
+
+        <!-- STRUCTURED OUT -->
+        <div class="doc out">
+          <div class="head">
+            <div class="lbl" id="outLbl">EXTRAÇÃO ESTRUTURADA · <b>JSON-ready</b></div>
+            <div class="badge" id="outBadge" style="color:var(--neon);border-color:rgba(57,255,20,.4)">● PARSE OK</div>
+          </div>
+          <div class="body" id="outBody"></div>
+          <div class="foot">
+            <span><span class="dot"></span><span id="outFootL">Auditável · trilha de extração</span></span>
+            <span><span id="outFootR">conf. média <b id="confAvg">0,96</b></span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- EXPLAINERS -->
+      <div class="explainers">
+        <div class="ex">
+          <div class="num">01</div>
+          <h5>Lê documentos não estruturados</h5>
+          <p>A IA processa PDFs, atas, ofícios, OCR de digitalizações e e-mails — em qualquer ponto do trâmite no SEI.</p>
+        </div>
+        <div class="ex">
+          <div class="num">02</div>
+          <h5>Extrai informações estratégicas</h5>
+          <p>A IA estrutura partes, valores, prazos, fornecedores, CNPJ, status e vínculos — dados acionáveis em segundos.</p>
+        </div>
+        <div class="ex">
+          <div class="num">03</div>
+          <h5>Analisa e resume com inteligência</h5>
+          <p>A IA lê o processo inteiro, faz o levantamento das informações relevantes e entrega um resumo executável pronto pra ação.</p>
+        </div>
+        <div class="ex">
+          <div class="num">04</div>
+          <h5>Sugere a próxima ação</h5>
+          <p>A IA cruza prazos, status e riscos para indicar a próxima ação ideal do processo — do empenho à liquidação.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="slogan">
+      <div>
+        <h1>O SEI <span class="strike">organiza</span> o processo.<br/>O SEI<span class="accent">360</span> <b>transforma</b> a sua gestão com <span class="accent">IA especializada</span>.</h1>
+        <div class="sub">IA embarcada em cada processo, <b>do Protocolo à Conclusão</b>.</div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="v" id="sExt">128.4k</div><div class="l">extrações / dia</div></div>
+        <div class="stat"><div class="v neon" id="sConn">2.347</div><div class="l">conexões novas</div></div>
+        <div class="stat"><div class="v" id="sAcc">98,7%</div><div class="l">acurácia média</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== RIGHT LOGIN ===================== -->
+  <aside class="login">
+    <div class="login-inner">
+      <div class="login-top">
+        <div class="logo" style="font-size:16px">
+                    <span class="mark" style="width:40px;height:28px"><svg viewBox="0 0 44 32" fill="none" aria-hidden="true"><circle cx="22" cy="16" r="14" stroke="currentColor" stroke-width=".8" stroke-dasharray="2 1.6" opacity=".5" fill="none"/><path d="M3 16 Q22 3 41 16 Q22 29 3 16 Z" stroke="currentColor" stroke-width="2" fill="none" stroke-linejoin="round" stroke-linecap="round"/><g stroke="currentColor" stroke-width=".9" opacity=".55" stroke-linecap="round"><path d="M22 6.5 L22 8.4"/><path d="M22 23.6 L22 25.5"/><path d="M9 16 L10.9 16"/><path d="M33.1 16 L35 16"/></g><circle cx="22" cy="16" r="8.4" fill="currentColor" opacity=".16"/><circle cx="22" cy="16" r="7" fill="currentColor"/><text class="ai-mark" x="22" y="19.4" text-anchor="middle" font-weight="700" font-size="9" letter-spacing=".3">IA</text><circle cx="24.6" cy="13.2" r="1" fill="#FFFFFF" opacity=".85"/></svg></span>
+          <span>SEI<b>360</b></span>
+        </div>
+        <div class="gov">ACESSO <b>SEGURO</b></div>
+      </div>
+
+      <h2>Acesso ao painel inteligente</h2>
+      <p class="lede">Use seu <b>e-mail institucional</b> para acessar a camada de inteligência sobre o SEI — do protocolo à conclusão.</p>
+
+      <form class="form" id="loginForm" autocomplete="off">
+        <div class="field-in">
+          <label for="email">E-mail institucional</label>
+          <input id="email" name="email" type="email" placeholder="nome.sobrenome@orgao.gov.br" autocomplete="username" required />
+        </div>
+        <div class="field-in">
+          <label for="pw">Senha</label>
+          <input id="pw" name="pw" type="password" placeholder="••••••••••" autocomplete="current-password" required minlength="4" />
+          <button class="toggle-pw" type="button" id="togglePw">ver</button>
+        </div>
+
+        <div class="row-opts">
+          <label><input type="checkbox" id="remember" /> Lembrar este dispositivo</label>
+          <a href="#" tabindex="0">Esqueci a senha</a>
+        </div>
+
+        <button class="submit" type="submit">
+          Entrar no SEI360 <span class="ar">▸</span>
+        </button>
+      </form>
+
+      <div class="request">
+        Servidor sem cadastro? <a href="#">Solicitar acesso institucional</a>
+      </div>
+    </div>
+
+    <div class="login-foot">
+      <div class="stats">
+        <div class="st"><div class="l">Sessões ativas</div><div class="v" id="sessAct">3.218</div></div>
+        <div class="st"><div class="l">Status do sistema</div><div class="v neon">● operacional</div></div>
+      </div>
+      <div class="legal">
+        <span>© 2026 · uso institucional</span>
+        <span class="build">v 3.6 · 2026.05.23</span>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<div class="scanline" id="scanline"></div>
+
+<script>
+/* =====================================================
+   particles
+   ===================================================== */
+(function particles(){
+  const c=document.getElementById('particles');const x=c.getContext('2d');
+  function size(){c.width=innerWidth;c.height=innerHeight}
+  size();addEventListener('resize',size);
+  const N=36;const ps=Array.from({length:N},()=>({
+    x:Math.random()*c.width,y:Math.random()*c.height,
+    r:Math.random()*1.3+.2,
+    vx:(Math.random()-.5)*.1,vy:(Math.random()-.5)*.1,
+    a:Math.random()*.25+.04
+  }));
+  (function tick(){
+    x.clearRect(0,0,c.width,c.height);
+    for(const p of ps){
+      p.x+=p.vx;p.y+=p.vy;
+      if(p.x<0||p.x>c.width)p.vx*=-1;
+      if(p.y<0||p.y>c.height)p.vy*=-1;
+      x.beginPath();x.arc(p.x,p.y,p.r,0,Math.PI*2);
+      x.fillStyle=`rgba(0,212,255,${p.a})`;x.fill();
+    }
+    requestAnimationFrame(tick);
+  })();
+})();
+
+/* =====================================================
+   header counters
+   ===================================================== */
+(function counters(){
+  const elP=document.getElementById('cntProc');
+  const elV=document.getElementById('cntVal');
+  let n=847392, v=4.21;
+  setInterval(()=>{
+    // sempre crescente — nunca para de subir
+    n += 1 + Math.floor(Math.random()*4);
+    v += Math.abs((Math.random()-.3))*0.003;
+    elP.textContent = n.toLocaleString('pt-BR');
+    elV.textContent = 'R$ '+v.toFixed(2).replace('.',',')+' bi';
+  },500);
+
+  // login-foot session counter
+  const sa=document.getElementById('sessAct');
+  let s=3218;
+  setInterval(()=>{ s += (Math.random()<.5?1:-1); sa.textContent = s.toLocaleString('pt-BR'); }, 1500);
+
+  // slogan footer stats jitter
+  const ex=document.getElementById('sExt'), conn=document.getElementById('sConn'), acc=document.getElementById('sAcc');
+  let xn=128400, cn=2347;
+  setInterval(()=>{
+    xn += Math.floor(Math.random()*7);
+    if(Math.random()<.4) cn += 1;
+    ex.textContent = (xn/1000).toFixed(1).replace('.',',')+'k';
+    conn.textContent = cn.toLocaleString('pt-BR');
+    const a = 98.4 + Math.random()*0.5;
+    acc.textContent = a.toFixed(1).replace('.',',')+'%';
+  }, 1400);
+})();
+
+/* =====================================================
+   D3 neural web (ambient, behind everything)
+   ===================================================== */
+const svg = d3.select('#graph');
+const webEl = document.getElementById('web');
+let W = webEl.clientWidth, H = webEl.clientHeight;
+
+const N_NODES = 90;
+const nodes = d3.range(N_NODES).map(i=>{
+  const r = Math.random();
+  const kind = r<.06 ? 'crit' : r<.16 ? 'alert' : 'base';
+  return { id:i, kind, r: kind==='base' ? (Math.random()*1.4+1.2) : (Math.random()*1.6+2.2) };
+});
+const links = [];
+const seen = new Set();
+function addL(a,b){
+  if(a===b)return;
+  const k=a<b?`${a}-${b}`:`${b}-${a}`;
+  if(seen.has(k))return;seen.add(k);
+  links.push({source:a,target:b});
+}
+for(let i=0;i<N_NODES;i++){
+  const k=1+Math.floor(Math.random()*2);
+  for(let j=0;j<k;j++){
+    const t=(i+1+Math.floor(Math.random()*4))%N_NODES;
+    addL(i,t);
+  }
+  if(Math.random()<.3) addL(i, Math.floor(Math.random()*N_NODES));
+}
+
+// legacy HUD elements removed; counts are no longer surfaced
+
+const linkSel = svg.append('g').attr('class','links')
+  .selectAll('line').data(links).enter().append('line')
+  .attr('stroke','rgba(0,212,255,.16)').attr('stroke-width',.5);
+
+const nodeSel = svg.append('g').attr('class','nodes')
+  .selectAll('g').data(nodes).enter().append('g');
+
+nodeSel.append('circle').attr('r',d=>d.r+3.5)
+  .attr('fill','none').attr('stroke', d=>d.kind==='crit'?'rgba(57,255,20,.45)':d.kind==='alert'?'rgba(255,184,0,.45)':'rgba(0,212,255,.32)');
+nodeSel.append('circle').attr('r',d=>d.r)
+  .attr('fill', d=>d.kind==='crit'?'#39FF14':d.kind==='alert'?'#FFB800':'#00D4FF')
+  .attr('filter','url(#glow)');
+
+const sim = d3.forceSimulation(nodes)
+  .force('link', d3.forceLink(links).distance(d => 38+Math.random()*26).strength(.18))
+  .force('charge', d3.forceManyBody().strength(-30))
+  .force('center', d3.forceCenter(W/2,H/2))
+  .force('collide', d3.forceCollide().radius(d=>d.r+5))
+  .alphaDecay(0.012).velocityDecay(0.35);
+
+setInterval(()=>{
+  nodes.forEach(n=>{
+    n.vx = (n.vx||0) + (Math.random()-.5)*0.08;
+    n.vy = (n.vy||0) + (Math.random()-.5)*0.08;
+  });
+  sim.alpha(0.18).restart();
+}, 2000);
+
+sim.on('tick', ()=>{
+  nodes.forEach(n=>{
+    const pad=18;
+    if(n.x<pad)n.x=pad; if(n.x>W-pad)n.x=W-pad;
+    if(n.y<pad)n.y=pad; if(n.y>H-pad)n.y=H-pad;
+  });
+  linkSel.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y)
+         .attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+  nodeSel.attr('transform', d=>`translate(${d.x},${d.y})`);
+});
+
+addEventListener('resize',()=>{
+  W=webEl.clientWidth;H=webEl.clientHeight;
+  sim.force('center', d3.forceCenter(W/2,H/2)); sim.alpha(0.4).restart();
+});
+
+// periodic node pulse (subtle "scan")
+setInterval(()=>{
+  const picks = d3.shuffle([...nodes]).slice(0,6);
+  picks.forEach(n=>{
+    const sel = d3.select(nodeSel.nodes()[n.index]);
+    sel.selectAll('circle').transition().duration(220).attr('r',(d,i)=> i===0 ? d.r+8 : d.r*1.7)
+       .transition().duration(900).attr('r',(d,i)=> i===0 ? d.r+3.5 : d.r);
+  });
+}, 1800);
+
+/* =====================================================
+   parsing demo: rotate documents
+   ===================================================== */
+const DOCS = [
+  {
+    kind:'Ata de Registro',
+    badge:'PDF + OCR · 12 págs',
+    raw: [
+      'Processo SEI nº [TOK:proc|19.09.0012345-7]',
+      'ATA DE REGISTRO DE PREÇOS Nº [TOK:num|045/2025]',
+      'Aos vinte e três dias do mês de maio de 2026,',
+      'presentes os representantes da Administração',
+      'para aquisição de [TOK:obj|medicamentos hospitalares]',
+      'de uso continuado, no valor global estimado de',
+      '[TOK:val|R$ 4.234.567,89] (quatro milhões, duzentos',
+      'e trinta e quatro mil...), com prazo de vigência',
+      'de [TOK:term|12 (doze) meses] a contar da assinatura,',
+      'tendo como fornecedora a empresa [TOK:fornec|MEDFARMA',
+      'DISTRIBUIDORA LTDA], inscrita no CNPJ',
+      '[TOK:cnpj|12.345.678/0001-99], com assinatura digital',
+      'em [TOK:date|14/05/2026]. Processo atualmente',
+      '[TOK:status|em análise jurídica até 28/05]. Observa-se',
+      'aditivo contratual em fev/2026, sendo o 3º do ciclo.'
+    ].join('\n'),
+    fields: [
+      {k:'Nº processo', v:'19.09.0012345-7', cls:'mono cyan', conf:'1,00'},
+      {k:'Tipo', v:'Ata de Registro de Preços', cls:'', conf:'0,99'},
+      {k:'Número ARP', v:'045/2025', cls:'mono', conf:'1,00'},
+      {k:'Status', v:'Em análise jurídica · prazo 28/05', cls:'amber', conf:'0,98'},
+      {k:'Objeto', v:'Medicamentos hospitalares', cls:'', conf:'0,97'},
+      {k:'Valor global', v:'R$ 4.234.567,89', cls:'mono neon', conf:'0,99'},
+      {k:'Vigência', v:'12 meses', cls:'', conf:'0,98'},
+      {k:'Fornecedor', v:'MEDFARMA Distribuidora', cls:'', conf:'0,96'},
+      {k:'CNPJ', v:'12.345.678/0001-99', cls:'mono', conf:'1,00'},
+      {k:'Risco IA', v:'⚠ 3º aditivo no ciclo', cls:'rose', conf:'risco', kind:'risk'},
+    ],
+    confAvg:'0,98'
+  },
+  {
+    kind:'Contrato Emergencial',
+    badge:'DOCX + e-mail · 38 págs',
+    raw:[
+      'Processo SEI nº [TOK:proc|19.09.0098765-2]',
+      'CONTRATO EMERGENCIAL Nº [TOK:num|2024/EMERG-118]',
+      'celebrado entre o Município e a empresa',
+      '[TOK:fornec|TRANSLOG SERVIÇOS GERAIS S.A.],',
+      'CNPJ [TOK:cnpj|87.654.321/0001-44], para',
+      '[TOK:obj|prestação de serviços de transporte sanitário]',
+      'em caráter excepcional, no valor de',
+      '[TOK:val|R$ 2.348.000,00], com pagamentos mensais.',
+      'Até a presente data foram liquidados R$ 1.760.000,00,',
+      'restando saldo de [TOK:val|R$ 588.000,00] com',
+      'vencimento previsto em [TOK:date|14/06/2026].',
+      'Status atual: [TOK:status|na mesa do gestor há 7 dias]',
+      'sem despacho de aprovação.'
+    ].join('\n'),
+    fields:[
+      {k:'Nº processo', v:'19.09.0098765-2', cls:'mono cyan', conf:'1,00'},
+      {k:'Tipo', v:'Contrato emergencial', cls:'', conf:'0,98'},
+      {k:'Número', v:'2024/EMERG-118', cls:'mono', conf:'1,00'},
+      {k:'Status', v:'Na sua mesa há 7 dias', cls:'rose', conf:'0,99'},
+      {k:'Objeto', v:'Transporte sanitário', cls:'', conf:'0,95'},
+      {k:'Valor total', v:'R$ 2.348.000,00', cls:'mono neon', conf:'0,99'},
+      {k:'Já pago', v:'R$ 1.760.000,00 · 75%', cls:'mono', conf:'0,99'},
+      {k:'Saldo', v:'R$ 588.000,00 · venc. 14/06', cls:'mono amber', conf:'0,99'},
+      {k:'Fornecedor', v:'TRANSLOG Serviços', cls:'', conf:'0,97'},
+      {k:'Risco IA', v:'⚠ prazo crítico · ação imediata', cls:'rose', conf:'risco', kind:'risk'},
+    ],
+    confAvg:'0,98'
+  },
+  {
+    kind:'Pregão Eletrônico',
+    badge:'PDF · 24 págs',
+    raw:[
+      'Processo SEI nº [TOK:proc|19.09.0078901-4]',
+      'ATA DE PREGÃO ELETRÔNICO Nº [TOK:num|019/2026]',
+      'realizado em sessão pública para aquisição de',
+      '[TOK:obj|equipamentos de informática] destinados',
+      'às unidades administrativas. Vencedor do certame:',
+      '[TOK:fornec|NEXUS TECNOLOGIA LTDA], CNPJ',
+      '[TOK:cnpj|44.555.666/0001-77], com proposta no',
+      'valor de [TOK:val|R$ 1.187.430,00]. A IA identificou',
+      'correlação com processos [TOK:rel|0023456] e',
+      '[TOK:rel|0034567], que compartilham mesmo CNPJ',
+      'de subcontratada ([TOK:cnpj|11.222.333/0001-00]).',
+      'Status atual: [TOK:status|aguardando homologação até 28/05].'
+    ].join('\n'),
+    fields:[
+      {k:'Nº processo', v:'19.09.0078901-4', cls:'mono cyan', conf:'1,00'},
+      {k:'Tipo', v:'Pregão eletrônico', cls:'', conf:'0,99'},
+      {k:'Número', v:'019/2026', cls:'mono', conf:'1,00'},
+      {k:'Status', v:'Aguardando homologação · 28/05', cls:'amber', conf:'0,99'},
+      {k:'Objeto', v:'Equip. de informática', cls:'', conf:'0,97'},
+      {k:'Valor', v:'R$ 1.187.430,00', cls:'mono neon', conf:'0,99'},
+      {k:'Vencedor', v:'NEXUS Tecnologia LTDA', cls:'', conf:'0,98'},
+      {k:'CNPJ vencedor', v:'44.555.666/0001-77', cls:'mono', conf:'1,00'},
+      {k:'Conexão IA', v:'2 processos · mesma subcontratada', cls:'rose', conf:'crit', kind:'risk'},
+    ],
+    confAvg:'0,99'
+  }
+];
+
+/* Per-doc summary + cortex enrichments */
+const ENRICH = {
+  '19.09.0012345-7': {
+    facts:{
+      nProc:'19.09.0012345-7',
+      objeto:'Medicamentos hospitalares · ARP 045/2025',
+      mesa:'MS/SGTES/DGTES/CGAF',
+      proxPend:'Parecer técnico · Sec. de Saúde',
+    },
+    summary:
+      'Aquisição de <b>medicamentos hospitalares</b> via ARP 045/2025, valor estimado <em>R$ 4,23 mi</em> com vigência de 12 meses. Processo em <em class="amber">análise jurídica</em>, prazo até 28/05. A IA detectou que este é o <em class="rose">3º aditivo</em> do mesmo fornecedor MEDFARMA — recomenda-se análise integrada com os processos correlatos.',
+    tags:[
+      {label:'7/12 etapas concluídas', kind:'ok'},
+      {label:'prazo em 5 dias', kind:'warn'},
+      {label:'reincidência fornecedor', kind:'risk'},
+    ],
+    nextAction:'Encaminhar à Sec. de Saúde para parecer técnico complementar.',
+    cortex:{
+      central:{label:'0012345-7', meta:'PROCESSO ATUAL'},
+      primaries:[
+        {label:'0023456-1', meta:'ARP 2024',     link:'mesmo fornecedor', kind:'cyan',  angle:-90,  subs:[{label:'NF-0451', meta:'liquidação', kind:'cyan'}]},
+        {label:'0034567-9', meta:'pregão 2024',  link:'mesmo objeto',     kind:'cyan',  angle:-18,  subs:[]},
+        {label:'0045123-3', meta:'subcontrato',  link:'CNPJ correlato',   kind:'amber', angle: 54,  subs:[{label:'CGU/2024', meta:'sanção', kind:'rose'}]},
+        {label:'0067891-2', meta:'auditoria',    link:'ressalva TCU',     kind:'rose',  angle: 126, subs:[]},
+        {label:'0078905-4', meta:'DOU 22/05',    link:'publicação',         kind:'green', angle: 198, subs:[{label:'ATA-12', meta:'sessão', kind:'green'}]},
+      ],
+      crosslinks:[[0,1],[2,3]]
+    }
+  },
+  '19.09.0098765-2': {
+    facts:{
+      nProc:'19.09.0098765-2',
+      objeto:'Transporte sanitário · contrato emergencial',
+      mesa:'MGI/GAB/SECEXEC',
+      proxPend:'Despacho de aprovação de pagamento',
+    },
+    summary:
+      'Contrato <em class="rose">emergencial</em> com TRANSLOG (R$ 2,35 mi) — <em class="amber">75% já liquidado</em>. Saldo remanescente: R$ 588 mil, vencimento em 14/06. A IA sinaliza que o processo está <em class="rose">na mesa do gestor há 7 dias</em>, ultrapassando o tempo médio (4,3 dias) em 63%. Recomenda-se priorização imediata.',
+    tags:[
+      {label:'75% pago', kind:'ok'},
+      {label:'+7 dias parado', kind:'risk'},
+      {label:'venc. saldo 14/06', kind:'warn'},
+    ],
+    nextAction:'Liberar despacho de aprovação antes de 28/05 para evitar inadimplência.',
+    cortex:{
+      central:{label:'0098765-2', meta:'PROCESSO ATUAL'},
+      primaries:[
+        {label:'0021045-4', meta:'cont. anterior', link:'mesmo CNPJ',       kind:'cyan',  angle:-90,  subs:[]},
+        {label:'0034112-8', meta:'serviço similar',link:'mesmo objeto',     kind:'cyan',  angle:-18,  subs:[{label:'OF-2189', meta:'contrato', kind:'cyan'}]},
+        {label:'0050988-1', meta:'aditivo 2023',   link:'mesmo fornecedor', kind:'amber', angle: 54,  subs:[]},
+        {label:'0078234-5', meta:'TCU',            link:'ressalva',         kind:'rose',  angle: 126, subs:[{label:'AC-118', meta:'acórdão', kind:'rose'}]},
+        {label:'0091012-7', meta:'liquidação',     link:'pagamento ativo',  kind:'green', angle: 198, subs:[]},
+      ],
+      crosslinks:[[0,2],[3,2]]
+    }
+  },
+  '19.09.0078901-4': {
+    facts:{
+      nProc:'19.09.0078901-4',
+      objeto:'Equipamentos de informática · pregão 019/2026',
+      mesa:'MGI/SECEX/CPL/COLIC',
+      proxPend:'Homologação do certame',
+    },
+    summary:
+      'Pregão eletrônico (R$ 1,19 mi) para equipamentos de informática, vencedor <b>NEXUS Tecnologia</b>. A IA cruzou os dados e identificou que <em class="rose">2 outros processos</em> (0023456 e 0034567) compartilham a <em class="rose">mesma subcontratada</em> (CNPJ 11.222.333/0001-00). Padrão sugere análise integrada antes da homologação.',
+    tags:[
+      {label:'sessão concluída', kind:'ok'},
+      {label:'homologação 28/05', kind:'warn'},
+      {label:'2 vínculos detectados', kind:'risk'},
+    ],
+    nextAction:'Análise integrada da subcontratada 11.222.333/0001-00 antes da homologação.',
+    cortex:{
+      central:{label:'0078901-4', meta:'PROCESSO ATUAL'},
+      primaries:[
+        {label:'0023456-1', meta:'pregão 2025', link:'mesma subcontratada', kind:'rose',  angle:-90,  subs:[{label:'CNPJ-11', meta:'subcontr.', kind:'rose'}]},
+        {label:'0034567-9', meta:'ARP 2025',    link:'mesma subcontratada', kind:'rose',  angle:-18,  subs:[]},
+        {label:'0011223-5', meta:'NEXUS',       link:'histórico fornecedor', kind:'cyan',  angle: 54,  subs:[{label:'CNPJ-44', meta:'principal', kind:'cyan'}]},
+        {label:'0089001-7', meta:'TI órgão',    link:'mesmo objeto',        kind:'cyan',  angle: 126, subs:[]},
+        {label:'0095412-3', meta:'DOU',         link:'publicação',           kind:'green', angle: 198, subs:[]},
+      ],
+      crosslinks:[[0,1],[2,3]]
+    }
+  }
+};
+
+/* Painel consolidado: amostra de processos de naturezas diversas */
+const PROCESSES = [
+  {
+    nProc:'19.09.0012345-7',
+    kind:'AQUISIÇÃO',
+    obj:'Aquisição de medicamentos hospitalares',
+    spec:'Pregão 045/2025 · Sec. de Saúde',
+    mesa:'MF/SEFAZ/COFIN/CAF',
+    status:'Empenho',
+    statusKind:'cyan',
+    valor:'R$ 234.500,00',
+    summary:'Pregão concluído, NF emitida e objeto atestado pelo almoxarifado central.',
+    action:'Objeto entregue e atestado — realizar liquidação financeira.'
+  },
+  {
+    nProc:'19.09.0078234-5',
+    kind:'ALVARÁ',
+    obj:'Solicitação de alvará de construção',
+    spec:'Imóvel residencial 220m² · zona urbana ZR-2',
+    mesa:'MCID/SEHAB/SMOB/DAOB',
+    status:'Análise técnica',
+    statusKind:'amber',
+    valor:null,
+    summary:'Documentação completa, falta apenas a vistoria local do imóvel.',
+    action:'Agendar vistoria com fiscal de obras até 30/05.'
+  },
+  {
+    nProc:'19.09.0089412-1',
+    kind:'FÉRIAS',
+    obj:'Solicitação de férias do servidor',
+    spec:'Matrícula 18.452 · 30 dias · jul/2026',
+    mesa:'MGI/SUPERRH/COGEP/DIRH',
+    status:'Aprov. chefia',
+    statusKind:'amber',
+    valor:null,
+    summary:'Período coincide com a escala da equipe — necessário designar substituto.',
+    action:'Indicar substituto e validar período até 18/06.'
+  },
+  {
+    nProc:'19.09.0023901-8',
+    kind:'CONTRATO',
+    obj:'Contrato continuado · sistemas de TI',
+    spec:'Desenvolvimento e sustentação · 24 meses',
+    mesa:'MGI/SETI/CGTI/DGCT',
+    status:'Em vigência',
+    statusKind:'green',
+    valor:'R$ 1.245.000,00',
+    summary:'8 de 12 meses executados · indicadores de SLA dentro do esperado.',
+    action:'Iniciar cotação para renovação 90 dias antes do término.'
+  },
+  {
+    nProc:'19.09.0067123-3',
+    kind:'DIÁRIA',
+    obj:'Diária e passagem · capacitação',
+    spec:'Brasília · 3 dias · escola de governo',
+    mesa:'MF/SEFAZ/COFIN/SEEMP',
+    status:'Aprov. financeira',
+    statusKind:'cyan',
+    valor:'R$ 3.218,40',
+    summary:'Justificativa adequada e dotação orçamentária disponível na fonte.',
+    action:'Empenhar valor e emitir bilhete via SCDP.'
+  },
+  {
+    nProc:'19.09.0095102-9',
+    kind:'APOSENTADORIA',
+    obj:'Aposentadoria voluntária por tempo',
+    spec:'Servidor efetivo · 35 anos de contribuição',
+    mesa:'MGI/SUPERRH/COAPO/DIAP',
+    status:'TCE · análise',
+    statusKind:'rose',
+    valor:null,
+    summary:'Faltam 2 documentos para o envio ao TCE: PIS atualizado e exame médico.',
+    action:'Solicitar PIS atualizado e exame admissional pelo servidor.'
+  }
+];
+
+const rawBody = document.getElementById('rawBody');
+const outBody = document.getElementById('outBody');
+const docKind = document.getElementById('docKind');
+const docBadge = document.getElementById('docBadge');
+const confAvg = document.getElementById('confAvg');
+
+function renderRaw(text){
+  // tokens look like [TOK:type|value]
+  const parts = [];
+  const re = /\[TOK:(\w+)\|([^\]]+)\]/g;
+  let last=0, m, idx=0;
+  while((m=re.exec(text))!==null){
+    parts.push({t:'text', v:text.slice(last,m.index)});
+    parts.push({t:'tok', kind:m[1], v:m[2], i:idx++});
+    last = m.index + m[0].length;
+  }
+  parts.push({t:'text', v:text.slice(last)});
+
+  rawBody.innerHTML = parts.map(p=>{
+    if(p.t==='text') return escapeHtml(p.v);
+    const cls = ({val:'k-val', date:'k-date', term:'k-date', cnpj:'', fornec:'', obj:'', num:'', rel:'k-risk', proc:'', status:'k-risk'})[p.kind] ?? '';
+    return `<span class="tok ${cls}" data-i="${p.i}">${escapeHtml(p.v)}</span>`;
+  }).join('');
+}
+function escapeHtml(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+
+function renderOut(fields){
+  outBody.innerHTML = fields.map(f=>{
+    const cls = f.cls || '';
+    const conf = f.conf === 'risco' ? '<span class="conf" style="color:var(--rose);border-color:rgba(255,92,138,.4)">risco</span>'
+              : f.conf === 'crit' ? '<span class="conf" style="color:var(--neon);border-color:rgba(57,255,20,.4)">crítico</span>'
+              : `<span class="conf ${parseFloat(String(f.conf).replace(',','.'))>=0.97?'hi':''}">${f.conf}</span>`;
+    return `<div class="field ${f.kind==='risk'?'kind-risk':''}"><span class="k">${f.k}</span><span class="v ${cls}">${f.v}</span>${conf}</div>`;
+  }).join('');
+}
+
+function renderPanel(){
+  outBody.classList.remove('summary-mode','cortex-mode');
+  document.querySelector('.demo')?.classList.add('is-panel');
+  if(window._cortexTimers){ window._cortexTimers.forEach(id=>clearInterval(id)); window._cortexTimers=[]; }
+  if(window._cortexRAF){ cancelAnimationFrame(window._cortexRAF); window._cortexRAF=null; }
+  const cards = PROCESSES.map(p=>`
+    <div class="panel-card ${p.statusKind}">
+      <div class="pc-top">
+        <div class="pc-left">
+          <span class="pc-num">${p.nProc}</span>
+          <span class="pc-kind">${p.kind}</span>
+        </div>
+        <span class="pc-status ${p.statusKind}">${p.status}</span>
+      </div>
+      <div class="pc-obj">${p.obj}</div>
+      <div class="pc-spec">${p.spec}</div>
+      <div class="pc-mesa"><span class="k">Mesa atual no SEI ·</span> <span class="v">${p.mesa}</span></div>
+      ${p.valor ? `<div class="pc-row"><span class="pc-valor">${p.valor}</span></div>` : `<div class="pc-row"><span class="pc-valor muted">sem valor financeiro</span></div>`}
+      <div class="pc-summary">${p.summary}</div>
+      <div class="pc-action">${p.action}</div>
+    </div>
+  `).join('');
+  outBody.innerHTML = `<div class="panel-body">${cards}</div>`;
+  // ensure cards are visible immediately even if gsap fails
+  const cardEls = outBody.querySelectorAll('.panel-card');
+  cardEls.forEach(el => { el.style.opacity = '1'; });
+  // then animate from below for a subtle entrance
+  gsap.fromTo(cardEls, {opacity:0, y:10}, {opacity:1, y:0, duration:.45, stagger:.06, ease:'power2.out', clearProps:'transform'});
+}
+
+/* ===== phase cycle: parse -> summary -> cortex -> next doc ===== */
+const outLbl = document.getElementById('outLbl');
+const outBadge = document.getElementById('outBadge');
+const outFootL = document.getElementById('outFootL');
+const outFootR = document.getElementById('outFootR');
+
+function setHead(mode, badge, badgeColor){
+  if(mode==='parse'){
+    outLbl.innerHTML = 'EXTRAÇÃO ESTRUTURADA · <b>JSON-ready</b>';
+    outFootL.textContent = 'Auditável · trilha de extração';
+  }else if(mode==='summary'){
+    outLbl.innerHTML = 'RESUMO POR IA · <b>SEI360 ANALYSIS</b>';
+    outFootL.textContent = 'Gerado pela IA · raciocínio auditável';
+  }else if(mode==='cortex'){
+    outLbl.innerHTML = 'CÓRTEX · <b>IA monitora todo o SEI</b>';
+    outFootL.textContent = 'Verificação integral · todos os processos e informações';
+  }else if(mode==='panel'){
+    outLbl.innerHTML = 'PAINEL CONSOLIDADO · <b>processos correntes</b>';
+    outFootL.textContent = 'Visão cruzada · 6 processos · naturezas diversas';
+  }
+  if(badge){
+    outBadge.textContent = badge;
+    outBadge.style.color = badgeColor || 'var(--neon)';
+    outBadge.style.borderColor = badgeColor ? 'currentColor' : 'rgba(57,255,20,.4)';
+  }
+}
+
+function renderSummary(d){
+  const en = ENRICH[d.fields[0].v];
+  if(!en){ outBody.innerHTML=''; return; }
+  outBody.classList.add('summary-mode');
+  outBody.classList.remove('cortex-mode');
+  document.querySelector('.demo')?.classList.remove('is-panel');
+  const f = en.facts || {};
+  outBody.innerHTML = `
+    <div class="summary-body">
+      <div class="summary-avatar">
+        <div class="av">IA</div>
+        <div class="meta">
+          <div class="ttl">Resumo do processo gerado pela IA</div>
+          <div class="sub">Análise completa em 4,8s · raciocínio auditável</div>
+        </div>
+      </div>
+      <div class="summary-facts">
+        <div class="fact"><div class="k">Nº processo</div><div class="v mono">${f.nProc||'—'}</div></div>
+        <div class="fact"><div class="k">Objeto</div><div class="v">${f.objeto||'—'}</div></div>
+        <div class="fact"><div class="k">Mesa atual no SEI</div><div class="v mono" style="color:var(--cyan)">${f.mesa||'—'}</div></div>
+        <div class="fact pending"><div class="k">IA detectou pendência</div><div class="v">${f.proxPend||'—'}</div></div>
+      </div>
+      <p class="summary-text" id="summaryText"><span class="cursor"></span></p>
+      <div class="summary-tags">
+        ${en.tags.map(t=>`<span class="stag ${t.kind}">${t.label}</span>`).join('')}
+      </div>
+      <div class="summary-action">
+        <div class="al">ação sugerida pela IA</div>
+        <div class="av">${en.nextAction}</div>
+      </div>
+    </div>
+  `;
+  // typewriter the summary
+  const target = document.getElementById('summaryText');
+  const html = en.summary;
+  target.innerHTML = '<span class="cursor"></span>';
+  let i = 0;
+  const step = Math.max(1, Math.floor(html.length / 90));
+  const tick = () => {
+    if(i >= html.length){ target.innerHTML = html + '<span class="cursor"></span>'; return; }
+    let next = i + step;
+    if(html[i]==='<'){ next = html.indexOf('>', i) + 1; }
+    else { while(next < html.length && html[next-1]==='<') next++; }
+    target.innerHTML = html.slice(0, next) + '<span class="cursor"></span>';
+    i = next;
+    setTimeout(tick, 45 + Math.random()*40);
+  };
+  tick();
+
+  setTimeout(()=>{
+    const facts = outBody.querySelectorAll('.summary-facts .fact');
+    const tags = outBody.querySelectorAll('.summary-tags .stag');
+    const action = outBody.querySelector('.summary-action');
+    gsap.from(facts, {opacity:0, y:6, duration:.4, stagger:.07, ease:'power2.out'});
+    gsap.from(tags, {opacity:0, y:6, duration:.4, stagger:.08, ease:'power2.out', delay:.15});
+    gsap.from(action, {opacity:0, y:8, duration:.5, delay:.35, ease:'power2.out'});
+  }, 50);
+}
+
+function renderCortex(){
+  outBody.classList.remove('summary-mode');
+  outBody.classList.add('cortex-mode');
+  document.querySelector('.demo')?.classList.remove('is-panel');
+  if(window._cortexTimers) window._cortexTimers.forEach(id=>clearInterval(id));
+  window._cortexTimers = [];
+  if(window._cortexRAF){ cancelAnimationFrame(window._cortexRAF); window._cortexRAF=null; }
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const VB_W = 480, VB_H = 320;
+  const cx = VB_W/2, cy = VB_H/2;
+  const colorOf = k => k==='amber'?'#FFB800':k==='green'?'#39FF14':k==='rose'?'#FF5C8A':k==='blue'?'#7DB9FF':'#00D4FF';
+
+  // ---- 6 hubs around SEI360 ----
+  const HUB_COUNT = 6;
+  const HUB_R = 100;
+  const hubs = [];
+  for(let i=0;i<HUB_COUNT;i++){
+    const a = (i/HUB_COUNT)*Math.PI*2 + 0.18;
+    hubs.push({
+      x: cx + Math.cos(a)*HUB_R,
+      y: cy + Math.sin(a)*HUB_R,
+      angle: a,
+      r: 4 + Math.random()*1.5,
+      idx: i,
+      pulseDelay: Math.random()*2
+    });
+  }
+
+  // ---- satellites per hub (15-25 each) — knowledge-graph fan-out ----
+  const sats = [];
+  hubs.forEach((h, hi)=>{
+    const count = 15 + Math.floor(Math.random()*11); // 15..25
+    for(let i=0;i<count;i++){
+      // angular spread biased outward from center
+      const spread = 1.6; // radians
+      const baseAngle = h.angle + (Math.random()-0.5)*spread;
+      // radial distance from hub
+      const dist = 22 + Math.random()*42;
+      const x = h.x + Math.cos(baseAngle)*dist;
+      const y = h.y + Math.sin(baseAngle)*dist;
+      // skip if too close to center (don't overlap SEI360)
+      const dC = Math.hypot(x-cx, y-cy);
+      if(dC < 38) continue;
+      // skip if outside viewbox padding
+      if(x < 12 || x > VB_W-12 || y < 18 || y > VB_H-26) continue;
+      const r = Math.random();
+      const kind = r < 0.012 ? 'rose'
+                 : r < 0.035 ? 'amber'
+                 : r < 0.070 ? 'green'
+                 : 'cyan';
+      sats.push({
+        x, y, r: 1.2 + Math.random()*1.4,
+        hub: hi,
+        kind,
+        idx: sats.length,
+        pulseDelay: Math.random()*4
+      });
+    }
+  });
+
+  // ---- ambient scattered dots ----
+  const ambient = [];
+  for(let i=0;i<60;i++){
+    const x = 8 + Math.random()*(VB_W-16);
+    const y = 14 + Math.random()*(VB_H-28);
+    const dC = Math.hypot(x-cx, y-cy);
+    if(dC < 45) continue;
+    const tooClose = sats.some(s => Math.hypot(s.x-x, s.y-y) < 8);
+    if(tooClose) continue;
+    ambient.push({x, y, r: 0.7 + Math.random()*.9, kind:'cyan', delay: Math.random()*5});
+  }
+
+  // ---- rendering ----
+  // satellite -> hub lines
+  const satLinesSVG = sats.map(s=>{
+    const h = hubs[s.hub];
+    return `<line class="ctx-edge" x1="${h.x.toFixed(1)}" y1="${h.y.toFixed(1)}" x2="${s.x.toFixed(1)}" y2="${s.y.toFixed(1)}"/>`;
+  }).join('');
+
+  // hub -> center curves
+  const hubLinesSVG = hubs.map(h=>{
+    const mx = (cx + h.x)/2, my = (cy + h.y)/2;
+    const dx = h.x - cx, dy = h.y - cy;
+    const L = Math.hypot(dx,dy) || 1;
+    const ox = -dy/L * 8, oy = dx/L * 8;
+    return `<path class="ctx-hubline" id="cxhl${h.idx}" d="M${cx} ${cy} Q${(mx+ox).toFixed(1)} ${(my+oy).toFixed(1)} ${h.x.toFixed(1)} ${h.y.toFixed(1)}"/>`;
+  }).join('');
+
+  // satellites
+  const satsSVG = sats.map(s=>
+    `<circle class="ctx-sat ${s.kind}" cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${s.r.toFixed(2)}" fill="${colorOf(s.kind)}" style="animation-delay:${s.pulseDelay.toFixed(2)}s"/>`
+  ).join('');
+
+  // ambient dots
+  const ambientSVG = ambient.map(a=>
+    `<circle class="ctx-ambient" cx="${a.x.toFixed(1)}" cy="${a.y.toFixed(1)}" r="${a.r.toFixed(2)}" fill="rgba(0,212,255,.35)" style="animation-delay:${a.delay.toFixed(2)}s"/>`
+  ).join('');
+
+  // hubs
+  const hubsSVG = hubs.map(h=>`
+    <g class="ctx-hub" data-i="${h.idx}" transform="translate(${h.x.toFixed(1)},${h.y.toFixed(1)})">
+      <circle r="${(h.r+3).toFixed(1)}" fill="rgba(0,212,255,.08)" stroke="rgba(0,212,255,.4)" stroke-width=".5"/>
+      <circle class="ctx-hub-core" r="${h.r.toFixed(1)}" fill="#00D4FF" style="animation-delay:${h.pulseDelay.toFixed(2)}s"/>
+    </g>
+  `).join('');
+
+  // category labels (what IA monitors) — tucked at corners
+  const monLabels = [
+    {text:'STATUS · MESAS',           x:cx, y:14,  anchor:'middle'},
+    {text:'VALORES · PRAZOS',         x:VB_W-6, y:cy-66, anchor:'end'},
+    {text:'PAGAMENTOS · DILIGÊNCIAS', x:cx, y:VB_H-6, anchor:'middle'},
+    {text:'ANOMALIAS · DOCUMENTOS',   x:6, y:cy-66, anchor:'start'}
+  ];
+  const monLabelsSVG = monLabels.map(m=>`<text class="ctx-monitor" x="${m.x}" y="${m.y}" text-anchor="${m.anchor}">▸ ${m.text}</text>`).join('');
+
+  // corner stats
+  const corners = [
+    {label:'PROCESSOS',  value:'847.392',     x:12, y:38, anchor:'start'},
+    {label:'MESAS',      value:'23 órgãos',   x:VB_W-12, y:38, anchor:'end'},
+    {label:'COBERTURA',  value:'24/7 ATIVO',  x:12, y:VB_H-26, anchor:'start'},
+    {label:'ACURÁCIA',   value:'98,7%',       x:VB_W-12, y:VB_H-26, anchor:'end'}
+  ];
+  const cornersSVG = corners.map(c=>`
+    <text class="ctx-stat-lbl" x="${c.x}" y="${c.y}" text-anchor="${c.anchor}">${c.label}</text>
+    <text class="ctx-stat-val" x="${c.x}" y="${c.y+12}" text-anchor="${c.anchor}">${c.value}</text>
+  `).join('');
+
+  outBody.innerHTML = `
+    <div class="cortex-body">
+      <svg class="cortex-svg" viewBox="0 0 ${VB_W} ${VB_H}" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <filter id="cortexGlow" x="-100%" y="-100%" width="300%" height="300%">
+            <feGaussianBlur stdDeviation="2.6" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <radialGradient id="hubGrad" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="rgba(0,212,255,.34)"/>
+            <stop offset="55%" stop-color="rgba(0,212,255,.08)"/>
+            <stop offset="100%" stop-color="rgba(0,212,255,0)"/>
+          </radialGradient>
+          <linearGradient id="scanBeam" x1="0%" y1="50%" x2="100%" y2="50%">
+            <stop offset="0%" stop-color="rgba(0,212,255,0)"/>
+            <stop offset="40%" stop-color="rgba(0,212,255,.16)"/>
+            <stop offset="100%" stop-color="rgba(0,212,255,0)"/>
+          </linearGradient>
+        </defs>
+        ${ambientSVG}
+        ${satLinesSVG}
+        ${hubLinesSVG}
+        <g id="scanBeamG" transform="rotate(0 ${cx} ${cy})">
+          <path d="M${cx} ${cy} L${cx+170} ${cy-22} A170 170 0 0 1 ${cx+170} ${cy+22} Z" fill="url(#scanBeam)"/>
+        </g>
+        ${satsSVG}
+        ${hubsSVG}
+        ${monLabelsSVG}
+        ${cornersSVG}
+        <!-- central SEI360 -->
+        <circle cx="${cx}" cy="${cy}" r="72" fill="url(#hubGrad)"/>
+        <circle cx="${cx}" cy="${cy}" r="46" fill="none" stroke="rgba(0,212,255,.14)" stroke-width=".7" stroke-dasharray="1.5 3" class="cortex-ring slow"/>
+        <circle cx="${cx}" cy="${cy}" r="34" fill="none" stroke="rgba(0,212,255,.22)" stroke-width=".8" stroke-dasharray="2 2" class="cortex-ring med"/>
+        <circle cx="${cx}" cy="${cy}" r="26" fill="none" stroke="rgba(0,212,255,.4)" stroke-width="1"/>
+        <circle cx="${cx}" cy="${cy}" r="20" fill="rgba(7,11,32,.96)" stroke="#00D4FF" stroke-width="1.8"/>
+        <circle class="cortex-pulse" cx="${cx}" cy="${cy}" r="13" fill="#00D4FF" filter="url(#cortexGlow)"/>
+        <text x="${cx}" y="${cy-36}" class="cortex-node-text" style="fill:var(--cyan);font-size:11px;font-weight:700;letter-spacing:.04em">SEI360 · IA</text>
+        <text x="${cx}" y="${cy+38}" class="cortex-node-meta">verificação contínua</text>
+        <g id="cortexPackets"></g>
+        <g id="cortexRipples"></g>
+      </svg>
+      <div class="cortex-legend">
+        <span class="lg">processo ativo</span>
+        <span class="lg amber">aguardando ação</span>
+        <span class="lg green">concluído</span>
+        <span class="lg rose">com risco</span>
+      </div>
+    </div>
+  `;
+
+  const svg = outBody.querySelector('.cortex-svg');
+  const pktG = svg.querySelector('#cortexPackets');
+  const ripG = svg.querySelector('#cortexRipples');
+  const beamG = svg.querySelector('#scanBeamG');
+
+  function hubRipple(){
+    const c = document.createElementNS(ns, 'circle');
+    c.setAttribute('cx', cx); c.setAttribute('cy', cy);
+    c.setAttribute('r', 22); c.setAttribute('fill', 'none');
+    c.setAttribute('stroke', '#00D4FF');
+    c.setAttribute('stroke-width', '1.4');
+    ripG.appendChild(c);
+    const t0 = performance.now();
+    (function step(t){
+      const k = Math.min(1, (t - t0)/1200);
+      c.setAttribute('r', 22 + k*100);
+      c.setAttribute('opacity', (1-k)*.55);
+      if(k<1) requestAnimationFrame(step);
+      else c.remove();
+    })(t0);
+  }
+
+  // packet flowing from a satellite → its hub → SEI360 center
+  function emitFromSat(satIdx){
+    const s = sats[satIdx];
+    if(!s) return;
+    const h = hubs[s.hub];
+    const color = colorOf(s.kind);
+    const c = document.createElementNS(ns,'circle');
+    c.setAttribute('r','1.8');
+    c.setAttribute('fill', color);
+    c.setAttribute('filter','url(#cortexGlow)');
+    pktG.appendChild(c);
+
+    const seg1 = 600 + Math.random()*250; // sat → hub
+    const seg2 = 700 + Math.random()*250; // hub → center
+    const t0 = performance.now();
+    (function step(t){
+      const elapsed = t - t0;
+      if(elapsed < seg1){
+        const k = elapsed/seg1;
+        c.setAttribute('cx', s.x + (h.x - s.x)*k);
+        c.setAttribute('cy', s.y + (h.y - s.y)*k);
+      } else if(elapsed < seg1 + seg2){
+        const k = (elapsed - seg1)/seg2;
+        c.setAttribute('cx', h.x + (cx - h.x)*k);
+        c.setAttribute('cy', h.y + (cy - h.y)*k);
+        c.setAttribute('opacity', k < .8 ? 1 : (1-(k-.8)/.2));
+      } else {
+        c.remove();
+        if(Math.random() < .3) hubRipple();
+        return;
+      }
+      requestAnimationFrame(step);
+    })(t0);
+  }
+
+  // continuous trickle of packets
+  window._cortexTimers.push(setInterval(()=>{
+    if(document.hidden || !sats.length) return;
+    const n = 3 + Math.floor(Math.random()*3);
+    for(let i=0;i<n;i++) emitFromSat(Math.floor(Math.random()*sats.length));
+  }, 220));
+
+  // synchronized burst — many sats fire from each hub
+  window._cortexTimers.push(setInterval(()=>{
+    if(document.hidden) return;
+    hubs.forEach((h,hi)=>{
+      const hubSats = sats.filter(s=>s.hub===hi);
+      hubSats.slice(0, 6).forEach((s,si)=>{
+        setTimeout(()=>emitFromSat(s.idx), si*40);
+      });
+    });
+    setTimeout(hubRipple, 600);
+    setTimeout(hubRipple, 1100);
+  }, 5400));
+
+  // rotating scan beam
+  let beamAngle = 0;
+  function rotateBeam(){
+    beamAngle = (beamAngle + 0.45) % 360;
+    beamG.setAttribute('transform', `rotate(${beamAngle.toFixed(1)} ${cx} ${cy})`);
+    window._cortexRAF = requestAnimationFrame(rotateBeam);
+  }
+  rotateBeam();
+
+  // entry animations
+  const satEls = outBody.querySelectorAll('.ctx-sat');
+  const hubEls = outBody.querySelectorAll('.ctx-hub');
+  const amEls = outBody.querySelectorAll('.ctx-ambient');
+  gsap.from(amEls,  {opacity:0, duration:.4, stagger:.005, ease:'power1.out'});
+  gsap.from(satEls, {opacity:0, scale:0, transformOrigin:'center', transformBox:'fill-box', duration:.4, stagger:.004, ease:'power2.out', delay:.05});
+  gsap.from(hubEls, {opacity:0, scale:.3, transformOrigin:'center', duration:.5, stagger:.08, ease:'back.out(2)', delay:.3});
+}
+
+function renderParse(d){
+  outBody.classList.remove('summary-mode','cortex-mode');
+  document.querySelector('.demo')?.classList.remove('is-panel');
+  if(window._cortexTimers){ window._cortexTimers.forEach(id=>clearInterval(id)); window._cortexTimers=[]; }
+  renderOut(d.fields);
+  const fields = outBody.querySelectorAll('.field');
+  gsap.set(fields, {opacity:0, x:-8});
+  // tokens were already set up by renderRaw; sequentially highlight + reveal
+  const toks = rawBody.querySelectorAll('.tok');
+  toks.forEach(t=>t.classList.remove('hit'));
+  const max = Math.max(toks.length, fields.length);
+  for(let i=0;i<max;i++){
+    setTimeout(()=>{
+      if(toks[i]) toks[i].classList.add('hit');
+      if(fields[i]) gsap.to(fields[i],{opacity:1, x:0, duration:.4, ease:'power2.out'});
+    }, 250 + i*250);
+  }
+}
+
+let docI = 0;
+let phaseI = 0;
+const PHASES = ['parse','summary','cortex','panel'];
+
+function applyDocHead(d){
+  docKind.textContent = d.kind;
+  docBadge.textContent = d.badge;
+  confAvg.textContent = d.confAvg;
+}
+
+function runPhase(){
+  const d = DOCS[docI % DOCS.length];
+  const phase = PHASES[phaseI % PHASES.length];
+
+  // when starting a new doc (phaseI%3===0), refresh raw doc panel
+  const isNewDoc = (phaseI % PHASES.length === 0);
+
+  gsap.to(outBody, {opacity:0, duration:.3, ease:'power1.in', onComplete:()=>{
+    if(isNewDoc){
+      // fade raw too on new doc
+      gsap.to(rawBody, {opacity:0, duration:.3, onComplete:()=>{
+        applyDocHead(d);
+        renderRaw(d.raw);
+        gsap.fromTo(rawBody, {opacity:0}, {opacity:1, duration:.5});
+        runOutputForPhase(d, phase);
+      }});
+    } else {
+      runOutputForPhase(d, phase);
+    }
+  }});
+
+  // advance for next call
+  phaseI++;
+  if(phaseI % PHASES.length === 0) docI++;
+}
+
+function runOutputForPhase(d, phase){
+  // set head label first
+  if(phase==='parse'){
+    setHead('parse', '● PARSE OK', '#39FF14');
+    outFootR.innerHTML = 'conf. média <b>'+d.confAvg+'</b>';
+    renderParse(d);
+  } else if(phase==='summary'){
+    setHead('summary', '● 4,8s · GERADO', '#39FF14');
+    outFootR.innerHTML = 'conf. <b>0,97</b>';
+    renderSummary(d);
+  } else if(phase==='cortex'){
+    setHead('cortex', '● VERIFICAÇÃO 24/7', '#00D4FF');
+    outFootR.innerHTML = 'IA monitora <b>847.392</b> processos em tempo real';
+    renderCortex();
+  } else if(phase==='panel'){
+    setHead('panel', '● 6 processos', '#00D4FF');
+    outFootR.innerHTML = 'painel · cruzamento intersetorial';
+    renderPanel();
+  }
+  gsap.fromTo(outBody, {opacity:0, y:6}, {opacity:1, y:0, duration:.45, ease:'power2.out'});
+}
+
+runPhase();
+setInterval(runPhase, 7000);
+
+/* =====================================================
+   INTEGRATION OVERLAY — data sources flowing into SEI360
+   ===================================================== */
+const SOURCES = [
+  {id:'sei',     name:'SEI',                 meta:'Protocolos · Trâmite',   pos:[0.075, 0.34], side:'right', color:'cyan',  period:2400},
+  {id:'compras', name:'COMPRASNET',          meta:'Editais · ARP',          pos:[0.92, 0.20],  side:'left',  color:'cyan',  period:2900},
+  {id:'audit',   name:'TCU · CGU',           meta:'Auditoria · Sanções',    pos:[0.96, 0.52],  side:'left',  color:'amber', period:3400},
+  {id:'rf',      name:'Receita Federal',     meta:'CNPJ · QSA · Vínculos',  pos:[0.93, 0.80],  side:'left',  color:'cyan',  period:2700},
+  {id:'dou',     name:'Diário Oficial',      meta:'Publicações · DOU',      pos:[0.10, 0.78],  side:'right', color:'cyan',  period:3100},
+  {id:'ocr',     name:'PDFs · OCR · E-mail', meta:'Documentos brutos',      pos:[0.045, 0.55], side:'right', color:'green', period:2000},
+];
+
+const showcaseEl = document.querySelector('.showcase');
+const demoEl = document.querySelector('.demo');
+const integSvg = document.getElementById('integSvg');
+const linesG = document.getElementById('integLines');
+const pktG = document.getElementById('integPackets');
+const labelsEl = document.getElementById('integLabels');
+const hubRing = document.getElementById('hubRing');
+const SVGNS = 'http://www.w3.org/2000/svg';
+const colorHex = c => c==='amber' ? '#FFB800' : c==='green' ? '#39FF14' : '#00D4FF';
+
+let edges = [];
+
+function buildIntegration(){
+  linesG.innerHTML = '';
+  labelsEl.innerHTML = '';
+  edges = [];
+
+  const w = showcaseEl.clientWidth, h = showcaseEl.clientHeight;
+  if(w<400 || h<400) return; // mobile hidden anyway
+
+  integSvg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  integSvg.setAttribute('width', w);
+  integSvg.setAttribute('height', h);
+
+  // demo center (in showcase pixel coords)
+  const sr = showcaseEl.getBoundingClientRect();
+  const dr = demoEl.getBoundingClientRect();
+  const cx = dr.left - sr.left + dr.width/2;
+  const cy = dr.top - sr.top + dr.height/2;
+
+  hubRing.setAttribute('cx', cx);
+  hubRing.setAttribute('cy', cy);
+  hubRing.setAttribute('opacity', 0);
+
+  SOURCES.forEach(s => {
+    const sx = s.pos[0] * w;
+    const sy = s.pos[1] * h;
+
+    // HTML label
+    const lbl = document.createElement('div');
+    lbl.className = 'src ' + s.color;
+    lbl.style.left = (s.pos[0]*100) + '%';
+    lbl.style.top  = (s.pos[1]*100) + '%';
+    lbl.innerHTML =
+      '<span class="src-dot"></span>' +
+      '<div class="src-text" data-side="'+s.side+'">' +
+        '<div class="src-name">'+s.name+'</div>' +
+        '<div class="src-meta">'+s.meta+'</div>' +
+      '</div>';
+    labelsEl.appendChild(lbl);
+
+    // gently curved path from source to demo hub
+    const mx = (sx+cx)/2, my = (sy+cy)/2;
+    const dx = cx-sx, dy = cy-sy;
+    const len = Math.hypot(dx,dy) || 1;
+    // perpendicular offset so adjacent lines don't overlap
+    const sign = (s.pos[1] < 0.5) ? 1 : -1;
+    const off = Math.min(80, len*0.15) * sign;
+    const ox = (-dy/len) * off;
+    const oy = ( dx/len) * off;
+
+    const path = document.createElementNS(SVGNS, 'path');
+    path.setAttribute('d', `M${sx} ${sy} Q${mx+ox} ${my+oy} ${cx} ${cy}`);
+    path.setAttribute('class', 'integ-line ' + s.color);
+    linesG.appendChild(path);
+
+    edges.push({ src:s, path, cx, cy });
+  });
+}
+
+function emitPacket(edge, big){
+  if(!edge || !edge.path) return;
+  const pkt = document.createElementNS(SVGNS, 'circle');
+  const color = colorHex(edge.src.color);
+  pkt.setAttribute('r', big ? 3.6 : 2.4);
+  pkt.setAttribute('fill', color);
+  pkt.setAttribute('filter', 'url(#pktGlow)');
+  pktG.appendChild(pkt);
+
+  const len = edge.path.getTotalLength();
+  const dur = 1100 + Math.random()*450;
+  const start = performance.now();
+  function step(t){
+    const k = Math.min(1, (t - start) / dur);
+    const pt = edge.path.getPointAtLength(k * len);
+    pkt.setAttribute('cx', pt.x);
+    pkt.setAttribute('cy', pt.y);
+    pkt.setAttribute('opacity', k < 0.75 ? 1 : Math.max(0, 1 - (k-0.75)/0.25));
+    if(k < 1) requestAnimationFrame(step);
+    else pkt.remove();
+  }
+  requestAnimationFrame(step);
+}
+
+function startEmitters(){
+  // staggered continuous emission per source
+  SOURCES.forEach((s,i)=>{
+    const fn = () => emitPacket(edges[i]);
+    setTimeout(()=>{
+      fn();
+      setInterval(()=>{
+        if(document.hidden) return;
+        fn();
+      }, s.period + Math.random()*350);
+    }, 600 + i*220);
+  });
+}
+
+function burst(){
+  if(!edges.length) return;
+  edges.forEach((e,i)=>{
+    setTimeout(()=>emitPacket(e, true), i*70);
+    e.path.classList.add('hot');
+    setTimeout(()=>e.path.classList.remove('hot'), 1400);
+  });
+  // expanding hub ring
+  const startT = performance.now();
+  function ring(t){
+    const k = Math.min(1, (t - startT) / 1200);
+    hubRing.setAttribute('r', 30 + k * 160);
+    hubRing.setAttribute('opacity', (1-k) * 0.65);
+    if(k < 1) requestAnimationFrame(ring);
+    else hubRing.setAttribute('opacity', 0);
+  }
+  requestAnimationFrame(ring);
+}
+
+// build on load + after fonts settle + on resize + after each doc cycle
+function rebuildSoon(){
+  clearTimeout(window._integTimer);
+  window._integTimer = setTimeout(buildIntegration, 80);
+}
+buildIntegration();
+setTimeout(buildIntegration, 400);
+if(document.fonts && document.fonts.ready){ document.fonts.ready.then(buildIntegration); }
+addEventListener('resize', rebuildSoon);
+// re-anchor periodically (cheap, handles demo card height shifts between docs)
+setInterval(buildIntegration, 3000);
+
+startEmitters();
+setTimeout(burst, 2400);
+setInterval(burst, 7000);
+
+
+/* =====================================================
+   scanline 8s
+   ===================================================== */
+const scanline = document.getElementById('scanline');
+function runScanline(){
+  gsap.fromTo(scanline,{top:'-200px'},{top: (innerHeight+40)+'px', duration:1.6, ease:'power1.inOut'});
+}
+setTimeout(runScanline,2500);
+setInterval(runScanline,8000);
+
+/* =====================================================
+   login behaviour
+   ===================================================== */
+// remove old CPF mask—field is now email; trim spaces only
+const email = document.getElementById('email');
+email.addEventListener('input', e=>{ e.target.value = e.target.value.trimStart(); });
+
+// toggle password
+const pw = document.getElementById('pw');
+const tog = document.getElementById('togglePw');
+tog.addEventListener('click', ()=>{
+  pw.type = pw.type==='password' ? 'text' : 'password';
+  tog.textContent = pw.type==='password' ? 'ver' : 'ocultar';
+});
+
+// form submit (demo only)
+document.getElementById('loginForm').addEventListener('submit', e=>{
+  e.preventDefault();
+  const btn = e.target.querySelector('.submit');
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span>autenticando...</span>';
+  btn.style.opacity = .8;
+  setTimeout(()=>{
+    btn.innerHTML = '<span>✓ acesso liberado</span>';
+    btn.style.background = 'linear-gradient(180deg, #057A55, #045E42)';
+    btn.style.borderColor = '#045E42';
+    setTimeout(()=>{
+      btn.innerHTML = orig;
+      btn.style.background='';
+      btn.style.borderColor='';
+      btn.style.opacity='';
+    }, 1800);
+  }, 900);
+});
+</script>
+</body>
+</html>

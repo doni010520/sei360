@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Busca avançada</title>
+{% include '_cabeca.html' %}
+</head><body>
+
+{% with pagina='busca' %}{% include '_nav.html' %}{% endwith %}
+
+<div class="folha" style="max-width:1180px">
+
+  <h1 style="font-family:var(--display);font-size:27px;margin:0 0 6px;font-weight:600">Busca avançada</h1>
+  <div style="color:var(--ink-2);margin-bottom:18px;max-width:74ch">
+    Pergunta feita ao SEI <b>com o seu login</b>. O resultado é o que o SEI mostraria a
+    você — inclusive processo que não está na sua carteira. Ele é <b>seu</b>: não entra na
+    carteira de ninguém, não alimenta relatório e some em 30 dias.
+  </div>
+
+  {# Sem credencial não há busca, e isso precisa ser dito antes de a pessoa
+     preencher seis campos e apertar um botão que não tem como funcionar. #}
+  {% if not conta %}
+  <div class="procedencia alerta" style="margin-bottom:18px">
+    <span>Nenhuma conta do SEI configurada para esta instalação. A busca roda com o
+      <b>seu</b> login — sem ele não há como perguntar.
+      <a href="/configuracao">Configurar acesso</a>.</span>
+  </div>
+  {% endif %}
+
+  {# QUEM EXECUTA, antes do botão. A busca não roda no servidor: roda no
+     computador onde está a sua credencial. Sem estação viva não há busca — e
+     descobrir isso depois de preencher os campos e esperar foi o defeito. #}
+  {% if sem_estacao %}
+  <div class="procedencia alerta" style="margin-bottom:18px;display:block">
+    <div><b>A busca não tem quem execute:</b> {{ sem_estacao }}.</div>
+    <div style="margin-top:4px">{{ como_resolver }}</div>
+    <div class="pq" style="margin-top:4px">A pesquisa roda no computador onde está a
+      sua credencial do SEI, não neste servidor. Enquanto não houver estação
+      respondendo, o botão fica desligado — em vez de aceitar um pedido que
+      ninguém pegaria.</div>
+  </div>
+  {% elif estacao %}
+  <div class="procedencia" style="margin-bottom:18px">
+    <span>Quem executa: estação <b>{{ estacao }}</b>. A pesquisa roda no computador
+      onde está a sua credencial do SEI.</span>
+  </div>
+  {% endif %}
+
+  <form id="fBusca" autocomplete="off">
+    <input type="hidden" name="csrf" class="csrf" id="csrf">
+
+    <div class="cartao" style="margin-bottom:14px">
+      <div class="linha-campos">
+        <div class="campo"><label for="instancia">Instalação do SEI</label><select id="instancia">
+            {% for i in instancias %}
+            <option value="{{ i.id }}" {{ 'selected' if i.id == instancia }}>{{ i.nome }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="campo"><label for="mesa">Mesa (unidade ativa na pesquisa)</label><select id="mesa">
+            {% for m in mesas %}<option value="{{ m }}">{{ m }}</option>
+            {% else %}<option value="">— nenhuma unidade vinculada —</option>{% endfor %}
+          </select>
+        </div>
+        {# Opção, não campo: o rótulo aqui é a frase, e por isso não leva a
+           tipografia de versalete que `label` recebe nas telas de formulário. #}
+        <div class="campo" style="flex:0 0 auto;align-self:flex-end">
+          <label style="display:flex;align-items:center;gap:7px;text-transform:none;
+                        letter-spacing:0;font-size:13px;font-family:inherit;
+                        color:var(--ink);margin-bottom:11px">
+            <input type="checkbox" id="tramitacao_unidade" checked
+                   style="width:auto;margin:0">
+            Com tramitação na unidade
+          </label>
+        </div>
+      </div>
+      <div class="pq" style="margin-top:2px">
+        <b>Com tramitação na unidade</b> traz também o que já passou pela mesa e não está
+        mais aberto nela. É por causa desse filtro que a mesa acima importa: a pesquisa é
+        feita com ela ativa no SEI.
+      </div>
+    </div>
+
+    <div class="cartao" style="margin-bottom:14px">
+      <div class="linha-campos">
+        <div class="campo"><label for="tipo_processo">Tipo do processo</label><input type="text" id="tipo_processo" placeholder="Ex.: Dispensa: Menor Valor"></div>
+        <div class="campo"><label for="especificacao">Especificação</label><input type="text" id="especificacao" placeholder="Palavras da especificação"></div>
+      </div>
+      <div class="linha-campos">
+        <div class="campo"><label for="contato">Contato / interessado</label><input type="text" id="contato" placeholder="Nome do fornecedor ou interessado"></div>
+        <div class="campo"><label for="assunto">Assunto</label><input type="text" id="assunto" placeholder="Assunto do processo"></div>
+      </div>
+      <div class="linha-campos">
+        <div class="campo"><label for="observacao">Observação desta unidade</label><input type="text" id="observacao"></div>
+        <div class="campo"><label for="numero_sei">Número SEI</label><input type="text" id="numero_sei" placeholder="019.0000.2026.0000000-0"></div>
+      </div>
+      <div class="linha-campos">
+        <div class="campo" style="max-width:170px"><label for="data_de">Data de</label><input type="text" id="data_de" placeholder="DD/MM/AAAA"></div>
+        <div class="campo" style="max-width:170px"><label for="data_ate">Data até</label><input type="text" id="data_ate" placeholder="DD/MM/AAAA"></div>
+        <div class="campo" style="max-width:260px"><label for="tipo_data">A data é de</label><select id="tipo_data">
+            {% for k, v in tipos_data.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      {# A data é o único filtro que limita o tamanho do resultado na origem. Sem
+         nenhum critério, "com tramitação na unidade" é uma varredura da mesa
+         inteira num clique — e o servidor recusa, dizendo isso. #}
+      <div class="pq" style="margin-top:6px">
+        Informe pelo menos um critério além da tramitação. O intervalo de datas é o que
+        mantém a busca curta: sem ele, a pesquisa varre a mesa inteira.
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:22px">
+      <button class="bt forte" id="btBuscar" type="submit"
+              {% if sem_estacao or not conta %}disabled
+              title="{{ sem_estacao or 'sem conta do SEI configurada' }}"{% endif %}
+              >Pesquisar no SEI</button>
+      <button class="bt" id="btCancelar" type="button" style="display:none">Cancelar</button>
+      <span id="situacao" style="color:var(--ink-2);font-size:13px"></span>
+    </div>
+  </form>
+
+  <div id="resultado"></div>
+
+  {% if recentes %}
+  <h2 class="sec">Suas buscas recentes</h2>
+  <div class="cartao">
+    <table class="grade">
+      <thead><tr><th>Quando</th><th>Instalação</th><th>Mesa</th><th>Filtros</th>
+        <th>Estado</th><th class="num">Itens</th><th></th></tr></thead>
+      <tbody>
+      {% for b in recentes %}
+        <tr>
+          <td class="mono" style="font-size:11px">{{ b.pedida_em[:16]|replace('T',' ') }}</td>
+          <td style="font-size:11px">{{ b.instancia }}</td>
+          <td class="mono" style="font-size:11px">{{ (b.mesa_confirmada or b.mesa or '—') }}</td>
+          <td class="mono" style="font-size:11px">{{ b.filtros_sha }}</td>
+          <td><span class="tag {{ 'al' if b.estado in ('parcial','falhou') }}">{{ b.estado }}</span>
+            {% if b.motivo %}<div class="pq">{{ b.motivo }}</div>{% endif %}</td>
+          <td class="num">{{ b.colhidos if b.colhidos is not none else '—' }}</td>
+          <td><a href="#" data-abrir="{{ b.id }}">ver</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+</div>
+
+<script>
+/* A busca é uma TAREFA, não uma requisição que espera. O servidor tem 8 threads e
+   um healthcheck que desiste em 4 s; uma busca medida no sistema irmão levou 226 s.
+   Oito buscas síncronas derrubariam a sonda de saúde e o container reiniciaria no
+   meio do expediente. Aqui a tela pede, recebe um id e pergunta o estado. */
+(function () {
+  const $ = s => document.querySelector(s);
+  const cookie = n => (document.cookie.match('(^|;)\\s*' + n + '\\s*=\\s*([^;]+)') || [])[2] || '';
+  document.querySelectorAll('.csrf').forEach(e => { e.value = cookie('sei360_csrf'); });
+
+  const CAMPOS = ['tipo_processo', 'especificacao', 'contato', 'assunto',
+                  'observacao', 'numero_sei', 'data_de', 'data_ate'];
+  const ESPERA_MAX = {{ espera_max_s }};
+  let atual = null, relogio = null;
+
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  function filtros() {
+    const f = { tramitacao_unidade: $('#tramitacao_unidade').checked,
+                tipo_data: $('#tipo_data').value };
+    CAMPOS.forEach(k => { const v = $('#' + k).value.trim(); if (v) f[k] = v; });
+    return f;
+  }
+
+  function situacao(t, alerta) {
+    const el = $('#situacao');
+    el.textContent = t;
+    el.style.color = alerta ? 'var(--alerta)' : 'var(--ink-2)';
+  }
+
+  async function pedir(ev) {
+    ev.preventDefault();
+    $('#btBuscar').disabled = true;
+    situacao('pedindo ao SEI…');
+    const r = await fetch('/api/busca', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF': cookie('sei360_csrf') },
+      body: JSON.stringify({ instancia: $('#instancia').value, mesa: $('#mesa').value,
+                             filtros: filtros() }),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      /* 409 DEGRADA: se já há uma busca em curso nesta conta, a tela mostra o
+         progresso DELA em vez de um erro sem saída. Uma busca por conta é limite
+         do SEI, não escolha nossa: a troca de mesa lá é por usuário, e duas
+         buscas simultâneas da mesma conta devolvem a carteira errada sem erro. */
+      if (d.em_curso) { situacao(d.erro + ' — acompanhando a que está em curso'); acompanhar(d.em_curso); }
+      else { situacao(d.erro || 'não deu para pedir', true); $('#btBuscar').disabled = false; }
+      return;
+    }
+    acompanhar(d.busca_id);
+  }
+
+  function acompanhar(id) {
+    atual = id;
+    $('#btCancelar').style.display = '';
+    clearInterval(relogio);
+    relogio = setInterval(() => olhar(id), 2000);
+    olhar(id);
+  }
+
+  async function olhar(id) {
+    const r = await fetch('/api/busca/' + id);
+    if (!r.ok) { clearInterval(relogio); situacao('busca não encontrada', true); return; }
+    const b = await r.json();
+    /* TRÊS ESTADOS, TRÊS FRASES. `pedida` significa que ninguém pegou o pedido —
+       dizer "a estação está pesquisando" nesse estado é afirmar um trabalho que
+       não existe, e foi o que a tela fez enquanto nada acontecia. */
+    if (['pedida', 'entregue', 'em_curso'].includes(b.estado)) {
+      const desde = Math.max(0, Math.round((Date.now() - Date.parse(b.pedida_em)) / 1000));
+      if (b.estado === 'pedida') {
+        situacao(`aguardando a estação pegar o pedido… ${desde}s`
+                 + (desde > 20 ? ' — se passar de ' + ESPERA_MAX + 's sem ninguém pegar,'
+                                 + ' é porque o agente não está rodando' : ''));
+      } else {
+        situacao(`a estação pegou e está pesquisando no SEI… ${desde}s`);
+      }
+      return;
+    }
+    clearInterval(relogio);
+    $('#btBuscar').disabled = false;
+    $('#btCancelar').style.display = 'none';
+    situacao('');
+    mostrar(b);
+  }
+
+  function mostrar(b) {
+    const cor = { completa: '', vazia: '', parcial: 'al', falhou: 'al', cancelada: 'al' }[b.estado] || '';
+    /* PROCEDÊNCIA PRIMEIRO, e sem enfeite: quem lê precisa saber com que conta a
+       pergunta foi feita, em que mesa o SEI estava, e se a lista está inteira.
+       `parcial` nunca é apresentada com cara de completa. */
+    const cab = `
+      <div class="procedencia ${b.estado === 'completa' || b.estado === 'vazia' ? '' : 'alerta'}"
+           style="margin-bottom:12px;display:block">
+        <div>Instalação <b>${esc(b.instancia)}</b> · conta <b>${esc(b.conta || '—')}</b></div>
+        <div>Mesa ativa confirmada no SEI: <b>${esc(b.mesa_confirmada || '—')}</b></div>
+        <div>Pesquisado em ${esc((b.terminada_em || '').slice(0, 16).replace('T', ' '))}
+             ${b.duracao_s != null ? '· ' + b.duracao_s + ' s' : ''}
+             ${b.paginas_lidas != null ? '· ' + b.paginas_lidas + ' página(s)' : ''}</div>
+        <div><b>${esc(b.estado.toUpperCase())}</b>${b.total_declarado != null
+          ? ' — o SEI declarou ' + b.total_declarado + ' registro(s) e vieram ' + (b.colhidos || 0)
+          : ''}${b.motivo ? ' · ' + esc(b.motivo) : ''}</div>
+        <div class="pq">Esta lista é sua. Não entra na carteira de ninguém e é apagada em 30 dias.</div>
+      </div>`;
+    if (!b.itens || !b.itens.length) {
+      $('#resultado').innerHTML = cab + '<div class="cartao"><div class="vazio-msg">' +
+        (b.estado === 'vazia' ? 'O SEI não achou nenhum processo com esses critérios.'
+                              : 'Nenhum item para mostrar.') + '</div></div>';
+      return;
+    }
+    const linhas = b.itens.map(i => `<tr>
+        <td class="num">${i.ordem}</td>
+        <td class="mono">${esc(i.protocolo)}</td>
+        <td>${esc(i.tipo_processo)}</td>
+        <td class="mono" style="font-size:11px">${esc(i.unidade_geradora)}</td>
+        <td style="font-size:11px">${esc((i.usuario_gerador || '').split('@')[0])}</td>
+        <td class="mono" style="font-size:11px">${esc(i.data_inclusao)}</td>
+      </tr>`).join('');
+    $('#resultado').innerHTML = cab + `<div class="cartao">
+      <table class="grade">
+        <thead><tr><th class="num">#</th><th>Protocolo</th><th>Tipo</th>
+          <th>Unidade geradora</th><th>Quem gerou</th><th>Incluído em</th></tr></thead>
+        <tbody>${linhas}</tbody>
+      </table></div>`;
+  }
+
+  $('#fBusca').addEventListener('submit', pedir);
+  $('#btCancelar').addEventListener('click', async () => {
+    if (!atual) return;
+    await fetch('/api/busca/' + atual + '/cancelar',
+                { method: 'POST', headers: { 'X-CSRF': cookie('sei360_csrf') } });
+    clearInterval(relogio);
+    $('#btBuscar').disabled = false;
+    $('#btCancelar').style.display = 'none';
+    situacao('cancelada');
+  });
+  document.querySelectorAll('[data-abrir]').forEach(a => a.addEventListener('click', ev => {
+    ev.preventDefault();
+    olhar(a.getAttribute('data-abrir'));
+  }));
+  $('#instancia').addEventListener('change', () => {
+    location.href = '/busca?instancia=' + encodeURIComponent($('#instancia').value);
+  });
+})();
+</script>
+</body></html>

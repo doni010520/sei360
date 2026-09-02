@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Relatórios</title>
+{% include '_cabeca.html' %}
+</head><body>
+
+{% with pagina='relatorios' %}{% include '_nav.html' %}{% endwith %}
+
+<div class="folha" style="max-width:1180px">
+
+  <h1 style="font-family:var(--display);font-size:27px;margin:0 0 6px;font-weight:600">Relatórios</h1>
+  <div style="color:var(--ink-2);margin-bottom:20px;max-width:74ch">
+    Sobre <b>{{ total }}</b> processo(s) das suas {{ unidades|length }} unidade(s).
+    Cada relatório mostra a <b>cobertura</b> dos campos que usa — a fração da carteira que
+    realmente tem aquele dado preenchido. Número construído sobre metade da base continua
+    sendo número, mas quem o apresenta precisa saber disso antes da reunião, não durante.
+  </div>
+
+  {# Idade do dado no topo: relatório que soma unidade fresca com unidade
+     atrasada produz total que ninguém consegue defender. #}
+  <div class="procedencia {{ 'alerta' if coleta.pior != 'verde' }}">
+    <span style="font-family:var(--rotulo);font-size:9.5px;letter-spacing:.18em;
+                 text-transform:uppercase;color:var(--ink-3)">Dado de</span>
+    {% for c in coleta.unidades %}
+      <span><i class="pt {{ c.cor }}" style="display:inline-block;width:7px;height:7px;
+        border-radius:50%;margin-right:5px"></i>{{ c.curta }} <b>{{ c.processos }}</b>
+        <span style="color:var(--ink-3)">{{ c.texto }}</span></span>
+    {% else %}
+      <span>nenhuma unidade vinculada a esta conta</span>
+    {% endfor %}
+  </div>
+
+  <div class="rel-grade">
+    {% for r in catalogo %}
+    <a class="rel-cartao {{ 'destaque' if r.destaque }} {{ 'inviavel' if not r.viavel }}"
+       href="{{ '/relatorios/' ~ r.id if r.viavel else '#' }}">
+      <h3>{{ r.titulo }}</h3>
+      <p>{{ r.pergunta }}</p>
+      <div class="cob">
+        {# Sem base, a cobertura não é 0% — ela não existe. Imprimir "0%" aqui
+           acusaria o preenchimento do SEI por uma coleta que nunca houve. #}
+        {% if r.sem_base %}
+        <span class="fraca" title="ainda não há coleta destas unidades para medir">sem coleta ainda</span>
+        {% else %}
+        {% for c in r.cobertura %}
+        <span class="{{ 'fraca' if c.pct < 80 }}" title="{{ c.campo }}: {{ c.pct }}% dos processos têm este campo preenchido">{{ c.campo }} {{ c.pct }}%</span>
+        {% endfor %}
+        {% endif %}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+
+  <h2 class="sec">O que este dado não sustenta</h2>
+  <div style="color:var(--ink-2);font-size:13.5px;margin-bottom:14px;max-width:74ch">
+    Estes relatórios seriam fáceis de fazer e enganosos de ler. Ficam listados com o motivo
+    porque a pergunta “e por marcador de retorno?” vai aparecer — e é melhor a tela responder
+    do que alguém construir o gráfico sobre 5% da base.
+  </div>
+  <table class="tab-rel">
+    <thead><tr><th>Relatório</th><th>Campo</th><th>Preenchido em</th><th>Por que não</th></tr></thead>
+    <tbody>
+      {# O número é MEDIDO agora, na mesma base dos cartões acima. Antes vinha
+         escrito à mão na constante e envelhecia sozinho: dois dos cinco já
+         estavam errados quando alguém foi conferir. #}
+      {% for i in inviaveis %}
+      <tr><td>{{ i.titulo }}</td><td class="num">{{ i.campo }}</td>
+          <td class="num">{{ i.medida }}</td><td>{{ i.motivo }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="rel-nota">
+    A saída não é apagar o campo: é preenchê-lo no SEI. Se a unidade passar a usar retorno
+    programado, o relatório aparece sozinho quando a cobertura subir.
+  </div>
+</div>
+
+<script>
+const c=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+document.querySelectorAll('.csrf').forEach(i=>i.value=c);
+</script>
+</body></html>

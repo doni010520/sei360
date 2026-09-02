@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Recuperar acesso</title>
+<script>try{var t=localStorage.getItem('painel-tema');if(t)document.documentElement.dataset.tema=t}catch(e){}</script>
+<!-- Mesma regra da tela de primeiro acesso: as fontes vêm ANTES da folha que as
+     pede, e esta tela não tem menu, então não leva nav.css nem lateral.css. -->
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontes.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='sei360.css') }}">
+</head><body>
+<div class="acesso">
+  <section class="lateral">
+    <div>
+      <div class="marca">Sistema Eletrônico de Informações · SESAB</div>
+      <h1>Esqueci a senha.</h1>
+      <div class="fio"></div>
+      <p class="sub">O link que enviamos vale por 30 minutos e serve uma vez só.
+      Ao usá-lo, todas as sessões abertas da sua conta são encerradas — se a senha
+      está sendo trocada por suspeita, deixar a sessão de outro viva anularia o gesto.</p>
+    </div>
+    <footer>Esta <b>não</b> é a sua senha do SEI. O SEI360 nunca pede a senha do SEI.</footer>
+  </section>
+
+  <section class="painel-acesso">
+    <div class="caixa">
+      <h2>Recuperar acesso</h2>
+      {% if not ativa %}
+        <div class="dica">Este caminho está desligado nesta instalação.</div>
+        <div class="erro on" role="alert">
+          A recuperação por e-mail não está ligada. Peça a quem administra o
+          SEI360 para gerar uma senha provisória para você.
+        </div>
+        <a class="primario" href="{{ url_for('entrar') }}">Voltar ao acesso</a>
+      {% elif recado %}
+        {# A MESMA FRASE, exista a conta ou não. Dizer "não há conta com esse
+           e-mail" transformaria esta tela num verificador de quem trabalha no
+           órgão — que é a lista que alguém quer ANTES de tentar senha. #}
+        <div class="ok on" role="status">{{ recado }}</div>
+        <div class="dica">Não chegou? Confira a caixa de spam. O e-mail sai de um
+        remetente novo, e filtro de órgão costuma segurar o primeiro.</div>
+        <a class="primario" href="{{ url_for('entrar') }}">Voltar ao acesso</a>
+      {% else %}
+        <div class="dica">Informe o e-mail institucional da sua conta.</div>
+        <form method="post" autocomplete="on">
+          <input type="hidden" name="csrf" id="csrf">
+          <div class="campo">
+            <label for="email">E-mail</label>
+            <input id="email" name="email" type="email" required autofocus
+                   autocomplete="username" inputmode="email">
+          </div>
+          <button class="primario" type="submit">Enviar link de recuperação</button>
+        </form>
+        <div class="dica" style="margin-top:14px">
+          <a href="{{ url_for('entrar') }}">Voltar ao acesso</a>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+</div>
+<script>
+var c=document.getElementById('csrf');
+if(c)c.value=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+</script>
+</body></html>

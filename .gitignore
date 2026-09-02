@@ -1,0 +1,41 @@
+# SEI360 — dado real, segredo e artefato gerado. Nunca versionar.
+
+# Segredos e variaveis de ambiente
+.env
+.env.*
+
+# Banco de trabalho e diretorio de dados
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+sei360/servidor/_dados/
+
+# Perfil/sessao do navegador na estacao (fica logado no SEI)
+painel_sesab/_perfil_sei/
+
+# Coletas e resumos reais (dado de processo/saude), e logs de execucao
+painel_sesab/_coletas/
+painel_sesab/_resumos/
+painel_sesab/_logs/
+sei360/servidor/_logs/
+
+# Artefatos derivados com carteira real (nao sao fonte/template)
+painel_sesab/painel_sesab.html
+painel_sesab/processos_sesab.xlsx
+
+# Estado do agente da estacao (token de vinculo, log de execucoes)
+agente.json
+agente.lock
+execucoes.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / SO
+.vscode/
+*.swp
+Thumbs.db
+.DS_Store

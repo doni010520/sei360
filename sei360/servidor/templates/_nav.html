@@ -1,0 +1,97 @@
+{# MENU LATERAL — navegação única do SEI360.
+
+   A LISTA vive em `portas.py` e é a mesma que o painel usa: uma lista, duas
+   renderizações. Antes eram dois textos escritos à mão, e divergiram.
+
+   Este arquivo é incluído pelas telas de serviço. O painel recebe a MESMA marcação
+   por `montar_painel.py`, porque ele não passa pelo `include` do Jinja — o HTML
+   dele é gerado a partir do painel autocontido do projeto.
+
+   `pagina` é o id da porta ativa. Sem ele, nenhum item aparece marcado e a pessoa
+   perde a única pista de onde está. #}
+<aside class="moldura">
+  <a class="lat-marca" href="/" title="SEI360 — carteira de processos da SESAB">
+    <span class="lat-marca-icone">
+      {# A MARCA do SEI360: o olho com o anel tracejado e a íris com "IA". É a
+         mesma da tela de acesso — a marca não muda de tela para tela. #}
+      <svg viewBox="0 0 44 32" fill="none" aria-hidden="true"><circle cx="22" cy="16" r="14" stroke="currentColor" stroke-width=".8" stroke-dasharray="2 1.6" opacity=".5" fill="none"/><path d="M3 16 Q22 3 41 16 Q22 29 3 16 Z" stroke="currentColor" stroke-width="2" fill="none" stroke-linejoin="round" stroke-linecap="round"/><g stroke="currentColor" stroke-width=".9" opacity=".55" stroke-linecap="round"><path d="M22 6.5 L22 8.4"/><path d="M22 23.6 L22 25.5"/><path d="M9 16 L10.9 16"/><path d="M33.1 16 L35 16"/></g><circle cx="22" cy="16" r="8.4" fill="currentColor" opacity=".16"/><circle cx="22" cy="16" r="7" fill="currentColor"/><text class="lat-ia" x="22" y="19.4" text-anchor="middle" font-weight="700" font-size="9" letter-spacing=".3">IA</text><circle cx="24.6" cy="13.2" r="1" fill="#fff" opacity=".85"/></svg>
+    </span>
+    <span class="lat-marca-txt"><b>SEI360</b><i>Carteira SESAB</i></span>
+  </a>
+
+  <nav class="lat-nav" aria-label="Seções do sistema">
+    {% for p in portas %}
+    <a class="lat-i {{ 'on' if pagina == p.id }}" href="{{ p.url }}"
+       title="{{ p.rotulo }} — {{ p.subtitulo }}"
+       {% if pagina == p.id %}aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{{ p.icone|safe }}</svg>
+      <span class="lat-i-txt"><b>{{ p.rotulo }}</b><i>{{ p.subtitulo }}</i></span>
+      {% if pagina == p.id %}<span class="lat-i-marca" aria-hidden="true"></span>{% endif %}
+    </a>
+    {% endfor %}
+  </nav>
+
+  <div class="lat-pe">
+    <div class="lat-quem" title="{{ u.email }}">
+      <span class="lat-av">{{ u.email[:2]|upper }}</span>
+      <span class="lat-quem-txt"><b>{{ u.email.split('@')[0] }}</b><i>{{ u.papel }}</i></span>
+    </div>
+    {# "Sair" sozinho já foi lido como "sair desta tela". Dizer de ONDE se sai
+       remove a dúvida no único lugar onde ela custa caro: a estação compartilhada. #}
+    <form method="post" action="/sair" style="margin:0">
+      <input type="hidden" name="csrf" class="csrf" id="csrfSair">
+      <button class="lat-bt lat-sair" type="submit" title="Sair do SEI360">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+          <polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+        <span>Sair do SEI360</span></button>
+    </form>
+    <button class="lat-bt lat-dobrar" type="button" id="latDobrar"
+            title="Recolher menu" aria-expanded="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="m15 18-6-6 6-6"/></svg>
+      <span>Recolher menu</span></button>
+  </div>
+</aside>
+
+<script>
+/* Recolher/expandir. O estado persiste porque quem trabalha em tela de 1366px
+   recolhe uma vez e não quer refazer isso a cada abertura — a mesma razão pela
+   qual o rail de filtros e o tema do painel já persistem. */
+(function(){
+  const K='sei360-lateral', R=document.documentElement, b=document.getElementById('latDobrar');
+  const aplica=v=>{
+    R.dataset.lateral = v ? 'recolhido' : 'aberto';
+    if(b){ b.setAttribute('aria-expanded', String(!v));
+           b.title = v ? 'Expandir menu' : 'Recolher menu';
+           const s=b.querySelector('span'); if(s) s.textContent = v ? 'Expandir menu' : 'Recolher menu'; }
+    try{ localStorage.setItem(K, v?'1':'0'); }catch(e){}
+  };
+  /* Sem escolha guardada, NÃO se grava atributo nenhum: o CSS decide pela largura
+     da tela (recolhida abaixo de 1400px, aberta acima). Gravar 'aberto' na carga
+     — que era o que este script fazia — anulava a media query, e a moldura
+     ficava com 256px num notebook de 1366px, onde a coluna principal da lista
+     encolhe para 269px. Escolha explícita, aí sim, manda em qualquer largura. */
+  let guardado=null;
+  try{ guardado = localStorage.getItem(K); }catch(e){}
+  if(guardado===null){
+    R.removeAttribute('data-lateral');
+    const estreita = matchMedia('(max-width: 1400px)').matches;
+    if(b){ b.setAttribute('aria-expanded', String(!estreita));
+           b.title = estreita ? 'Expandir menu' : 'Recolher menu';
+           const s=b.querySelector('span');
+           if(s) s.textContent = estreita ? 'Expandir menu' : 'Recolher menu'; }
+  } else {
+    aplica(guardado==='1');
+  }
+  if(b) b.onclick=()=>{
+    const recolhida = R.dataset.lateral
+      ? R.dataset.lateral==='recolhido'
+      : matchMedia('(max-width: 1400px)').matches;
+    aplica(!recolhida);
+  };
+})();
+</script>

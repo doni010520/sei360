@@ -1,0 +1,25 @@
+# ESTE ARQUIVO NÃO VALE MAIS NADA. Está aqui só para dizer isso.
+#
+# O Docker lê o `.dockerignore` da RAIZ DO CONTEXTO DE BUILD, e o contexto do
+# SEI360 passou a ser `sei_sistema/` — porque o coletor e os dois `.js` vivem em
+# `painel_sesab/`, que é irmão de `sei360/`, e `COPY` não enxerga fora do
+# contexto. Então quem manda é:
+#
+#     C:\Claude\sei_sistema\.dockerignore
+#
+# Um arquivo com o nome certo, no lugar errado, é pior que arquivo nenhum: quem
+# vier proteger a imagem edita este, o build não muda, e nada avisa. Foi por um
+# engano dessa família — comentário no fim da linha, que o Docker não aceita —
+# que o banco de produção, a sessão do SEI e a chave do cofre passaram a entrar
+# na imagem sem ninguém ver.
+#
+# Antes de um build, confira com:
+#
+#     python sei360/servidor/conferir_contexto.py
+#
+# Ele lista o que entraria, exige o que o build precisa e recusa o que não pode.
+#
+# (O conteúdo antigo saiu de propósito. Se algum dia o contexto voltar a ser
+#  `sei360/servidor/`, o histórico do repositório tem o que estava aqui — e a
+#  regra passa a ser reescrever a partir do arquivo da raiz, que é o que está
+#  correto e testado.)

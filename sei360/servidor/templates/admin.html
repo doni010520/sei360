@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Administração</title>
+{% include '_cabeca.html' %}
+</head><body>
+
+{% with pagina='admin' %}{% include '_nav.html' %}{% endwith %}
+
+<div class="folha">
+
+  {% if provisoria %}
+  <div class="destaque">
+    <b>Senha provisória de {{ novo }}:</b>
+    <code>{{ provisoria }}</code><br>
+    <span style="color:var(--ink-3);font-size:12px">Aparece uma única vez, aqui. Não é enviada por
+    e-mail e não fica legível no banco. A pessoa troca no primeiro acesso, antes de ver qualquer tela.</span>
+  </div>
+  {% endif %}
+  {% if request.args.get('codigo') %}
+  <div class="destaque">
+    <b>Código de vínculo do agente</b> (vale 2 horas, uso único):
+    <code>{{ request.args.get('codigo') }}</code><br>
+    <span style="color:var(--ink-3);font-size:12px">Na estação, com o código JÁ no lugar
+    — copiar e colar, sem transcrever nada:<br>
+    <code style="user-select:all">python sei360_agente.py vincular --codigo {{ request.args.get('codigo') }} --servidor {{ request.host_url|trim('/') }}</code>
+    <br>E, para a busca avançada ser interativa, deixe também o plantão rodando:<br>
+    <code style="user-select:all">python sei360_agente.py rodar --atender</code>
+    <br>Sem o plantão, a estação só pergunta se há busca a cada 30 min — que é a
+    cadência da coleta, não a de alguém esperando na tela.</span>
+  </div>
+  {% endif %}
+
+  {% if aviso %}<div class="destaque">{{ aviso }}</div>{% endif %}
+
+  {% if candidatos %}
+  <h2 class="sec">Snapshots retidos — precisam de decisão</h2>
+  <table class="grade">
+    <tr><th>Unidade</th><th>Coletado em</th><th>Processos</th><th>Motivo da retenção</th><th>Decisão</th></tr>
+    {% for s in candidatos %}
+    <tr>
+      <td class="mono" style="font-size:11px">{{ s.unidade }}</td>
+      <td class="mono" style="font-size:11px">{{ s.coletado_em[:16].replace('T',' ') }}</td>
+      <td class="mono">{{ s.unicos }}</td>
+      <td>{{ s.motivo or '—' }}</td>
+      <td style="display:flex;gap:6px">
+        <form method="post" action="/admin/snapshot"><input type="hidden" name="csrf" class="csrf">
+          <input type="hidden" name="acao" value="promover"><input type="hidden" name="id" value="{{ s.id }}">
+          <button class="bt" type="submit" title="Passa a ser o snapshot corrente desta unidade">Promover</button></form>
+        <form method="post" action="/admin/snapshot"><input type="hidden" name="csrf" class="csrf">
+          <input type="hidden" name="acao" value="rejeitar"><input type="hidden" name="id" value="{{ s.id }}">
+          <button class="bt risco" type="submit" title="Descarta; a unidade continua com o snapshot anterior">Rejeitar</button></form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <div style="font-size:12px;color:var(--ink-3);margin:-6px 0 4px">
+    Retido porque a coleta trouxe menos de 90% dos processos da vez anterior. Promover
+    só depois de conferir no SEI que a unidade esvaziou mesmo — a alternativa é a coleta
+    ter vindo pela metade, e aí o painel passaria a esconder processo que existe.
+  </div>
+  {% endif %}
+
+  <!-- Administrar não é ler: o papel admin não recebe carteira por padrão. Se um
+       admin precisar ver processos, ganha vínculo de unidade explícito e registrado. -->
+  <h2 class="sec">Estado da coleta</h2>
+  <div class="cartao">
+    {% for c in coleta.unidades %}
+      <div class="un" style="display:flex;align-items:center;gap:9px;padding:5px 0;font-size:13px">
+        <span class="pt {{ c.cor }}"></span>
+        <span style="flex:1;font-family:var(--mono);font-size:11.5px">{{ c.unidade }}</span>
+        <b class="num">{{ c.processos }}</b>
+        <span style="color:var(--ink-3);min-width:210px;text-align:right">{{ c.texto }}</span>
+        {% if c.suspeito %}<span class="tag al">suspeito</span>{% endif %}
+      </div>
+    {% else %}<div class="vazio-msg">nenhum snapshot ingerido</div>{% endfor %}
+  </div>
+
+  <h2 class="sec">Poço — o que foi lido e o que foi reaproveitado</h2>
+  <div class="cartao">
+    <p style="color:var(--ink-3);font-size:12px;margin:0 0 8px">
+      Cada processo lido custa 5 requisições ao SEI; linha servida pelo poço custa zero.
+      <b>Não lidos</b> é o que precisava de leitura e não foi — sessão que caiu, poço sem
+      bloco: é o número que denuncia coleta parcial com cara de completa.
+      <b>Canário</b> é a releitura de conferência; divergência ampla acusa a leitura de
+      HOJE, não o poço.
+    </p>
+    {% if funil %}
+    <table class="grade">
+      <thead><tr><th>Dia</th><th>Snapshots</th><th>Lidos</th><th>Do poço</th>
+        <th>Poupado</th><th>Não lidos</th><th>Canário</th></tr></thead>
+      <tbody>
+      {% for f in funil %}
+        <tr>
+          <td>{{ f.dia }}</td><td class="num">{{ f.snapshots }}</td>
+          <td class="num">{{ f.lidos }}</td><td class="num">{{ f.servidos }}</td>
+          <td class="num">{{ f.poupado_pct }}%</td>
+          <td class="num">{% if f.nao_lidos %}<span class="tag al">{{ f.nao_lidos }}</span>
+              {% else %}0{% endif %}</td>
+          <td class="num">{% if f.canario %}<span class="tag al">{{ f.canario }}</span>
+              {% else %}0{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<div class="vazio-msg">nenhuma coleta nos últimos 7 dias</div>{% endif %}
+    <p style="color:var(--ink-3);font-size:12px;margin:8px 0 0">
+      {{ poco_total }} bloco(s) no poço.
+      {% if not poco_total %}Ainda vazio — enquanto estiver assim, toda coleta lê tudo,
+      que é o comportamento de antes do poço e é o correto.{% endif %}
+    </p>
+  </div>
+
+  {% if alertas %}
+  <h2 class="sec">Alertas abertos</h2>
+  <table class="grade">
+    <tr><th>Quando</th><th>Tipo</th><th>Unidade</th><th>Texto</th><th></th></tr>
+    {% for a in alertas %}
+    <tr>
+      <td class="mono">{{ a.ts[:16].replace('T',' ') }}</td>
+      <td><span class="tag {{ 'al' if a.severidade=='alta' else 'es' }}">{{ a.tipo }}</span></td>
+      <td class="mono">{{ a.unidade or '—' }}</td>
+      <td>{{ a.texto }}</td>
+      <td><form method="post" action="/admin/alerta/{{ a.id }}">
+        <input type="hidden" name="csrf" class="csrf">
+        <button class="bt" type="submit">Reconhecer</button></form></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <h2 class="sec">Usuários</h2>
+  <div class="cartao" style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+    <div style="flex:1;min-width:300px;font-size:13.5px">
+      A gestão de contas tem tela própria: busca, filtro por situação, ações em lote e uma
+      página de cada vez.
+      <div style="color:var(--ink-3);font-size:12.5px;margin-top:4px">
+        Estava aqui, com um formulário aninhado por linha — com 67 contas a página passava de
+        270 KB e ninguém achava nada.
+      </div>
+    </div>
+    <a class="bt forte" href="/admin/usuarios">Gerenciar usuários</a>
+  </div>
+
+  <h2 class="sec">Agentes de coleta</h2>
+  <div class="destaque" style="border-left-color:var(--espera);background:var(--espera-soft)">
+    O agente roda <b>na estação de quem tem a credencial do SEI</b> e apenas empurra o resultado.
+    Nenhuma senha do SEI existe neste servidor — a ausência é decisão de arquitetura, não lacuna.
+  </div>
+  <table class="grade">
+    <tr><th>Estação</th><th>Unidades</th><th>Credencial</th><th>Versão</th><th>Último contato</th><th>Agendamento</th></tr>
+    {% for a in agentes %}
+    <tr>
+      <td><b>{{ a.nome_estacao }}</b>
+        {% if not a.token_sha256 %}<br><span class="tag es">aguardando vínculo</span>{% endif %}
+        {# Escopo vazio recusa TODA publicação. É falha fechada e está certo, mas
+           precisa aparecer: sem este selo o agente fica mudo e o sintoma só
+           surge na janela seguinte, como coleta que não chegou. #}
+        {% if not (a.unidades_esperadas or '[]')|fromjson %}
+        <br><span class="tag al" title="Sem unidade no escopo, toda publicação é recusada com 409">sem escopo — não publica</span>
+        {% endif %}</td>
+      <td class="mono" style="font-size:10.5px">{{ a.unidades_esperadas }}</td>
+      <td style="font-size:12px">{{ a.credencial_titular or '—' }}<br>
+        <span class="mono" style="font-size:10.5px;color:var(--ink-3)">{{ a.credencial_login_mascarado or '' }}</span></td>
+      <td class="mono">{{ a.versao_agente or '—' }}</td>
+      <td class="mono" style="font-size:10.5px">{{ (a.ultimo_contato_em or 'nunca')[:16].replace('T',' ') }}</td>
+      <td>
+        {% set g = agenda.get(a.id) %}
+        <form method="post" action="/admin/agente" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <input type="hidden" name="csrf" class="csrf">
+          <input type="hidden" name="acao" value="agendar"><input type="hidden" name="id" value="{{ a.id }}">
+          <input name="janelas" value="{{ (g.janelas if g else '[]')|replace('[','')|replace(']','')|replace('\"','') }}"
+                 style="width:120px" title="horários separados por vírgula, ex.: 07:30, 19:00">
+          <select name="dias"><option value="uteis" {% if g and g.dias=='uteis' %}selected{% endif %}>dias úteis</option>
+            <option value="todos" {% if g and g.dias=='todos' %}selected{% endif %}>todos os dias</option></select>
+          <input name="tolerancia" type="number" min="10" max="600" value="{{ g.tolerancia_min if g else 90 }}"
+                 style="width:70px" title="tolerância em minutos">
+          <label style="text-transform:none;letter-spacing:0;font-family:var(--ui);font-size:12px;color:var(--ink-2);margin:0">
+            <input type="checkbox" name="ativo" {% if g and g.ativo %}checked{% endif %}> armado</label>
+          <button class="bt" type="submit">Salvar</button>
+        </form>
+        <!-- Escopo por TEXTO, não por caixa de seleção: numa instalação nova não
+             existe snapshot nenhum, logo não existe lista de unidades para
+             escolher — e sem escopo o agente não consegue publicar a primeira
+             coleta. Quem conhece a sigla no SEI é o admin, não o banco. -->
+        <form method="post" action="/admin/agente" style="margin-top:8px">
+          <input type="hidden" name="csrf" class="csrf">
+          <input type="hidden" name="acao" value="escopo"><input type="hidden" name="id" value="{{ a.id }}">
+          <label style="margin-bottom:4px">Unidades que este agente pode publicar</label>
+          <textarea name="unidades_texto" rows="3" style="width:100%;font-family:var(--mono);
+            font-size:11px;padding:8px;border:1px solid var(--rule);border-radius:var(--r);
+            background:var(--card);color:var(--ink)"
+            placeholder="uma por linha, ex.: SESAB/SAIS/DGGUP/DGESS/CESS">{{ (a.unidades_esperadas or '[]')|fromjson|join('\n') }}</textarea>
+          <button class="bt" type="submit" style="margin-top:6px">Salvar escopo</button>
+        </form>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <form method="post" action="/admin/agente">
+            <input type="hidden" name="csrf" class="csrf">
+            <input type="hidden" name="acao" value="novo_codigo"><input type="hidden" name="id" value="{{ a.id }}">
+            <button class="bt" type="submit">Novo código de vínculo</button></form>
+          <form method="post" action="/admin/agente">
+            <input type="hidden" name="csrf" class="csrf">
+            <input type="hidden" name="acao" value="janela_extra"><input type="hidden" name="id" value="{{ a.id }}">
+            <button class="bt" type="submit" title="Fica registrada como manual_admin, com o seu nome">Abrir janela extra</button></form>
+        </div>
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="6" class="vazio-msg">nenhum agente cadastrado</td></tr>{% endfor %}
+  </table>
+
+  <div class="cartao" style="margin-top:16px">
+    <form method="post" action="/admin/agente">
+      <input type="hidden" name="csrf" class="csrf"><input type="hidden" name="acao" value="criar">
+      <fieldset><legend>Novo agente</legend>
+        <div class="grade2">
+          <div><label>Nome da estação</label><input name="nome_estacao" required placeholder="ESTACAO-ZAINE"></div>
+          <div><label>Titular da credencial (nome civil)</label><input name="titular" placeholder="para o rodapé do painel"></div>
+        </div>
+        <div style="margin:12px 0"><label>Login mascarado</label>
+          <input name="login_mascarado" placeholder="z****@saude.ba.gov.br">
+          <div class="aviso">Metadado apenas. O servidor nunca guarda a senha, o cookie ou a semente do 2FA.</div></div>
+        <label>Unidades que este agente pode publicar</label>
+        <div class="chips-un">
+          {% for un in unidades %}<label><input type="checkbox" name="unidades" value="{{ un }}" checked>{{ un.split('/')[-1] }}</label>{% endfor %}
+        </div>
+        <div style="margin-top:14px"><button class="bt forte" type="submit">Criar agente</button></div>
+      </fieldset>
+    </form>
+  </div>
+
+  <h2 class="sec">Execuções recentes</h2>
+  <table class="grade">
+    <tr><th>#</th><th>Estação</th><th>Janela</th><th>Estado</th><th>Exit</th><th>Duração</th><th>Resumo</th></tr>
+    {% for e in execs %}
+    <tr>
+      <td class="mono">{{ e.id }}</td>
+      <td>{{ e.nome_estacao or '—' }}</td>
+      <td class="mono" style="font-size:10.5px">{{ (e.janela or '')[:16].replace('T',' ') }}</td>
+      <td><span class="tag {{ 'ok' if e.estado=='concluida' else 'al' if e.estado in ['travada','bloqueada','infra','perdida'] else 'es' }}">{{ e.estado }}</span></td>
+      <td class="mono">{{ e.exit_code if e.exit_code is not none else '—' }}</td>
+      <td class="mono">{{ (e.duracao_s ~ ' s') if e.duracao_s else '—' }}</td>
+      <td style="font-size:12px;color:var(--ink-3)">{{ (e.log_resumo or '')[:90] }}</td>
+    </tr>
+    {% else %}<tr><td colspan="7" class="vazio-msg">nenhuma execução</td></tr>{% endfor %}
+  </table>
+
+  <h2 class="sec">Acesso por e-mail</h2>
+  <div class="cartao">
+    <div style="display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;margin-bottom:12px">
+      <span class="tag {{ 'ok' if em.pronto else 'al' }}">
+        {{ 'pronto' if em.pronto else ('sem chave' if not em.tem_chave else
+           ('sem remetente' if not em.remetente else 'teste pendente')) }}</span>
+      <span style="font-size:13px;color:var(--ink-2)">
+        {{ em.remetente or 'remetente não configurado' }}
+        {% if em.testado_em %}· último teste {{ em.testado_em[:16].replace('T',' ') }}{% endif %}</span>
+    </div>
+    {% if em.falso %}
+      {# Um sistema que acha que manda e-mail e não manda é pior que um sem
+         e-mail nenhum. Se a variável de teste ficou ligada por engano, a tela
+         diz — em vez de tudo parecer funcionar. #}
+      <div class="aviso-forte" style="margin-bottom:12px">
+        <b>CAIXA FALSA LIGADA.</b> Nada está saindo de verdade: os e-mails estão
+        sendo gravados em <code>{{ em.falso }}</code> porque a variável
+        <code>SEI360_EMAIL_FALSO</code> está definida neste processo. Isso é para
+        teste — em produção, remova a variável e reinicie.
+      </div>
+    {% endif %}
+    {% if em.teste_erro %}
+      <div class="aviso-forte" style="margin-bottom:12px">
+        <b>O último teste falhou:</b> {{ em.teste_erro }}</div>
+    {% endif %}
+    {% if em.envio_erro %}
+      {# Saúde do ENVIO, que é outra pergunta: o teste pode ter passado ontem e o
+         provedor ter recusado o código de agora. #}
+      <div class="aviso-forte" style="margin-bottom:12px">
+        <b>O último envio falhou</b>{% if em.envio_em %} ({{ em.envio_em[:16].replace('T',' ') }}){% endif %}:
+        {{ em.envio_erro }}</div>
+    {% endif %}
+
+    {# O TESTE É O QUE ARMA O RESTO. "Configurado" e "funciona" são coisas
+       diferentes, e a diferença entre as duas é uma conta que não entra mais. #}
+    <form method="post" action="/admin/email" style="margin-bottom:16px">
+      <input type="hidden" name="csrf" class="csrf"><input type="hidden" name="acao" value="config">
+      <fieldset><legend>Provedor de envio (Resend)</legend>
+        <label style="display:block;margin-bottom:8px">Chave da API
+          <input name="chave" type="password" autocomplete="off"
+                 placeholder="{{ 'guardada — preencha só para trocar' if em.tem_chave else 're_...' }}"
+                 style="width:100%"></label>
+        <label style="display:block;margin-bottom:8px">Remetente
+          <input name="remetente" value="{{ em.remetente or '' }}" style="width:100%"
+                 placeholder="SEI360 &lt;nao-responda@seudominio.com.br&gt;"></label>
+        <label style="display:block;margin-bottom:8px">Responder para (opcional)
+          <input name="responder_para" value="{{ em.responder_para or '' }}" style="width:100%"></label>
+        <div class="aviso" style="margin-bottom:10px">O domínio do remetente
+        precisa estar verificado no Resend (registros de DNS). Trocar a chave ou o
+        remetente desarma o TESTE, e você precisa mandar outro antes de ligar
+        qualquer coisa nova — mas <b>o segundo fator já ligado continua
+        valendo</b>: armado é armado, e quem desliga desliga de propósito. Se o
+        envio parar com ele ligado, ninguém entra até alguém desligá-lo.</div>
+        <button class="bt" type="submit">Salvar</button>
+      </fieldset>
+    </form>
+
+    <form method="post" action="/admin/email" style="margin-bottom:18px">
+      <input type="hidden" name="csrf" class="csrf"><input type="hidden" name="acao" value="teste">
+      <label style="display:block;margin-bottom:8px">Enviar um teste para
+        <input name="para" type="email" value="{{ u.email }}" style="width:100%"></label>
+      <button class="bt" type="submit" {{ '' if em.tem_chave and em.remetente else 'disabled' }}>
+        Enviar teste</button>
+    </form>
+
+    <form method="post" action="/admin/acesso">
+      <input type="hidden" name="csrf" class="csrf">
+      <fieldset><legend>O que o e-mail habilita</legend>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;
+               text-transform:none;letter-spacing:0;font-family:var(--ui)">
+          <input type="checkbox" name="recuperacao" value="1"
+                 {% if pol.recuperacao_ativa %}checked{% endif %}>
+          <span><b>Recuperação de senha</b>
+          <span style="display:block;font-size:12.5px;color:var(--ink-3);line-height:1.5">
+            A tela de acesso passa a oferecer "Esqueci a minha senha". O link vale
+            30 minutos e serve uma vez.</span></span></label>
+        {% for p in ['admin','gestor','servidor'] %}
+        <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;
+               text-transform:none;letter-spacing:0;font-family:var(--ui)">
+          <input type="checkbox" name="fator2" value="{{ p }}"
+                 {% if p in pol.fator2_papeis %}checked{% endif %}>
+          <span>Segundo fator para <b>{{ p }}</b></span></label>
+        {% endfor %}
+        <div class="aviso" style="margin:8px 0 10px">
+          O segundo fator manda um código de 6 dígitos por e-mail a cada entrada.
+          Ele só liga depois de um teste de envio bem-sucedido, e é recusado para
+          papel que tenha conta ativa cujo domínio não recebe correio.
+          <b>Se o envio parar</b>, quem tem acesso ao servidor destrava com
+          <code>python emergencia.py desligar-fator2</code>.
+        </div>
+        <button class="bt" type="submit">Salvar política</button>
+      </fieldset>
+    </form>
+  </div>
+
+  <h2 class="sec">Resumo de processo por IA</h2>
+  <div class="cartao">
+    <div style="display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;margin-bottom:12px">
+      <span class="tag {{ 'ok' if ia.ativo and ia.tem_chave else 'al' }}">
+        {{ 'ligada' if ia.ativo and ia.tem_chave else ('sem chave' if not ia.tem_chave else 'desligada') }}</span>
+      <span style="font-size:13px;color:var(--ink-2)">
+        <b class="num">{{ ia.com_resumo }}</b> processo(s) com resumo ·
+        <b class="num">{{ ia.sem_resumo }}</b> sem ·
+        {{ ia.gerados or 0 }} gerados por aqui ({{ ia.tokens or 0 }} tokens)</span>
+    </div>
+
+    {# O que sai daqui é a decisão que importa, então ela vem antes da chave. #}
+    <form method="post" action="/admin/ia" style="margin-bottom:18px">
+      <input type="hidden" name="csrf" class="csrf"><input type="hidden" name="acao" value="nivel">
+      <fieldset><legend>O que é enviado ao provedor</legend>
+        <label class="opcao" style="display:flex;gap:12px;align-items:flex-start;padding:12px 14px;
+               border:1px solid var(--rule);border-radius:var(--r);margin-bottom:9px;cursor:pointer">
+          <input type="radio" name="nivel" value="estruturado" style="margin-top:3px"
+                 {% if ia.nivel != 'completo' %}checked{% endif %}>
+          <span><b>{{ ia.niveis.estruturado.rotulo }}</b>
+          <span style="display:block;font-size:12.5px;color:var(--ink-3);line-height:1.5">
+            {{ ia.niveis.estruturado.descricao }}</span></span>
+        </label>
+        <label class="opcao" style="display:flex;gap:12px;align-items:flex-start;padding:12px 14px;
+               border:1px solid var(--rule);border-radius:var(--r);margin-bottom:9px;cursor:pointer">
+          <input type="radio" name="nivel" value="completo" style="margin-top:3px"
+                 {% if ia.nivel == 'completo' %}checked{% endif %}>
+          <span><b>{{ ia.niveis.completo.rotulo }}</b>
+          <span style="display:block;font-size:12.5px;color:var(--ink-3);line-height:1.5">
+            {{ ia.niveis.completo.descricao }}</span></span>
+        </label>
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;
+               text-transform:none;letter-spacing:0;font-family:var(--ui);color:var(--ink-2);
+               margin:6px 0 0;line-height:1.5">
+          <input type="checkbox" name="aceite" value="sim" style="margin-top:3px">
+          <span>Aceito que especificação e anotação — texto escrito por servidor, em contexto
+          de saúde, onde pode haver nome de paciente — sejam enviados a
+          <b>{{ ia.provedores[ia.provedor].nome }}</b>, com servidores em
+          <b>{{ ia.provedores[ia.provedor].pais }}</b>. Sei que isso é transferência
+          internacional de dado pessoal e que fica registrado em meu nome.</span>
+        </label>
+        {% if ia.aceite_em %}
+        <div style="font-size:12px;color:var(--ink-3);margin-top:8px">
+          Aceite registrado em {{ ia.aceite_em[:16].replace('T',' ') }}.</div>
+        {% endif %}
+        <div style="margin-top:12px"><button class="bt" type="submit">Salvar nível</button></div>
+      </fieldset>
+    </form>
+
+    <form method="post" action="/admin/ia">
+      <input type="hidden" name="csrf" class="csrf"><input type="hidden" name="acao" value="chave">
+      <fieldset><legend>Chave de API</legend>
+        <div class="grade2">
+          <div><label>Provedor</label>
+            <select name="provedor">
+              {% for k, p in ia.provedores.items() %}
+              <option value="{{ k }}" {% if ia.provedor == k %}selected{% endif %}>{{ p.nome }}</option>
+              {% endfor %}
+            </select></div>
+          <div><label>Modelo</label>
+            <select name="modelo">
+              {% for m in ia.provedores[ia.provedor].modelos %}
+              <option value="{{ m }}" {% if ia.modelo == m %}selected{% endif %}>{{ m }}</option>
+              {% endfor %}
+            </select></div>
+        </div>
+        <div style="margin-top:12px"><label>Chave</label>
+          <input name="chave" type="password" autocomplete="off"
+                 placeholder="{{ 'guardada — preencha só para trocar' if ia.tem_chave else 'sk-ant-...' }}">
+          <div style="font-size:12.5px;color:var(--ink-3);margin-top:6px;line-height:1.5">
+            Cifrada com AES-256 no mesmo cofre da credencial do SEI; a chave que abre a cifra
+            não fica no banco. Chave de API é dinheiro: quem a rouba gasta no contrato do órgão,
+            por isso ela nunca reaparece em tela depois de salva.
+            Gere em <span class="mono">{{ ia.provedores[ia.provedor].doc }}</span>.</div></div>
+        <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="bt forte" type="submit">Guardar chave</button>
+          <button class="bt" type="submit" formaction="/admin/ia" name="acao" value="testar">Testar chave</button>
+          <button class="bt" type="submit" name="acao" value="ativar">
+            {{ 'Desligar geração' if ia.ativo else 'Ligar geração' }}</button>
+          {% if ia.tem_chave %}
+          <button class="bt risco" type="submit" name="acao" value="apagar">Apagar chave</button>
+          {% endif %}
+        </div>
+      </fieldset>
+    </form>
+
+    <fieldset style="margin-top:16px"><legend>Quem aderiu — unidade por unidade</legend>
+      <div style="font-size:12.5px;color:var(--ink-3);line-height:1.55;margin-bottom:12px">
+        A adesão é <b>por unidade</b>, e não do sistema. O texto que sai daqui é o que os
+        servidores daquela unidade escreveram; quem responde por essa decisão é a chefia
+        dela. Sem nenhuma adesão, a geração não roda — mesmo com a chave guardada e a
+        integração ligada. Revogar não apaga o registro: carimba a data, para que se possa
+        provar depois em que período houve envio.
+      </div>
+      <table class="tab-rel" style="margin-bottom:12px">
+        <thead><tr><th>Unidade</th><th>Nível</th><th>Quem aceitou</th><th>Quando</th>
+          <th>Situação</th></tr></thead>
+        <tbody>
+          {% for a in ia.aceites %}
+          <tr style="{{ 'opacity:.55' if a.revogado_em }}">
+            <td class="num" style="font-size:11.5px">{{ a.unidade }}</td>
+            <td>{{ 'Estruturados + texto livre' if a.nivel == 'completo'
+                   else 'Somente estruturados' }}</td>
+            <td style="font-size:12px">{{ (ia.quem.get(a.aceito_por) or '—').split('@')[0] }}</td>
+            <td class="num">{{ a.aceito_em[:16].replace('T',' ') }}</td>
+            <td>
+              {% if a.revogado_em %}
+                <span style="font-size:12px;color:var(--ink-3)">revogada em
+                  {{ a.revogado_em[:10] }}</span>
+              {% else %}
+              <form method="post" action="/admin/ia/aceite">
+                <input type="hidden" name="csrf" class="csrf">
+                <input type="hidden" name="acao" value="revogar">
+                <input type="hidden" name="unidade" value="{{ a.unidade }}">
+                <button class="bt risco" type="submit">Revogar</button></form>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="vazio-msg">Nenhuma unidade aderiu. A geração está
+            impedida — é o estado seguro.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <form method="post" action="/admin/ia/aceite" style="display:flex;gap:10px;
+            align-items:flex-end;flex-wrap:wrap">
+        <input type="hidden" name="csrf" class="csrf">
+        <div><label>Unidade</label>
+          <select name="unidade">
+            {% for un in ia.unidades %}<option value="{{ un }}">{{ un }}</option>{% endfor %}
+          </select></div>
+        <div><label>Nível</label>
+          <select name="nivel">
+            <option value="estruturado">Somente campos estruturados</option>
+            <option value="completo">Estruturados + especificação e anotação</option>
+          </select></div>
+        <label style="display:flex;gap:6px;align-items:center;margin:0;font-size:12.5px">
+          <input type="checkbox" name="confirma" value="sim">
+          confirmo, para o nível completo, que texto de servidor pode citar paciente</label>
+        <button class="bt forte" type="submit">Registrar adesão</button>
+      </form>
+    </fieldset>
+
+    {% if ia.tem_chave and ia.ativo %}
+    <form method="post" action="/admin/ia/gerar" style="margin-top:16px;display:flex;gap:10px;
+          align-items:center;flex-wrap:wrap">
+      <input type="hidden" name="csrf" class="csrf">
+      <label style="margin:0">Gerar resumo para</label>
+      <input name="quantos" type="number" min="1" max="50" value="10" style="width:90px">
+      <span style="font-size:13px;color:var(--ink-2)">processo(s) sem resumo</span>
+      <button class="bt forte" type="submit">Gerar agora</button>
+      <span style="font-size:12.5px;color:var(--ink-3)">Em lote pequeno e à vista: com fila em
+      segundo plano o custo vira invisível e a conta chega no fim do mês.</span>
+    </form>
+    {% endif %}
+  </div>
+
+  <h2 class="sec">Retenção</h2>
+  <div class="cartao" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <div style="flex:1;min-width:280px;font-size:13px">
+      Banco com <b class="num">{{ '%.1f'|format(tamanho_banco) }} MB</b>.
+      O expurgo apaga snapshot histórico com mais de 30 dias (o <b>corrente</b> de cada
+      unidade nunca sai, mesmo velho), log de acesso com mais de 180, e sessão morta.
+      <div style="color:var(--ink-3);font-size:12px;margin-top:4px">
+        Sem expurgo são ~745 MB por ano de dado pessoal retido sem prazo — e prazo
+        indeterminado é o oposto do que a LGPD chama de necessidade.
+      </div>
+    </div>
+    <form method="post" action="/admin/expurgo"><input type="hidden" name="csrf" class="csrf">
+      <input type="hidden" name="simular" value="1">
+      <button class="bt" type="submit">Simular</button></form>
+    <form method="post" action="/admin/expurgo"><input type="hidden" name="csrf" class="csrf">
+      <button class="bt risco" type="submit">Executar expurgo</button></form>
+  </div>
+
+  <h2 class="sec">Log de acesso (últimos 25)</h2>
+  <table class="grade">
+    <tr><th>Quando</th><th>Quem</th><th>Ação</th><th>Alvo</th><th>Unidade</th><th>IP</th></tr>
+    {% for l in logs %}
+    <tr><td class="mono" style="font-size:10.5px">{{ l.ts[:19].replace('T',' ') }}</td>
+      <td class="mono" style="font-size:10.5px">{{ l.email or 'sistema' }}</td>
+      <td>{{ l.acao }}</td>
+      <td class="mono" style="font-size:10.5px">{{ l.alvo or '—' }}</td>
+      <td class="mono" style="font-size:10px;max-width:220px;overflow:hidden;text-overflow:ellipsis">{{ l.unidade or '—' }}</td>
+      <td class="mono" style="font-size:10.5px">{{ l.ip or '—' }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<script>
+// CSRF em todo formulário: o cookie é legível de propósito (double-submit).
+const c=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+document.querySelectorAll('.csrf').forEach(i=>i.value=c);
+</script>
+</body></html>

@@ -1,0 +1,24 @@
+{# CABEÇA COMUM das telas de serviço.
+
+   Existe porque a lista de folhas estava copiada em oito templates, e uma cópia
+   esquecida é questão de tempo: `vendor/fontes.css` ficou de fora de todos os
+   oito, então eles pediam Space Grotesk / Inter / JetBrains Mono e renderizavam
+   em Segoe UI — enquanto o painel, que carrega as fontes, renderizava certo. O
+   produto ficou com duas tipografias por ACIDENTE, que é pior do que ter duas
+   por decisão.
+
+   A ORDEM importa e não é acidental:
+     1. as fontes, antes de tudo que as usa;
+     2. `sei360.css`, a base (tokens, forma, tipografia);
+     3. `nav.css`, a camada de relatório e gráfico;
+     4. `lateral.css` por último — ela declara `body{margin-left}` e precisa
+        vencer o `body{margin:0}` da base.
+
+   O script do topo aplica tema e estado do menu ANTES da primeira pintura. Lido
+   depois, a tela desenha clara e salta para escura, e a moldura desenha em 256px
+   e salta para 68px, na frente da pessoa. #}
+<script>try{var t=localStorage.getItem('painel-tema');if(t)document.documentElement.dataset.tema=t;var _l=localStorage.getItem('sei360-lateral');if(_l!==null)document.documentElement.dataset.lateral=_l==='1'?'recolhido':'aberto'}catch(e){}</script>
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontes.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='sei360.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='nav.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='lateral.css') }}">
