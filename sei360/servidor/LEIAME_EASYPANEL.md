@@ -37,6 +37,11 @@ python sei360/servidor/conferir_contexto.py
 Ele sai **0** quando a imagem pode ser construída, e enquanto sair 1 diz
 exatamente o que falta.
 
+**Desde 04/09/2026 o Source é GitHub** (`doni010520/sei360`, branch `main`, Auto
+Deploy ligado) — o EasyPanel clona e builda sozinho a cada `git push`; o portão
+acima continua obrigatório antes de cada push, só que local, sem confirmação do
+lado do EasyPanel.
+
 **Subindo por Upload (sem Git)?** `python sei360/servidor/conferir_contexto.py --empacotar`
 gera o ZIP certo — só depois de o portão acima sair 0. Não zipe a pasta pelo
 Explorer: ela carrega o banco de produção e a sessão do SEI, e um upload não tem

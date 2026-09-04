@@ -1,0 +1,83 @@
+# Contexto de build do SEI360. A raiz do repositório tem o codigo do painel e
+# do coletor — mas nem tudo aqui deve entrar na imagem. NEGAR TUDO e reabrir o
+# minimo evita imagem inchada e segredo entrando por acidente.
+#
+# COMENTÁRIO SÓ EM LINHA INTEIRA. O `.dockerignore` NÃO aceita comentário no fim
+# da linha: `**/_dados   # o banco` é um PADRÃO LITERAL com espaços e um `#`
+# dentro, e ele não casa com nada. Esta versão do arquivo já teve cinco linhas
+# assim — `_dados`, `_coletas`, `_perfil_sei`, `.env.local` e `teste_*.py` —, e
+# todas as cinco eram letra morta: o banco de produção, as coletas brutas, a
+# SESSÃO DO SEI e a chave do cofre entravam na imagem. O `conferir_contexto.py`
+# não pegava porque ELE removia o comentário antes de avaliar, e assim media a
+# intenção em vez do efeito. Hoje ele recusa a linha e explica.
+#
+# A ORDEM E A FORMA IMPORTAM. `*` seguido de `!sei360/servidor` não basta: `*`
+# exclui o diretório `sei360` inteiro, e um diretório excluído não é percorrido —
+# a exceção lá dentro nunca é avaliada. É preciso reabrir CADA nível:
+#
+#   *                   nega tudo no topo
+#   !sei360             reabre o diretório (para poder descer nele)
+#   sei360/*            nega o conteúdo dele
+#   !sei360/servidor    reabre só o que interessa
+#
+# Confira com `python sei360/servidor/conferir_contexto.py` antes de um build
+# caro: ele lista o que entraria, em arquivos e em MB.
+*
+!sei360
+!painel_sesab
+sei360/*
+!sei360/servidor
+
+# DE `painel_sesab/`, SÓ O QUE O COLETOR CARREGA. Ele lê três arquivos:
+# `coletor_sesab.py` (o programa), `automacao_sei.js` (injetado como init
+# script) e `pesquisa_sei.js` (a busca avançada). Os outros dezessete são
+# ferramenta de bancada da estação — diagnósticos, o gerador do painel estático,
+# o `.cmd` do agendador. Nenhum foi revisto para rodar num host alugado, dentro
+# de um container que segura credencial de terceiros.
+painel_sesab/*
+!painel_sesab/coletor_sesab.py
+!painel_sesab/automacao_sei.js
+!painel_sesab/pesquisa_sei.js
+
+# E, dentro do que foi reaberto, o que nunca deve entrar. Cada linha aqui é uma
+# forma de vazar segredo ou de inchar a imagem — e o comentário de cada uma vem
+# ACIMA dela, nunca ao lado.
+**/__pycache__
+**/*.pyc
+
+# O banco de produção, com a carteira de 59 pessoas.
+**/_dados
+
+# JSON bruto das coletas, e o painel estático derivado delas.
+**/_coletas
+**/_resumos
+**/_logs
+painel_sesab/painel_sesab.html
+painel_sesab/painel_v2.html
+painel_sesab/processos_sesab.xlsx
+
+# SESSÃO DO SEI — material de credencial (§6.2 item 4): o `SEIAuto.credencial()`
+# grava com `btoa` no localStorage, e base64 é ofuscação, não cifra.
+**/_perfil_sei
+
+**/_backup
+**/*.db
+**/*.db-wal
+**/*.db-shm
+
+# A chave mestra do cofre no teste local.
+**/.env
+**/.env.local
+
+# Testes não rodam em produção, citam dados de exemplo e carregam o nome de
+# pessoas reais nas asserções.
+**/teste_*.py
+**/_teste_*.js
+**/_casos_*.json
+**/conferir_*.js
+
+**/*.log
+
+# Metadados do Git — nunca precisam estar dentro da imagem.
+.git
+.gitignore

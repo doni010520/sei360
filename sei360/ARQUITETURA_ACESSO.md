@@ -268,8 +268,9 @@ PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ### 3.6 Imagem e build
 
 - Base `python:3.12-slim`. Dependências: `flask`, `gunicorn`, `cryptography`, `openpyxl` e — desde 21/08/2026 — **`playwright`, com Chromium instalado na imagem** (§6.0). Tudo o mais é stdlib.
-- **Contexto de build = `sei_sistema/`**, não `sei360/servidor/`: o coletor e os dois `.js` vivem em `painel_sesab/`, que é irmão de `sei360/`, e `COPY` não enxerga fora do contexto.
+- **Contexto de build = a raiz do repositório**, não `sei360/servidor/`: o coletor e os dois `.js` vivem em `painel_sesab/`, que é irmão de `sei360/`, e `COPY` não enxerga fora do contexto.
   `docker build -f sei360/servidor/Dockerfile -t sei360 .`
+- **Desde 04/09/2026 a raiz é um repositório próprio** — [`github.com/doni010520/sei360`](https://github.com/doni010520/sei360), com `sei360/` e `painel_sesab/` como irmãos, local `C:\Claude\SEI360\` nesta máquina. Antes disso a raiz era `sei_sistema/`: uma pasta de trabalho compartilhada com o pipeline HECC/FESF-SUS (outro projeto, sem relação), nunca versionada como um repositório só do SEI360. `git init` ali teria levado dezenas de arquivos daquele outro projeto — inclusive um repositório Git aninhado dele, com credencial não protegida pelo próprio `.gitignore` dele.
 - **Build em CI, publicação em registry, deploy por digest imutável.** Nunca `Dockerfile` construído no VPS. *(Não cumprido hoje: o EasyPanel constrói no host. Fica como dívida, não como fato.)*
 - `.dockerignore` que **nega tudo e reabre duas pastas**, na forma escalonada (`*` / `!sei360` / `sei360/*` / `!sei360/servidor`) — `*` seguido de `!sei360/servidor` não funciona, porque um diretório excluído não é percorrido. Resultado medido: **100 arquivos, 8,8 MB**, contra 27.449 na raiz.
 - **`automacao_sei.js` NÃO pode mais ser excluído**, ao contrário do que este parágrafo dizia: o coletor não roda sem ele. Ou ele entra **com o bloco CONFIG vazio**, ou não há build.
@@ -280,7 +281,7 @@ PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 | campo | valor |
 |---|---|
-| Source | repositório/upload com a raiz em `sei_sistema/` |
+| Source | **GitHub** — `doni010520/sei360`, branch `main`, Auto Deploy ligado (constrói a cada push) |
 | Build context | `.` (a raiz) |
 | Dockerfile | `sei360/servidor/Dockerfile` |
 | Port | `8000` |
@@ -309,26 +310,43 @@ quebrada por dentro.
 
 **Antes do primeiro build**, nesta ordem, porque a ordem é o que impede o vazamento:
 
-1. **Rotacionar a senha do SEI.** A atual esteve em texto puro em disco (§6.2 item 1, nunca cumprido).
+1. **Rotacionar a senha do SEI.** A atual esteve em texto puro em disco (§6.2 item 1 — cumprido em 01/09/2026).
 2. Semear a nova no perfil da estação (`SEIAuto.credencial(...)`) — sem isso, esvaziar o CONFIG faz a coleta agendada falhar no login, em silêncio.
 3. Esvaziar o bloco CONFIG do `automacao_sei.js`.
-4. `python sei360/servidor/conferir_contexto.py` — tem de sair **0**.
-5. Só então construir — ou empacotar, se o Source do EasyPanel for **Upload**.
+4. `python sei360/servidor/conferir_contexto.py` — tem de sair **0**. Ele confere o `.dockerignore` da raiz do repositório, não o órfão que ainda existe em `sei360/servidor/` (ver abaixo).
+5. Só então `git push` — ou empacotar, se o Source do EasyPanel ainda for **Upload**.
 
-**Upload direto (sem Git): `python sei360/servidor/conferir_contexto.py --empacotar`.**
+**GitHub (padrão desde 04/09/2026).** O EasyPanel clona
+[`github.com/doni010520/sei360`](https://github.com/doni010520/sei360) sozinho a cada
+deploy — não existe "empacotar" nesse fluxo, e o caminho local (`C:\Claude\SEI360\`
+nesta máquina) só importa para editar e dar `git push`. Do lado do EasyPanel: Source
+→ GitHub → repositório `doni010520/sei360`, branch `main`, build path `.` (a raiz),
+Dockerfile `sei360/servidor/Dockerfile`, **Auto Deploy ligado** — sem isso a troca de
+configuração não vale nada, o serviço continua servindo a imagem antiga depois de um
+push. O passo 4 continua obrigatório **antes de cada push**: nada do lado do EasyPanel
+impede um CONFIG preenchido de subir, o único portão é local, e é manual.
+
+**Upload direto (sem Git, mantido como alternativa manual):
+`python sei360/servidor/conferir_contexto.py --empacotar`.**
 Ele roda o MESMO portão do passo 4 e só escreve o ZIP se sair 0 — zipar a pasta
 pelo Explorer levaria o banco de produção, `_perfil_sei` e a senha em texto puro
 para o armazenamento do EasyPanel antes de o Docker existir, e um upload não tem
-"desfazer". Sai em `sei360_upload_easypanel.zip` (ao lado da pasta `sei_sistema/`, nunca
-dentro dela), pronto para o Source → Upload do EasyPanel.
+"desfazer". Sai em `sei360_upload_easypanel.zip` (ao lado da raiz do repositório,
+nunca dentro dela), pronto para o Source → Upload do EasyPanel.
 
-**O `.dockerignore` que vale é o da RAIZ** (`sei_sistema/.dockerignore`). O que
-está em `sei360/servidor/` ficou órfão quando o contexto mudou de lugar e hoje
-não tem regra nenhuma — só um aviso dizendo isso. E ele **não aceita comentário
-no fim da linha**: `**/_dados   # o banco` vira um padrão literal que não casa
-com nada. Foi assim que o banco de produção, a sessão do SEI e a chave do cofre
-passaram a entrar na imagem sem ninguém ver. O comentário vai na linha de cima,
-sempre, e o `conferir_contexto.py` recusa quem não seguir.
+**O `.dockerignore` que vale é o da RAIZ do repositório** — hoje
+`C:\Claude\SEI360\.dockerignore`, não o de `sei360/servidor/`, que ficou órfão
+quando o contexto mudou de lugar e hoje não tem regra nenhuma, só um aviso dizendo
+isso. **Em 04/09/2026, ao criar o repositório novo, esse arquivo não foi trazido
+junto** — só o `.gitignore` (git e Docker filtram coisas diferentes: um decide o
+que entra no histórico, o outro o que entra na imagem). `conferir_contexto.py`
+teria barrado o próximo build com um erro explícito, mas a lacuna foi encontrada
+e fechada antes do primeiro push por GitHub, não em produção. Ele **não aceita
+comentário no fim da linha**: `**/_dados   # o banco` vira um padrão literal que
+não casa com nada. Foi assim que o banco de produção, a sessão do SEI e a chave
+do cofre passaram a entrar na imagem sem ninguém ver, da primeira vez. O
+comentário vai na linha de cima, sempre, e o `conferir_contexto.py` recusa quem
+não seguir.
 
 **Dois serviços, se a memória apertar:** a mesma imagem sobe duas vezes, com o mesmo volume. No serviço do painel, `SEI360_ATENDENTE=0`; no de execução, o comando vira `python atendente.py`. A reivindicação em `atendente.pegar()` é atômica (`UPDATE ... WHERE estado='pedida'`), então nenhuma busca é executada duas vezes.
 
