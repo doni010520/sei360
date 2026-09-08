@@ -270,13 +270,13 @@ import perfil_sei                                                # noqa: E402
 checar("a busca vale nas duas instalacoes",
        set(perfil_sei.para_busca()) == {"SEI-SESAB", "SEI-FESF"},
        str(perfil_sei.para_busca()))
-# A COLETA e a BUSCA tem disponibilidade SEPARADA de proposito: a busca usa a
-# tela Pesquisa, que existe nas duas versoes; a coleta usa a visualizacao
-# Detalhada, que e do SEI 5 e no 4.0 falha em silencio.
-checar("a coleta so vale onde ha parser — a FESF fica de fora",
-       perfil_sei.para_coleta() == ["SEI-SESAB"], str(perfil_sei.para_coleta()))
-checar("e o motivo de a FESF nao coletar esta escrito, nao subentendido",
-       len(perfil_sei.INSTANCIAS["SEI-FESF"].get("motivo_sem_coleta") or "") > 40)
+# A COLETA e a BUSCA tinham disponibilidade SEPARADA ate 08/09/2026: a busca
+# usa a tela Pesquisa, que existe nas duas versoes; a coleta usava a
+# visualizacao Detalhada, que e do SEI 5 e no 4.0 falha em silencio — ate a
+# FESF ganhar parser proprio da listagem reduzida (amostra real contra
+# FESF/DIGAS/HECC/GAF, 12 processos, id/protocolo/tipo 100% preenchidos).
+checar("a coleta agora vale nas duas instalacoes",
+       perfil_sei.para_coleta() == ["SEI-FESF", "SEI-SESAB"], str(perfil_sei.para_coleta()))
 checar("instancia desconhecida NAO vira SESAB em silencio",
        _erra(lambda: perfil_sei.perfil("SEI-QUALQUER")))
 checar("a FESF nao tem seletor de orgao (instalacao de um orgao so)",

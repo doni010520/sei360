@@ -1086,18 +1086,16 @@ _t = json.loads(corpo) if s == 200 else {}
 # com a instalação saindo do padrão, nada disto apareceria.
 checar("a instalação da tarefa é derivada da configuração do dono",
        _t.get("instancia") == "SEI-FESF", corpo[:180])
-# E `disponivel_coleta` VIRA TRAVA. Desde que o passo 1 aceita instalação que só
-# serve para buscar, alguém pode configurar coleta na FESF: o coletor entraria, a
-# visualização Detalhada falharia em silêncio (é do SEI 5) e a publicação seria
-# carteira vazia com cara de carteira vazia de verdade.
-checar("instalação sem coletor NÃO recebe tarefa de coleta",
-       _t.get("coletar") is False, corpo[:180])
-checar("e a recusa traz o motivo escrito no perfil, não um texto genérico",
-       _psei.INSTANCIAS["SEI-FESF"]["motivo_sem_coleta"][:40] in (_t.get("motivo") or ""),
-       (_t.get("motivo") or "")[:180])
-checar("dizendo também que a BUSCA continua funcionando lá",
-       "busca nesta instalação continua" in (_t.get("motivo") or ""),
-       (_t.get("motivo") or "")[:180])
+# Desde 08/09/2026 a FESF tem parser (amostra real contra FESF/DIGAS/HECC/GAF)
+# e `disponivel_coleta=True` — a tarefa sai concedida, não recusada. O que
+# continua importando provar é o mesmo risco de antes, do outro lado: que o
+# PERFIL devolvido é o da FESF, não o padrão (SESAB) — sem perfil sem
+# instalação, o coletor entraria no SEI errado e falharia como se fosse
+# senha inválida.
+checar("instalação com coletor recebe a tarefa de coleta concedida",
+       _t.get("coletar") is True, corpo[:180])
+checar("e o perfil devolvido é o da FESF, não o padrão (SESAB)",
+       "fesfsus" in ((_t.get("perfil") or {}).get("raiz") or ""), corpo[:220])
 
 cx = conectar()
 cx.execute("DELETE FROM config_usuario WHERE usuario_id=? AND sistema='SEI-FESF'", (_dono_t,))

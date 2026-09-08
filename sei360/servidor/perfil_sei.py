@@ -157,15 +157,16 @@ INSTANCIAS = {
         "login_dica": "Nesta instalação o login é nome.sobrenome — sem @, sem "
                       "espaço e em minúsculas.",
         "prefixo_unidade": "FESF/",
-        # A COLETA continua indisponível, e o motivo é concreto: ela depende da
-        # visualização Detalhada (`hdnTipoVisualizacao='D'`), que no SEI 4.0 não
-        # dá erro — devolve a tela antiga. Habilitar sem um parser da listagem
-        # do 4.0 produziria carteira vazia com cara de carteira vazia de verdade.
-        "disponivel_coleta": False,
-        "motivo_sem_coleta": "a coleta usa a visualização Detalhada do Controle "
-                             "de Processos, que é do SEI 5. No 4.0 a troca de "
-                             "visualização falha em silêncio, e o parser da "
-                             "listagem do 4.0 ainda não existe.",
+        # A COLETA foi ligada em 08/09/2026, depois de uma amostra real (não
+        # simulada) contra FESF/DIGAS/HECC/GAF: login, descoberta de 10 mesas
+        # e leitura de 12 processos, com id/protocolo/tipo/especificação 100%
+        # preenchidos (`coleta.py coletar <uid> SEI-FESF --amostra <mesa>`).
+        # Antes disso o parser da listagem do 4.0 nunca tinha sido exercitado
+        # contra o HTML real — só contra uma fixture sintética
+        # (`_teste_parser40.js`), que essa mesma amostra corrigiu num ponto
+        # (marcador: o SEI real manda o nome no SEGUNDO argumento do tooltip,
+        # não no primeiro — ver comentário em `automacao_sei.js`).
+        "disponivel_coleta": True,
         # A BUSCA usa a tela Pesquisa, cujos ids foram exercitados contra esta
         # instância pelo sistema irmão desta casa.
         "disponivel_busca": True,

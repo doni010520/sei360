@@ -507,7 +507,13 @@ function linha4(tr) {
   const imgMar = tr.querySelector('img[src*="marcador"]');
   if (aMar || imgMar) {
     const tt = tooltip(aMar);
-    reg.marcador = tt[0] || N(imgMar && imgMar.getAttribute('title'))
+    // No SEI real o marcador chega com o PRIMEIRO argumento vazio e o nome no
+    // segundo — infraTooltipMostrar('', 'PARA ANÁLISE E ASSINATURA') — ao
+    // contrário da anotação, onde o primeiro argumento e o texto. Confirmado
+    // em campo (id_procedimento=1169355, FESF/DIGAS/HECC/GAF, 08/09/2026):
+    // marcador_cor saia certo (vem do arquivo do icone) e marcador saia nulo
+    // porque so o primeiro argumento era lido.
+    reg.marcador = tt[1] || tt[0] || N(imgMar && imgMar.getAttribute('title'))
                 || N(imgMar && imgMar.getAttribute('alt')) || null;
     const m = arquivoDoIcone(imgMar).match(/marcador_(.+)\.(?:svg|png|gif)/);
     reg.marcador_cor = m ? m[1] : null;

@@ -291,10 +291,15 @@ function linha40(id, proto, opc = {}) {
       + ` onmouseover="infraTooltipMostrar('${opc.anotacao}','fulano.um em 12/08/2026 09:14')">`
       + `<img src="imagens/anotacao.gif" alt="Anotações"></a>`
     : '';
+  // No SEI real o primeiro argumento do tooltip do marcador vem VAZIO e o
+  // nome no segundo — confirmado em campo em 08/09/2026 (FESF/DIGAS/HECC/GAF,
+  // id_procedimento=1169355: onmouseover="infraTooltipMostrar('','PARA
+  // ANÁLISE E ASSINATURA')", <img> sem `alt`, extensão .svg). A fixture
+  // seguia o padrão da anotação (nome no primeiro argumento) até essa data.
   const marc = opc.marcador
     ? `<a href="controlador.php?acao=andamento_marcador_gerenciar&id_procedimento=${id}"`
-      + ` onmouseover="infraTooltipMostrar('${opc.marcador}','Marcador')">`
-      + `<img src="imagens/marcador_${opc.cor}.png" alt="Marcador"></a>`
+      + ` onmouseover="infraTooltipMostrar('','${opc.marcador}')">`
+      + `<img src="imagens/marcador_${opc.cor}.svg" class="imagemStatus"></a>`
     : '';
   const excl = opc.novoDoc
     ? '<img src="imagens/exclamacao.png" alt="Documento incluído por outra unidade">'
