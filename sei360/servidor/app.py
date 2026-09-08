@@ -1389,34 +1389,42 @@ def escopo_do_dono(cx, uid, cfg):
 
 
 def _motivo_servidor():
-    """Por que o agente lógico do modo servidor está pausado. Nunca é None hoje.
+    """Por que o agente lógico do modo servidor está pausado, ou None se não
+    está (ver `coleta_servidor.py` para o que "estar" significa aqui).
 
-    BUSCA E COLETA SÃO DUAS COISAS, e o navegador na imagem só resolve uma.
-    A decisão de 21/08/2026 (§6.0) trouxe o Chromium para o container **para a
-    busca avançada**, que o `atendente.py` executa aqui dentro. A COLETA diária
-    continua sem executor no servidor: `coleta.py` só sabe sincronizar unidades e
-    testar acesso, e a execução de janela é pull do agente (`/api/agente/tarefa`).
+    BUSCA E COLETA SÃO DUAS COISAS, e o navegador na imagem só resolve as duas
+    desde 08/09/2026. Até essa data, o navegador (§6.0, 21/08/2026) só servia
+    a BUSCA avançada; a COLETA diária dependia de a FESF ter parser provado
+    (`perfil_sei.disponivel_coleta`) e de existir quem a rodasse aqui dentro.
+    As duas condições passaram a valer nessa data — a primeira por medição em
+    campo, a segunda por `coleta_servidor.py`.
 
-    Cheguei a desarmar esta pausa quando `atendente.capacidade()` ficasse
-    verdadeira — errado, e pela pior razão possível: o agendamento nasceria
-    ARMADO, sem motivo escrito, e a coleta continuaria não acontecendo. A falha
-    voltaria a aparecer como AUSÊNCIA. (O estrago seria limitado —
-    `janelas_perdidas()` ignora agendamento de agente sem `token_sha256`, e o
-    agente lógico nunca é pareado — mas "não quebra" não é "está certo".)
-
-    Quando existir executor de coleta no servidor, é ESTA função que muda, e a
-    condição é "há quem colete", não "há navegador".
+    Continua existindo `SEI360_COLETA_SERVIDOR` como interruptor deliberado
+    (nasce DESLIGADO — ver o cabeçalho daquele módulo): a busca já tinha
+    decisão formal antes de existir; a coleta automática em modo servidor
+    ainda não teve carga real medida, e ligar por padrão aqui repetiria o erro
+    que este comentário já registrou uma vez — armar sem ter com quem cumprir.
     """
-    import atendente
-    pode, motivo = atendente.capacidade()
-    if pode:
-        return ("modo servidor: este servidor executa a BUSCA avançada, não a "
-                "coleta diária — ela continua rodando na estação, com o agente "
-                "instalado. Enquanto não houver executor de coleta aqui, este "
-                "agendamento fica desarmado em vez de prometer uma coleta que "
-                "ninguém faria.")
-    return (f"modo servidor: {motivo}. A coleta roda na estação com o agente "
-            f"instalado; a busca, neste servidor, quando a imagem tiver navegador.")
+    import coleta_servidor
+    if not coleta_servidor.ligado():
+        return ("modo servidor: a coleta automática dentro do servidor existe, mas "
+                "está desligada nesta instalação (SEI360_COLETA_SERVIDOR). A busca "
+                "avançada continua funcionando; a coleta diária continua na estação, "
+                "com o agente instalado, até alguém ligar essa chave.")
+    pode, motivo = coleta_servidor.capacidade()
+    if not pode:
+        return (f"modo servidor: {motivo}. A coleta roda na estação com o agente "
+                f"instalado enquanto isto não for resolvido.")
+    if not coleta_servidor.vivo():
+        # LIGADO, CAPAZ, E MESMO ASSIM NÃO RODANDO é defeito do servidor, não
+        # da conta: o executor só sobe no processo que venceu a eleição do
+        # atendente de busca (mesmo semáforo de memória — ver o cabeçalho de
+        # `coleta_servidor.py`). Dizer isso em vez de "agendamento desarmado"
+        # evita que a pessoa procure na própria configuração o que não é dela.
+        return ("modo servidor: o executor de coleta deveria estar rodando neste "
+                "container e não está — defeito do servidor, não da sua conta. "
+                "Reinicie o serviço e, se persistir, relate.")
+    return None
 
 
 def aplicar_agendamento(cx, uid):
@@ -3578,6 +3586,19 @@ try:
         _atendente.iniciar()
 except Exception as _ex:                                       # noqa: BLE001
     print(f"atendente de busca não subiu: {type(_ex).__name__}", flush=True)
+
+# A COLETA EM MODO SERVIDOR SOBE JUNTO, no MESMO processo que venceu a
+# eleição do atendente — nunca disputa eleição própria (ver o cabeçalho de
+# `coleta_servidor.py`: os dois compartilham o teto de memória do Chromium, e
+# isso só funciona se forem threads do mesmo processo). Bloco separado do de
+# cima de propósito: uma falha aqui não deve ser confundida com falha da
+# busca, nem impedi-la de subir.
+try:
+    import coleta_servidor as _coleta_servidor
+    if not (_debug and not os.environ.get("WERKZEUG_RUN_MAIN")):
+        _coleta_servidor.iniciar()
+except Exception as _ex:                                       # noqa: BLE001
+    print(f"coleta em modo servidor não subiu: {type(_ex).__name__}", flush=True)
 
 
 class _SemSegredoNoLog(logging.Filter):

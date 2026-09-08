@@ -138,6 +138,7 @@ SEI360_FORCAR_HTTPS=1                    # quando o proxy não manda X-Forwarded
 SEI360_CHAVE_MESTRA=<32B base64>         # AES-256-GCM do cofre — SEM ELA não há busca
 SEI360_BUSCAS_SIMULTANEAS=2              # teto de MEMÓRIA: ~0,45 GB por busca
 SEI360_ATENDENTE=1                       # 0 desliga o executor de busca neste container
+SEI360_COLETA_SERVIDOR=0                 # 1 liga a coleta diária p/ modo servidor (nasce OFF — §3.7)
 SEI360_COLETOR=/app/painel_sesab/coletor_sesab.py
 SEI_PERFIL_DIR=/dados/_perfil_sei        # perfil do navegador, no volume
 SEI_SEM_SANDBOX=1                        # so em container (ver abaixo)
@@ -361,7 +362,10 @@ não seguir.
 Este parágrafo dizia "NÃO implementar agora" e condicionava tudo a uma conta de serviço. A condição **não foi cumprida** — o que houve foi a decisão do dono de hospedar em VPS próprio e aceitar o custo. Ver **§6.0**.
 
 **O que roda no container hoje:** a **busca avançada** (`atendente.py`), com a credencial nominal do cofre.
-**O que NÃO roda:** a coleta diária, que continua na estação — não por princípio, e sim porque ninguém mediu 6 mesas × N pessoas de Chromium num VPS de 2 GB. Ligar a coleta no servidor é medir primeiro, não decidir de novo.
+
+**Desde 08/09/2026, também a coleta diária de quem está em modo servidor** (`coleta_servidor.py`) — atrás de um interruptor que nasce **desligado** (`SEI360_COLETA_SERVIDOR`, ao contrário de `SEI360_ATENDENTE`): a busca já tinha decisão formal antes de subir; a coleta automática ainda não teve carga real medida (6 mesas × N pessoas de Chromium num VPS de 2 GB continua sem número), e ligar por padrão repetiria o erro que este próprio parágrafo já registrou uma vez. Duas defesas herdadas do atendente, não inventadas de novo: a coleta só começa com a busca ociosa, e enquanto roda segura uma vaga do MESMO semáforo de memória — os dois moram na mesma thread de processo de propósito (ver o cabeçalho de `coleta_servidor.py`), porque o semáforo não atravessa processo do gunicorn. No máximo uma coleta por vez no container.
+
+**O que continua na estação:** modo estação inteiro (senha nunca sai da máquina da pessoa), e qualquer coleta enquanto `SEI360_COLETA_SERVIDOR` estiver desligado.
 
 **O que continua verdadeiro deste parágrafo:** o único caminho que traz execução para dentro do container **sem** colocar credencial nominal de terceiro num host alugado continua sendo a **conta de serviço institucional criada formalmente pela TIC/PRODEB**, com escopo de leitura, termo de uso e log próprio. Isso deixou de ser pré-requisito e passou a ser **dívida**: enquanto não existir, cada busca feita pelo VPS é imputada, no log do SEI, à pessoa cuja credencial o cofre guardou.
 
