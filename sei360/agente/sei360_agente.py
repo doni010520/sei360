@@ -332,9 +332,21 @@ def rodar(args):
             # O PLANO. Entre listar e detalhar, o coletor pergunta ao servidor
             # o que ja foi lido por outra pessoa ha pouco. O servidor responde por
             # PROCESSO — nunca com a data do bloco: o relogio e dele.
+            # O PERFIL DA INSTALAÇÃO viaja com a tarefa de coleta, pelo MESMO
+            # mecanismo que `buscar()` já usa: uma chave a mais na única linha de
+            # stdin que o coletor lê (`CREDENCIAL["perfil"]`). Sem ele o coletor
+            # cai na constante interna — a SESAB — e uma coleta da FESF entraria
+            # no SEI errado, falhando de um jeito que parece senha inválida.
+            #
+            # `or {}` porque servidor ANTIGO não manda o campo: chave ausente tem
+            # de continuar significando "o de sempre", e não parar a coleta.
             conexao = {"plano": {"servidor": cfg["servidor"], "token": cfg["token"],
                                  "execucao_id": ex,
-                                 "parser_versao": tarefa.get("parser_versao", "")}}
+                                 "parser_versao": tarefa.get("parser_versao", "")},
+                       "instancia": tarefa.get("instancia"),
+                       "perfil": tarefa.get("perfil") or {}}
+            if tarefa.get("instancia"):
+                print(f"  instalação: {tarefa['instancia']}")
             proc = subprocess.Popen(
                 [sys.executable, str(COLETOR), "--mesas", "--plano"],
                 cwd=str(COLETOR.parent), stdin=subprocess.PIPE,
@@ -374,7 +386,12 @@ def rodar(args):
         duracao = int(time.time() - inicio)
         publicado = None
         if code <= 1:
-            arq = sorted([c for c in COLETAS.glob("sei_sesab_*.json") if ".anterior" not in c.name])
+            # O ARQUIVO É O DA INSTALAÇÃO DESTA TAREFA. O coletor nomeia por
+            # instalação (`sei_sesab_`, `sei_fesf_`) desde 07/09/2026; publicar
+            # "o mais novo de qualquer prefixo" mandaria a carteira da FESF para
+            # uma execução da SESAB no dia em que as duas rodassem.
+            _slug = (tarefa.get("instancia") or "SEI-SESAB").split("-")[-1].lower()
+            arq = sorted([c for c in COLETAS.glob(f"sei_{_slug}_*.json") if ".anterior" not in c.name])
             if arq:
                 dados = json.loads(arq[-1].read_text(encoding="utf-8"))
                 # O horario da COLETA viaja junto. O servidor recebe o corpo num

@@ -207,13 +207,27 @@ def destino_interno(p):
     return p
 
 
-def unidades_do(usuario_id):
+def unidades_do(usuario_id, com_instancia=False):
+    """As unidades desta pessoa. Nomes por padrão; pares com `com_instancia`.
+
+    A COLUNA `instancia` EXISTE E ERA DESCARTADA AQUI. Nome de unidade não é
+    único entre instalações — "GABINETE" existe na SESAB e na FESF —, e quem
+    precisa saber DE QUAL instalação é cada vínculo (o rótulo do painel, o
+    recorte da carteira) não tinha como perguntar.
+
+    O padrão continua sendo a lista de nomes porque é o que os dezoito usos
+    existentes consomem, e porque o recorte por instalação já é resolvido no SQL
+    de `snapshots_de` (o JOIN é por `(usuario_id, instancia, unidade)`).
+    """
     cx = conectar()
-    us = [r["unidade"] for r in cx.execute(
-        "SELECT unidade FROM usuario_unidade WHERE usuario_id=? ORDER BY principal DESC, unidade",
-        (usuario_id,))]
+    linhas = cx.execute(
+        "SELECT COALESCE(instancia,'SEI-SESAB') AS instancia, unidade "
+        "FROM usuario_unidade WHERE usuario_id=? ORDER BY principal DESC, unidade",
+        (usuario_id,)).fetchall()
     cx.close()
-    return us
+    if com_instancia:
+        return [(r["instancia"], r["unidade"]) for r in linhas]
+    return [r["unidade"] for r in linhas]
 
 
 # --------------------------------------------------------------- login
@@ -662,7 +676,8 @@ def estado_coleta(unidades=None, usuario_id=None):
     if unidades is not None:
         if not unidades:
             cx.close()
-            return {"unidades": [], "candidatos": 0, "compartilhadas": 0, "pior": "vazio"}
+            return {"unidades": [], "candidatos": 0, "compartilhadas": 0,
+                    "multi_instancia": False, "pior": "vazio"}
         marc = ",".join("?" * len(unidades))
         # A MESMA regra do painel e dos relatórios: a minha coleta vence, e onde
         # não tenho a minha vale a compartilhada. Se a faixa contasse por unidade,
@@ -671,7 +686,8 @@ def estado_coleta(unidades=None, usuario_id=None):
         ids = [sid for sid, _ in escolhidos.values()] or [-1]
         m2 = ",".join("?" * len(ids))
         linhas = cx.execute(f"""SELECT unidade, coletado_em, unicos, suspeito, motivo,
-                                       dono_usuario_id, id
+                                       dono_usuario_id, id,
+                                       COALESCE(instancia,'SEI-SESAB') AS instancia
                                 FROM snapshot WHERE id IN ({m2})
                                 ORDER BY unidade""", ids).fetchall()
         blocos = _blocos_velhos(cx, ids)
@@ -686,7 +702,8 @@ def estado_coleta(unidades=None, usuario_id=None):
                           list(unidades) + [usuario_id]).fetchone()[0]
     else:
         linhas = cx.execute("""SELECT unidade, coletado_em, unicos, suspeito, motivo,
-                                      dono_usuario_id, id
+                                      dono_usuario_id, id,
+                                      COALESCE(instancia,'SEI-SESAB') AS instancia
                                FROM snapshot WHERE estado='corrente' ORDER BY unidade""").fetchall()
         pend = cx.execute("SELECT COUNT(*) FROM snapshot WHERE estado='candidato'").fetchone()[0]
         blocos = _blocos_velhos(cx, [l["id"] for l in linhas])
@@ -714,9 +731,20 @@ def estado_coleta(unidades=None, usuario_id=None):
         saida.append({"unidade": l["unidade"], "curta": l["unidade"].split("/")[-1],
                       "cor": cor, "texto": texto, "processos": l["unicos"],
                       "coletado_em": l["coletado_em"], "minha": minha,
+                      # DE QUAL INSTALAÇÃO. A sigla curta ("GABINETE") não
+                      # distingue SESAB de FESF, e a faixa mostra justamente a
+                      # sigla curta: sem isto, duas mesas homônimas de órgãos
+                      # diferentes aparecem como se fossem a mesma.
+                      "instancia": l["instancia"],
+                      "rotulo": perfil_sei.rotulo(l["instancia"]),
                       "medido_ate": marco, "do_poco": b.get("do_poco") or 0,
                       "suspeito": bool(l["suspeito"]), "motivo": l["motivo"]})
     return {"unidades": saida, "candidatos": pend,
+            # O rótulo da instalação só aparece na tela quando há MAIS DE UMA:
+            # carimbar "SESAB" em toda linha de quem só tem SESAB é ruído que
+            # ensina a não ler o carimbo — e é justamente ele que precisa ser
+            # lido no dia em que a segunda instalação chegar.
+            "multi_instancia": len({u["instancia"] for u in saida}) > 1,
             # Quantas destas unidades ainda dependem da coleta de outro. É o que a
             # tela usa para dizer "configure a sua" com um motivo em vez de um
             # pedido solto.
@@ -726,8 +754,51 @@ def estado_coleta(unidades=None, usuario_id=None):
                      else "verde" if saida else "vazio")}
 
 
+class PorUnidade(dict):
+    """{(instancia, unidade): (snapshot_id, dono)} que ainda se deixa ler por nome.
+
+    A CHAVE PASSOU A SER O PAR. Ela era só o nome da unidade, e o laço que monta
+    este dicionário guardava a primeira linha vista e descartava as demais: com
+    vínculo em `FESF/GABINETE` e `SESAB/GABINETE`, uma das duas sumia da carteira
+    sem alerta nenhum. A chave protegia contra misturar (o SQL já filtra por
+    instalação); o dicionário, não.
+
+    Ler por nome continua funcionando enquanto o nome pertencer a UMA instalação
+    só — que é o caso de todos os usos de hoje. Nome ambíguo levanta KeyError
+    dizendo as instalações em que ele existe, em vez de devolver a errada.
+    """
+
+    def _par(self, nome):
+        pares = [k for k in self if k[1] == nome]
+        if len(pares) == 1:
+            return pares[0]
+        if not pares:
+            return None
+        raise KeyError(f"{nome!r} existe em mais de uma instalação "
+                       f"({', '.join(sorted(i for i, _ in pares))}): "
+                       f"leia pelo par (instancia, unidade)")
+
+    def __missing__(self, chave):
+        if isinstance(chave, str):
+            p = self._par(chave)
+            if p is not None:
+                return dict.__getitem__(self, p)
+        raise KeyError(chave)
+
+    def __contains__(self, chave):
+        if dict.__contains__(self, chave):
+            return True
+        return isinstance(chave, str) and self._par(chave) is not None
+
+    def get(self, chave, padrao=None):
+        try:
+            return self[chave]
+        except KeyError:
+            return padrao
+
+
 def snapshots_de(cx, usuario_id, unidades):
-    """Os ids de snapshot que ESTA pessoa pode ler, um por unidade.
+    """Os ids de snapshot que ESTA pessoa pode ler, um por (instalação, unidade).
 
     A regra é uma só, e mora aqui: **a minha coleta vence; onde eu não tenho a
     minha, vale a compartilhada da unidade**.
@@ -759,14 +830,16 @@ def snapshots_de(cx, usuario_id, unidades):
     # caso já só enxerga snapshot SEM dono: `dono = NULL` nunca é verdadeiro.
     if usuario_id is None:
         linhas = cx.execute(f"""
-            SELECT id, unidade, dono_usuario_id, coletado_em FROM snapshot
+            SELECT id, unidade, dono_usuario_id, coletado_em,
+                   COALESCE(instancia,'SEI-SESAB') AS instancia FROM snapshot
             WHERE estado='corrente' AND unidade IN ({marc})
               AND dono_usuario_id IS NULL
             ORDER BY unidade, coletado_em DESC, id DESC""",
             list(unidades)).fetchall()
     else:
         linhas = cx.execute(f"""
-            SELECT s.id, s.unidade, s.dono_usuario_id, s.coletado_em
+            SELECT s.id, s.unidade, s.dono_usuario_id, s.coletado_em,
+                   COALESCE(s.instancia,'SEI-SESAB') AS instancia
             FROM snapshot s
             JOIN usuario_unidade uu
               ON uu.unidade = s.unidade
@@ -779,10 +852,14 @@ def snapshots_de(cx, usuario_id, unidades):
                      CASE WHEN s.dono_usuario_id IS NULL THEN 1 ELSE 0 END,
                      s.coletado_em DESC, s.id DESC""",
             [usuario_id] + list(unidades) + [usuario_id]).fetchall()
-    fora = {}
+    fora = PorUnidade()
     for l in linhas:
-        if l["unidade"] not in fora:
-            fora[l["unidade"]] = (l["id"], l["dono_usuario_id"])
+        chave = (l["instancia"], l["unidade"])
+        # `dict.__contains__` direto: o `in` da classe resolve nome ambíguo e
+        # levantaria KeyError no meio do laço que está justamente montando o
+        # dicionário. Aqui a pergunta é literal — "esta chave já está lá?".
+        if not dict.__contains__(fora, chave):
+            dict.__setitem__(fora, chave, (l["id"], l["dono_usuario_id"]))
     return fora
 
 
@@ -815,7 +892,8 @@ def carteira(unidades, usuario_id=None):
     # ORDER BY nao e enfeite: um processo aberto em duas mesas aparece uma vez por
     # snapshot, e sem ordem o vencedor da dedup era o alfabeticamente menor — que
     # pode ser o snapshot mais VELHO. O dado exibido tem de vir do mais fresco.
-    proc = cx.execute(f"""SELECT p.*, s.unidade AS snap_unidade, s.coletado_em
+    proc = cx.execute(f"""SELECT p.*, s.unidade AS snap_unidade, s.coletado_em,
+                                 COALESCE(s.instancia,'SEI-SESAB') AS instancia
                           FROM processo p JOIN snapshot s ON s.id=p.snapshot_id
                           WHERE s.id IN ({marc})
                           ORDER BY s.coletado_em DESC, s.id DESC""",
@@ -834,20 +912,37 @@ def carteira(unidades, usuario_id=None):
     # por processo visível, então nada vaza — mas a proteção fica dependendo de um
     # detalhe do laço lá embaixo, e não da consulta. Uma consulta que carrega o que
     # não pode ser mostrado é um vazamento esperando por um bug.
-    resumos = {r["id_sei"]: r for r in cx.execute(
+    # A CHAVE É (INSTALAÇÃO, ID), a MESMA do laço lá embaixo. Quando a dedup do
+    # laço passou a ser a tupla (07/09/2026), este dicionário continuou indexado
+    # só por `id_sei`: `resumos.get((instancia, id))` devolvia None em 100% das
+    # linhas e NENHUM dos 927 resumos aparecia no painel — sem erro, sem log, com
+    # `/admin` anunciando "927 com resumo" na mesma hora. Chave montada aqui tem
+    # de ser lida com a mesma forma lá; por isso as duas vêm do mesmo par.
+    resumos = {(r["instancia"], r["id_sei"]): r for r in cx.execute(
         f"""SELECT DISTINCT r.* FROM resumo r
             JOIN processo p ON p.id_sei = r.id_sei
+            JOIN snapshot s2 ON s2.id = p.snapshot_id
+                            AND COALESCE(s2.instancia,'SEI-SESAB') = r.instancia
             WHERE p.snapshot_id IN ({marc})""", unidades)}
     cx.close()
 
     saida, visto = [], {}
     for p in proc:
-        chave = p["id_sei"]
+        # A CHAVE DA DEDUP É (INSTALAÇÃO, ID). `id_sei` sozinho é único DENTRO de
+        # uma instalação; entre duas, nada garante isso. Com a chave antiga, um
+        # processo da FESF com o mesmo id de um da SESAB desapareceria da tela e
+        # ainda herdaria as mesas do outro órgão na união abaixo.
+        chave = (p["instancia"], p["id_sei"])
         t = textos.get((p["snapshot_id"], p["id_sei"]))
         ac = json.loads(t["acompanhamento"]) if t and t["acompanhamento"] else []
         r = resumos.get(chave)
         d = {
             "id": p["id_sei"], "protocolo": p["protocolo"], "tipo_processo": p["tipo_processo"],
+            # DE QUAL INSTALAÇÃO É ESTA LINHA. Vai no registro — e não só na
+            # faixa — porque quem tem carteira nas duas precisa saber, olhando a
+            # linha, em qual SEI aquele processo está.
+            "instancia": p["instancia"],
+            "instancia_rotulo": perfil_sei.rotulo(p["instancia"]),
             "especificacao": t["especificacao"] if t else None,
             "anotacao": t["anotacao"] if t else None,
             "anotacao_autor": t["anotacao_autor"] if t else None,
@@ -930,6 +1025,20 @@ def _marco_coleta(coleta, linhas=None):
         return ""
 
 
+def _falhas_do_usuario(cx, unidades):
+    """Mesas que falharam na última execução E são desta pessoa.
+
+    Vive fora das rotas porque agora tem dois leitores — a tela e o arquivo
+    exportado — e o aviso "COLETA INCOMPLETA" que aparece num tem de aparecer no
+    outro. Já foi código morto uma vez (fixo em `[]`, com o dado existindo no
+    banco); duas cópias da consulta seriam o caminho de volta.
+    """
+    return [r["unidade"] for r in cx.execute(
+        """SELECT DISTINCT unidade FROM alerta WHERE tipo='mesa_falhou'
+           AND reconhecido_em IS NULL AND unidade IS NOT NULL""")
+        if r["unidade"] in unidades]
+
+
 @app.get("/")
 @exige_login
 def painel():
@@ -950,10 +1059,7 @@ def painel():
               ip=ip_cliente())
     # Mesas que falharam na ultima execucao E sao do usuario. Estava fixo em []:
     # o aviso "COLETA INCOMPLETA" do painel era codigo morto, e o dado existia.
-    falhas = [r["unidade"] for r in cx.execute(
-        """SELECT DISTINCT unidade FROM alerta WHERE tipo='mesa_falhou'
-           AND reconhecido_em IS NULL AND unidade IS NOT NULL""")
-        if r["unidade"] in unidades]
+    falhas = _falhas_do_usuario(cx, unidades)
     cx.commit(); cx.close()
     # O painel avisa quem ainda não configurou a própria coleta. Sem isso, a
     # pessoa vê a carteira que a coleta de OUTRO trouxe e conclui que já está
@@ -990,6 +1096,103 @@ def painel():
                       if coleta["unidades"] else "sem coleta"),
         falhas=falhas))
     resp.set_cookie(COOKIE_CSRF, seg.novo_csrf(), samesite="Lax", secure=cookie_seguro(), path="/")
+    return resp
+
+
+def _dia_iso(marco):
+    """A data da coleta em AAAA-MM-DD, a partir do 'DD/MM/AAAA HH:MM' da régua.
+
+    Sai da RÉGUA e não do banco de propósito: o nome do arquivo tem de dizer a
+    mesma data que o arquivo carrega dentro. Derivar as duas de fontes diferentes
+    é como se cria a divergência que se descobre na reunião.
+    """
+    try:
+        d, m, a = marco[:10].split("/")
+        return f"{a}-{m}-{d}"
+    except (AttributeError, ValueError):
+        # Conta sem unidade nenhuma: não há coleta, e o nome do arquivo diz isso
+        # em vez de carimbar a data de hoje sobre uma carteira vazia.
+        return "sem-coleta"
+
+
+# Teto do estado que volta embutido no arquivo. O recorte do painel cabe em
+# poucas centenas de caracteres; o que passa disso não é filtro, é alguém
+# testando o que a rota aceita — e o que ela aceita ela devolve dentro de um HTML
+# que vai circular. Cortar é mais honesto que rejeitar: o arquivo sai igual, só
+# sem o recorte.
+LIMITE_ESTADO = 2000
+
+
+@app.get("/painel.html")
+@exige_login
+def painel_exportado():
+    """O painel como ARQUIVO: abre sem servidor, sem rede e sem login.
+
+    POR QUE ISTO EXISTE
+    -------------------
+    A carteira é discutida com quem não tem conta aqui — chefia, auditoria, a
+    outra secretaria — e o que circulava era `.xlsx`: números certos, tela
+    nenhuma. Perde-se o agrupamento, a gaveta de detalhe, a triagem por etapa e,
+    sobretudo, a leitura visual do que está parado. Isto entrega a TELA.
+
+    O QUE ELE CARREGA JUNTO
+    -----------------------
+    Nada aqui é o retrato de um sistema anônimo: o arquivo diz de quando é o
+    dado, de quais unidades, quantos processos, quem exportou e quando — e avisa
+    que não se atualiza. É a mesma folha de rosto do `.xlsx` de relatório
+    (`relatorios.para_xlsx`), pelo mesmo motivo: número sem procedência não se
+    defende, e a cópia sobrevive à conversa em que foi mostrada.
+
+    A RÉGUA VAI JUNTO E NÃO SE MEXE. `COLETA_EM` continua sendo a data da COLETA.
+    Fosse o relógio de quem abre, a cópia envelheceria sozinha e mostraria "94
+    dias na unidade" para um processo que tinha 73 no dia em que saiu — número
+    que ninguém consegue reproduzir nem defender.
+
+    A FRONTEIRA É A MESMA DE `/`: `unidades_do` + `carteira`. O arquivo é a
+    carteira de QUEM PEDIU. Filtrar no navegador seria entregar o dado dos outros
+    junto e pedir para o JavaScript ter vergonha.
+    """
+    u = request.usuario
+    unidades = unidades_do(u["usuario_id"])
+    dados = carteira(unidades, u["usuario_id"])
+    coleta = estado_coleta(unidades, u["usuario_id"])
+    coleta_em = _marco_coleta(coleta, dados)
+    gerado = datetime.now(TZ)
+    cx = conectar()
+    # Registrado com a CONTAGEM e com a data do DADO, como a exportação de
+    # relatório. Depois que o arquivo circula por e-mail, é este par que responde
+    # "de onde veio esse HTML que está rodando na reunião?".
+    registrar(cx, u["usuario_id"], "exportar_painel",
+              alvo=f"{len(dados)} processos · dado de {coleta_em or 'sem coleta'}",
+              unidade=";".join(unidades) or None, ip=ip_cliente())
+    falhas = _falhas_do_usuario(cx, unidades)
+    cx.commit(); cx.close()
+    corpo = render_template(
+        "painel_solto.html", dados=dados, unidades=unidades, coleta=coleta, u=u,
+        mesas=[c["unidade"] for c in coleta["unidades"]],
+        coleta_em=coleta_em,
+        coleta_frase=(min(coleta["unidades"],
+                          key=lambda c: c.get("medido_ate") or c["coletado_em"])["texto"]
+                      if coleta["unidades"] else "sem coleta"),
+        falhas=falhas,
+        exportado_em=f"{gerado:%d/%m/%Y %H:%M}",
+        # O RECORTE DA TELA, de volta. O painel guarda filtros e agrupamento no
+        # hash, que o navegador não manda ao servidor — por isso o botão os
+        # converte em query string. Aqui a string volta para dentro do arquivo,
+        # que a reaplica na abertura: sem isso, exportar "meus parados +90d"
+        # entregaria a carteira inteira, sem erro e sem ninguém notar.
+        estado_url=request.query_string.decode("utf-8", "replace")[:LIMITE_ESTADO])
+    resp = make_response(corpo)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    # AS DUAS DATAS NO NOME. Sem a do dado, duas exportações do mesmo dia sobre
+    # coletas diferentes ficam indistinguíveis na pasta de downloads; sem a da
+    # geração, não dá para saber qual das cópias é a mais nova.
+    resp.headers["Content-Disposition"] = (
+        'attachment; filename="sei360_painel'
+        f'_dado-{_dia_iso(coleta_em)}_gerado-{gerado:%Y-%m-%d}.html"')
+    # Carteira nominal por unidade: não fica em cache de proxy nem no disco do
+    # navegador para o próximo que usar a mesma estação.
+    resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
@@ -1055,6 +1258,10 @@ def configuracao_post():
 
     if passo == "sistema":
         s = f.get("sistema")
+        # ESCOLHÍVEL = BUSCA OU COLETA. A recusa lia `disponivel_coleta` e
+        # travava a FESF, embora a busca já rodasse nela: quem tem vínculo só na
+        # FESF não passava do passo 1. O que cada instalação oferece a tela diz,
+        # instância por instância, lendo do perfil.
         if s not in cfgmod.SISTEMAS or not cfgmod.SISTEMAS[s]["disponivel"]:
             erro = "Esse sistema ainda não está disponível."
         else:
@@ -1065,10 +1272,15 @@ def configuracao_post():
         senha = f.get("sei_senha") or ""
         modo = f.get("modo_coleta") or "servidor"
         c = cfgmod.ler(cx, uid)
-        # Só o formato. Conferir se a conta EXISTE exigiria tentar autenticar —
-        # e é exatamente isso que o botão "Testar acesso" faz, de propósito.
-        if "@" not in login or "." not in login.split("@")[-1]:
-            erro = "Informe o e-mail institucional completo com o qual você entra no SEI."
+        # Só o formato, E O FORMATO É DA INSTALAÇÃO. A regra estava escrita aqui
+        # ("tem @ e ponto no domínio") porque a única instalação conhecida era a
+        # SESAB; o login da FESF é `nome.sobrenome`, e esta linha recusava o
+        # login CERTO mandando a pessoa consertar o que não estava quebrado.
+        # Conferir se a conta EXISTE exigiria tentar autenticar — e é exatamente
+        # isso que o botão "Testar acesso" faz, de propósito.
+        login_ok, dica_login = perfil_sei.login_valido(c["sistema"], login)
+        if not login_ok:
+            erro = dica_login
         elif modo == "servidor" and not cofre.disponivel():
             erro = ("O cofre do servidor está desligado porque falta a chave mestra. "
                     "Escolha guardar no seu computador, ou peça a quem administra.")
@@ -1743,6 +1955,50 @@ def admin_usuario_detalhe(uid, aviso=None, provisoria=None):
     return resp
 
 
+def instancia_para_vincular(cx, unidade):
+    """De qual instalação é esta unidade — e se ela já foi coletada alguma vez.
+
+    Devolve `(instancia, sem_snapshot, erro)`.
+
+    O LAÇO QUE MANTINHA A FESF FORA DO PRODUTO. O vínculo só aceitava unidade que
+    já existisse em `snapshot`; a FESF nunca coletou uma linha; e sem vínculo
+    ninguém enxerga nada nela — nem a busca, que já funciona. Não havia primeira
+    peça: a lista de unidades vinha do dado, e o dado dependia do vínculo.
+
+    Fora do snapshot, a sigla é a única fonte que existe, e ela é informativa:
+    `FESF/…` e `SESAB/…` dizem o órgão. Continua não sendo texto livre de
+    verdade — a forma é conferida (`ORGAO/…`, maiúsculas, sem espaço) e o
+    prefixo tem de ser de uma instalação conhecida —, e é o MESMO caminho que
+    "Unidades que este agente pode publicar" já usa desde o primeiro deploy.
+    """
+    unidade = (unidade or "").strip()
+    if not unidade:
+        return None, False, "Informe a unidade a vincular."
+    vistas = [r["instancia"] for r in cx.execute(
+        "SELECT DISTINCT COALESCE(instancia,'SEI-SESAB') AS instancia "
+        "FROM snapshot WHERE unidade=?", (unidade,))]
+    if len(vistas) == 1:
+        return vistas[0], False, None
+    if len(vistas) > 1:
+        # Mesma sigla coletada em duas instalações: escolher uma no escuro seria
+        # dar acesso à carteira do outro órgão. Quem decide é quem sabe.
+        return None, False, (f"“{unidade}” existe em mais de uma instalação "
+                             f"({', '.join(sorted(vistas))}). Vincule pela tela da "
+                             f"conta, onde a instalação é explícita.")
+    if not perfil_sei.sigla_valida(unidade):
+        return None, True, ("Unidade desconhecida. Para vincular uma unidade que "
+                            "ainda não foi coletada, escreva a sigla como o SEI a "
+                            "escreve: ORGAO/…, em maiúsculas e sem espaço "
+                            "(ex.: FESF/DIGAS/HECC/GAF/ADM).")
+    inst = perfil_sei.instancia_da_sigla(unidade)
+    if not inst:
+        prefixos = sorted(p["prefixo_unidade"] for p in perfil_sei.INSTANCIAS.values()
+                          if p["prefixo_unidade"])
+        return None, True, (f"Não dá para saber de qual instalação é “{unidade}”: "
+                            f"a sigla precisa começar por {', '.join(prefixos)}.")
+    return inst, True, None
+
+
 @app.post("/admin/usuarios/lote")
 @exige_admin
 def admin_usuarios_lote():
@@ -1800,24 +2056,31 @@ def admin_usuarios_lote():
             feitos += 1
         aviso = f"{feitos} conta(s) desativada(s) e sessões encerradas."
     elif acao == "vincular":
-        unidade = request.form.get("unidade")
-        # A INSTALAÇÃO ENTRA NO VÍNCULO. Nome de unidade não é único entre
-        # instalações — "GABINETE" existe na SESAB e na FESF — e a chave da
-        # tabela é (usuario_id, instancia, unidade). Gravar sem a instância
-        # deixava o DEFAULT decidir, o que só funciona enquanto houver uma
-        # instalação só.
-        validas = {r["unidade"]: r["instancia"] for r in cx.execute(
-            "SELECT DISTINCT COALESCE(instancia,'SEI-SESAB') AS instancia, unidade "
-            "FROM snapshot")}
-        if unidade not in validas:
+        # A SIGLA DIGITADA VENCE A LISTA. A lista sai de `snapshot`, e instalação
+        # que nunca coletou não tem snapshot nenhum — era por aqui que a FESF
+        # ficava inalcançável. `instancia_para_vincular` resolve a instalação
+        # pelo dado quando ele existe e pela sigla quando não existe.
+        unidade = (request.form.get("unidade_livre")
+                   or request.form.get("unidade") or "").strip()
+        instancia, sem_snapshot, erro = instancia_para_vincular(cx, unidade)
+        if erro:
             cx.close()
-            return admin_usuarios(aviso="Unidade desconhecida.")
+            return admin_usuarios(aviso=erro)
         for uid in ids:
             cx.execute("""INSERT OR IGNORE INTO usuario_unidade(usuario_id,instancia,unidade,
                           origem,concedida_por,concedida_em) VALUES(?,?,?,'admin',?,?)""",
-                       (uid, validas[unidade], unidade, eu, agora()))
+                       (uid, instancia, unidade, eu, agora()))
             feitos += 1
-        aviso = f"{unidade.split('/')[-1]} vinculada a {feitos} conta(s)."
+        if sem_snapshot:
+            # FICA DITO NO LOG. Vínculo nascido sem snapshot é o único cujo
+            # escopo ninguém conferiu contra o SEI: a instalação saiu da sigla,
+            # não do dado. Quem auditar precisa distinguir os dois.
+            registrar(cx, eu, "vincular_sem_snapshot", alvo=f"{feitos} conta(s)",
+                      unidade=f"{instancia} · {unidade}", ip=ip_cliente())
+        aviso = (f"{unidade.split('/')[-1]} ({perfil_sei.rotulo(instancia)}) "
+                 f"vinculada a {feitos} conta(s)."
+                 + (" A unidade ainda não tem coleta nenhuma: o vínculo nasceu da "
+                    "sigla, e ficou registrado assim." if sem_snapshot else ""))
     else:
         aviso = "Ação desconhecida."
     registrar(cx, eu, f"lote_{acao}", alvo=f"{feitos} contas", ip=ip_cliente())
@@ -2001,10 +2264,19 @@ def admin_usuario():
         for un in pedidas:
             # So o vinculo NOVO nasce 'admin', que e o que ele e de fato.
             v = antigos.get(un)
+            # A INSTALAÇÃO É DERIVADA, não presumida. `"SEI-SESAB"` fixo aqui era
+            # inofensivo enquanto só a SESAB existia e virava erro silencioso no
+            # dia seguinte: recriar o vínculo de uma unidade da FESF o gravava
+            # como SESAB, e a pessoa perdia a carteira sem nada na tela dizer por
+            # quê. `instancia_para_vincular` pergunta ao snapshot e, na falta
+            # dele, à sigla — as unidades aqui vieram todas de `snapshot`, então
+            # o primeiro caminho é o que responde.
+            inst_un = (v["instancia"] if v else None) or \
+                instancia_para_vincular(cx, un)[0] or perfil_sei.PADRAO
             cx.execute("""INSERT INTO usuario_unidade(usuario_id,instancia,unidade,principal,
                           origem,concedida_por,concedida_em)
                           VALUES(?,?,?,?,?,?,?)""",
-                       (uid, v["instancia"] if v else "SEI-SESAB", un,
+                       (uid, inst_un, un,
                         v["principal"] if v else 0,
                         v["origem"] if v else "admin",
                         v["concedida_por"] if v else eu,
@@ -2665,6 +2937,27 @@ def enrolar():
                    unidades=json.loads(ag["unidades_esperadas"] or "[]"))
 
 
+def instancia_do_agente(cx, ag):
+    """A instalação que este agente atende: a da configuração do DONO dele.
+
+    UMA definição, três usos (tarefa de coleta, plano do poço, ingestão do
+    resultado). Os três liam a mesma coluna de jeitos diferentes — dois com o
+    padrão escrito à mão — e discordar aqui é gravar o dado de um órgão sob o
+    nome do outro.
+
+    Sem dono, sem configuração ou com instalação desconhecida, cai no padrão: é a
+    única instalação que o sistema coletou até hoje, e o coletor sem perfil já se
+    comporta assim.
+    """
+    if not ag or not ag["dono_usuario_id"]:
+        return perfil_sei.PADRAO
+    r = cx.execute("SELECT sistema FROM config_usuario WHERE usuario_id=? "
+                   "ORDER BY atualizado_em DESC, sistema LIMIT 1",
+                   (ag["dono_usuario_id"],)).fetchone()
+    inst = (r["sistema"] if r else None) or perfil_sei.PADRAO
+    return inst if perfil_sei.existe(inst) else perfil_sei.PADRAO
+
+
 @app.get("/api/agente/tarefa")
 def tarefa():
     ag, erro = agente_autenticado()
@@ -2687,6 +2980,28 @@ def tarefa():
     if ag["pausado_motivo"]:
         cx.commit(); cx.close()
         return jsonify(coletar=False, motivo=ag["pausado_motivo"])
+    # A INSTALAÇÃO E O PERFIL VIAJAM COM A TAREFA DE COLETA, como já viajavam com
+    # a de busca (`/api/agente/busca`). Sem eles o coletor cai na constante
+    # interna — a SESAB — e uma coleta da FESF entraria no SEI errado, falhando
+    # de um jeito que parece senha inválida. As duas metades do mesmo agente não
+    # podem falar de instalações diferentes.
+    inst_ag = instancia_do_agente(cx, ag)
+    # E A INSTALAÇÃO TEM DE SABER COLETAR. Desde que o passo 1 aceita instalação
+    # que só serve para BUSCAR, alguém pode configurar a coleta na FESF e parear
+    # uma estação: o coletor entraria, a visualização Detalhada falharia EM
+    # SILÊNCIO (é do SEI 5) e o painel publicaria carteira vazia com cara de
+    # carteira vazia de verdade. Recusar aqui, com o motivo escrito no perfil, é
+    # o oposto: não coleta e diz por quê. `disponivel_coleta` deixa de ser um
+    # comentário no perfil e passa a ser a trava que ele promete ser.
+    if not perfil_sei.perfil(inst_ag)["disponivel_coleta"]:
+        cx.commit(); cx.close()
+        return jsonify(coletar=False, instancia=inst_ag, motivo=(
+            f"a coleta ainda não roda em {perfil_sei.INSTANCIAS[inst_ag]['nome']}: "
+            + perfil_sei.INSTANCIAS[inst_ag].get(
+                "motivo_sem_coleta", "instalação sem coletor.")
+            + " A busca nesta instalação continua funcionando."),
+            versao_disponivel=VERSAO_AGENTE)
+    perfil_ag = perfil_sei.envelope_do_coletor(inst_ag)
     cfg = cx.execute("SELECT * FROM agendamento WHERE agente_id=?", (ag["id"],)).fetchone()
     if not cfg:
         cx.commit(); cx.close()
@@ -2719,6 +3034,7 @@ def tarefa():
         return jsonify(coletar=True, execucao_id=pendente["id"], janela=pendente["janela"],
                        motivo=f"retomando a execução {pendente['id']} ({pendente['gatilho']})",
                        unidades=json.loads(ag["unidades_esperadas"] or "[]"),
+                       instancia=inst_ag, perfil=perfil_ag,
                        parser_versao=poco.PARSER_VERSAO,
                        versao_disponivel=VERSAO_AGENTE)
 
@@ -2742,6 +3058,7 @@ def tarefa():
     cx.commit(); cx.close()
     return jsonify(coletar=True, execucao_id=ex, janela=devida, motivo=motivo,
                    unidades=json.loads(ag["unidades_esperadas"] or "[]"),
+                   instancia=inst_ag, perfil=perfil_ag,
                    # A versao do parser viaja com a tarefa. Coletor que entende os
                    # campos de outro jeito recebe "leia tudo" em vez de bloco cujo
                    # significado mudou.
@@ -2989,9 +3306,10 @@ def poco_plano():
     # A instância vem do agente, não do corpo: quem publica não escolhe em qual
     # instalação o plano é lido. Sem `sistema` configurado, a leitura do que
     # existe é SESAB — a única instalação que o sistema coletou até hoje.
-    inst = (cx.execute("SELECT sistema FROM config_usuario WHERE usuario_id=?",
-                       (ag["dono_usuario_id"],)).fetchone() or {"sistema": None}
-            )["sistema"] or perfil_sei.PADRAO
+    # UMA definição para as três rotas do agente: a consulta estava escrita aqui
+    # e o padrão em mais dois lugares, e discordar significa ler o poço de um
+    # órgão para responder à coleta do outro.
+    inst = instancia_do_agente(cx, ag)
     r = poco.plano(cx, mesa, itens, inst, execucao_id=ex,
                    dono_usuario_id=ag["dono_usuario_id"])
     cx.commit(); cx.close()
@@ -3101,9 +3419,18 @@ def resultado():
     # NULL só na estação de bootstrap, que é como toda instalação começa: aquela
     # coleta fica marcada como COMPARTILHADA e vale para quem tem vínculo na
     # unidade, até a pessoa ter a própria.
+    # `instancia` É DE QUEM PUBLICA, e o servidor sabe qual é: a configuração do
+    # dono do agente. Sem este argumento a ingestão caía em 'SEI-SESAB' por
+    # padrão — toda coleta da FESF nasceria carimbada como SESAB, misturada com a
+    # de outro órgão nos índices e nos relatórios. Quando o coletor declarar a
+    # instalação no próprio JSON, é a DECLARAÇÃO que vale: ela é a única que
+    # esteve lá. Divergir das duas vira alerta, não escolha silenciosa.
+    cxi = conectar()
+    instancia_ag = instancia_do_agente(cxi, ag)
+    cxi.close()
     rel = ingerir(tmp, forcar=False, agente_id=ag["id"], execucao_id=ex,
                   coletado_em=carimbo, escopo=sorted(esperadas),
-                  dono=ag["dono_usuario_id"])
+                  dono=ag["dono_usuario_id"], instancia=instancia_ag)
     os.unlink(tmp)
     return jsonify(ok=True, relatorio=rel, carimbo=carimbo or "ausente — snapshots marcados")
 

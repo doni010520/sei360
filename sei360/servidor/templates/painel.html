@@ -540,7 +540,14 @@ html[data-tema="claro"] .grupo-cab{background:#e6eef7}
    pessoa rodar a dela —, mas quem lê precisa saber que aquele 625 não saiu
    do login dele. Fio pontilhado embaixo: distingue sem gritar. */
 .coleta-un.emprestada{opacity:.72}
-.coleta-un.emprestada b{border-bottom:1px dotted currentColor}
+.coleta-un.emprestada b.num{border-bottom:1px dotted currentColor}
+/* DE QUAL INSTALAÇÃO. A faixa mostra a sigla CURTA da unidade ("GABINETE"), e
+   ela não distingue SESAB de FESF — duas mesas homônimas de órgãos diferentes
+   apareciam idênticas. O rótulo só entra quando a pessoa tem vínculo em mais de
+   uma instalação: carimbar "SESAB" em toda linha de quem só tem SESAB é ruído
+   que ensina a não ler o carimbo. */
+.coleta-un b.inst{font-size:9px;letter-spacing:.1em;padding:1px 5px;border-radius:4px;
+  border:1px solid var(--line);opacity:.75;font-weight:600}
 /* Cores de estado com brilho suficiente para o fundo ESCURO do painel, que é o
    padrão dele. As anteriores (#2f6b41, #8a6d1f) foram escolhidas para papel
    branco e ficavam quase invisíveis sobre #0A0E27. */
@@ -667,6 +674,9 @@ html[data-tema="claro"] .pt.vazio{background:#c8ccd2}
         <button class="mi" id="miXls" role="menuitem">
           <svg viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1.8v7.4M4.2 6.6L7 9.4l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.4 11.6h9.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
           Exportar planilha do recorte</button>
+        <button class="mi" id="miHtml" role="menuitem">
+          <svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2.4 2.4h9.2v9.2H2.4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M2.4 5.2h9.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 8.6l1.4 1.4 1.4-1.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Exportar painel (HTML)</button>
         <button class="mi" id="miImprimir" role="menuitem">
           <svg viewBox="0 0 14 14" aria-hidden="true"><path d="M4 5V1.9h6V5" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="1.9" y="5" width="10.2" height="4.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 9.6h6v2.5H4z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
           Imprimir o recorte</button>
@@ -696,8 +706,8 @@ html[data-tema="claro"] .pt.vazio{background:#c8ccd2}
   <span class="coleta-rot">Sua coleta</span>
   {% endraw %}{% for c in coleta.unidades %}{% raw %}
     <span class="coleta-un {% endraw %}{{ '' if c.minha else 'emprestada' }}{% raw %}"
-      title="{% endraw %}{{ c.unidade }}{% raw %} — {% endraw %}{{ c.texto }}{{ '' if c.minha else ' · coleta COMPARTILHADA: este número não veio do seu login no SEI' }}{% raw %}">
-      <i class="pt {% endraw %}{{ c.cor }}{% raw %}"></i>{% endraw %}{{ c.curta }}{% raw %}
+      title="{% endraw %}{{ c.instancia }}{% raw %} · {% endraw %}{{ c.unidade }}{% raw %} — {% endraw %}{{ c.texto }}{{ '' if c.minha else ' · coleta COMPARTILHADA: este número não veio do seu login no SEI' }}{% raw %}">
+      <i class="pt {% endraw %}{{ c.cor }}{% raw %}"></i>{% endraw %}{% if coleta.multi_instancia %}{% raw %}<b class="inst">{% endraw %}{{ c.rotulo }}{% raw %}</b>{% endraw %}{% endif %}{{ c.curta }}{% raw %}
       <b class="num">{% endraw %}{{ c.processos }}{% raw %}</b>
       <em>{% endraw %}{{ c.texto }}{% if not c.minha %}{% raw %} · compartilhada{% endraw %}{% endif %}{% raw %}</em></span>
   {% endraw %}{% else %}{% raw %}
@@ -841,17 +851,13 @@ const $=i=>document.getElementById(i);
 const esc=s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const semAcento=s=>(s==null?'':String(s)).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
 const emMs=s=>{const m=(s||'').match(/(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
-  if(!m) return null;
-  /* `new Date(2026,1,31)` NAO reclama: rola para 3 de marco e devolve um
-     numero com cara de certo. Uma data impossivel vinda do SEI virava
-     "170 dias na unidade" aqui enquanto o relatorio, que recusa a data,
-     nao contava o processo — as duas telas discordando por um dado que
-     nenhuma das duas deveria aceitar. A volta confere se a data
-     sobreviveu inteira ao construtor. */
-  const D=new Date(+m[3],+m[2]-1,+m[1],+(m[4]||0),+(m[5]||0));
-  if(D.getFullYear()!==+m[3]||D.getMonth()!==+m[2]-1||D.getDate()!==+m[1])
-    return null;
-  return D.getTime();};
+  if(!m)return null;
+  /* DATA IMPOSSIVEL NAO VIRA DATA. new Date(2026,1,31) nao da erro: rola para
+     03/03, e 31/02 saia daqui como 170 dias enquanto relatorios._dias devolvia
+     nada para o mesmo processo. O round-trip e a unica conferencia que pega. */
+  const x=new Date(+m[3],+m[2]-1,+m[1],+(m[4]||0),+(m[5]||0));
+  return (x.getFullYear()===+m[3]&&x.getMonth()===+m[2]-1&&x.getDate()===+m[1])
+    ?x.getTime():null;};
 /* A régua é a data da COLETA, não o relógio de quem abriu a tela.
    Contar contra Date.now() faz o mesmo retrato dizer números diferentes a cada
    dia: com um dia de defasagem, 28 processos trocam de faixa de permanência e
@@ -1802,6 +1808,15 @@ const SEI_SAIR=SEI_RAIZ+'controlador.php?acao=logout';
   document.addEventListener('click',e=>{ if(!$('conta').contains(e.target)) abre(false); });
   menu.addEventListener('click',e=>{ if(e.target.closest('a')) abre(false); });
   $('miXls').onclick=()=>{abre(false); exportar();};
+  /* O recorte da tela vira query string: ver ITEM_EXPORTAR. `location.href` e
+     nao `window.open` — a resposta vem como anexo, entao o navegador baixa e
+     nao sai da pagina; abrir aba deixaria uma aba em branco por download. */
+  $('miHtml').onclick=()=>{
+    abre(false);
+    const p=new URLSearchParams(location.hash.slice(1));
+    p.set('tema',document.documentElement.getAttribute('data-tema')||'escuro');
+    location.href='/painel.html?'+p.toString();
+  };
   $('miImprimir').onclick=()=>{abre(false); window.print();};
   /* Confirmacao explicita: um clique acidental num item de menu nao pode
      derrubar a sessao de quem esta com processo aberto em outra aba. */

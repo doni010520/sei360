@@ -123,6 +123,22 @@ checar("e a tela diz que a lista é dela e tem prazo",
        "Não entra na carteira de ninguém" in html)
 checar("o menu ganhou a porta", 'href="/busca"' in html)
 
+# `medidos` CHEGAVA E NUNCA APARECIA. O servidor manda, por instalação, se os ids
+# dos campos da tela Pesquisa foram exercitados contra ELA
+# (`perfil_sei.busca_ids_medidos`) — e o template não renderizava nada. Campo que
+# não casa com id nenhum não é preenchido: o filtro não pega, o universo da
+# resposta muda e o número sai maior sem nada na tela dizer isso. A SESAB é
+# justamente a que está com `busca_ids_medidos: False`.
+import perfil_sei as _psb                                          # noqa: E402
+checar("a tela DIZ quando os ids da instalação não foram medidos em campo",
+       "não foram medidos em campo" in html,
+       "medidos chega ao template e não é renderizado")
+checar("e o seletor marca qual instalação está nessa situação",
+       "· ids não medidos" in html)
+checar("a instalação MEDIDA não recebe o aviso (senão ele deixa de significar)",
+       _psb.INSTANCIAS["SEI-FESF"]["busca_ids_medidos"] is True
+       and html.count("· ids não medidos") == 1, str(html.count("· ids não medidos")))
+
 print("\nO SERVIDOR RECUSA O QUE TEM DE RECUSAR")
 tok = c.get_cookie("sei360_csrf").value
 
@@ -1772,6 +1788,41 @@ for _bancada in ("painel_sesab/_diag_mesas.py", "painel_sesab/gerar_painel.py",
                  "painel_sesab/_run_coleta.cmd", "painel_sesab/extrator_detalhado.js"):
     checar(f"e a ferramenta de bancada {_bancada.split('/')[-1]} fica fora",
            not _cc2.entra(_bancada, _rs11))
+
+print("\nA LISTAGEM DO CONTROLE DE PROCESSOS, NAS DUAS INSTALACOES")
+# `automacao_sei.js` deixou de ter a tela da SESAB escrita no meio do parser: a
+# família de seletores do Controle de Processos (SEI 5.0.4 × 4.0) é escolhida UMA
+# vez pelo PERFIL da instalação. As asserções campo a campo vivem no próprio
+# arquivo, com fixture das duas versões; aqui a suíte só se recusa a passar se ele
+# quebrar. A fixture do 4.0 é SINTÉTICA — não há captura da tela real da FESF em
+# disco —, então o que ela prova é o PARSER, não o HTML da FESF.
+_j40 = Path(r"C:\Claude\sei_sistema\painel_sesab\_teste_parser40.js")
+if _j40.exists() and _node:
+    _r40 = subprocess.run([_node, str(_j40)], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=120)
+    checar("a listagem atravessa SEI 4.0 e 5.0.4, e recusa mesa vazia falsa",
+           _r40.returncode == 0, (_r40.stdout or "")[-400:])
+else:
+    checar("parser da listagem conferido", False,
+           "node ou _teste_parser40.js nao encontrados")
+
+# O CANAL DO PERFIL ATÉ O NAVEGADOR, que o teste em Node não alcança (ele não roda
+# o Python). Duas coisas só: que o perfil é injetado ANTES do coletor — depois
+# dele, a primeira tela já teria sido lida com a família de seletores errada — e
+# que o que viaja para o navegador não carrega credencial nenhuma.
+_col = Path(r"C:\Claude\sei_sistema\painel_sesab\coletor_sesab.py").read_text(
+    encoding="utf-8")
+checar("o coletor entrega o perfil ao .js, e antes de injetar o .js",
+       "__SEI_PERFIL" in _col
+       and _col.index("__SEI_PERFIL") < _col.index("add_init_script(path=str(JS))"),
+       "o .js lê o perfil na primeira chamada")
+# O recorte para no comeco do proximo comentario: uma janela de N caracteres
+# arrastava junto o bloco de ARGUMENTOS DO NAVEGADOR (que fala de "usuario" ao
+# explicar o sandbox) e acusava o que nao existe.
+_trecho = _col[_col.index("PERFIL_JS ="):]
+_trecho = _trecho[:_trecho.index(chr(10) + "#")]
+checar("e o que viaja para o navegador não tem credencial",
+       "senha" not in _trecho and "usuario" not in _trecho, _trecho[:120])
 
 print("\n" + "=" * 60)
 print(f"{ok} verificações OK, {mau} falha(s)")

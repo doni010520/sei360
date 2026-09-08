@@ -140,13 +140,61 @@ checar("abre no primeiro passo quando nada foi decidido",
 checar("diz em que passo está", "Passo 1 de 4" in cfg, "sem indicador de progresso")
 
 print("\n2. sistema")
+# INSTALAÇÃO COM BUSCA É ESCOLHÍVEL, mesmo sem coleta. Esta verificação
+# consagrava o oposto — "recusa sistema indisponível" com a FESF — e o oposto
+# era falso: a busca já roda na FESF (`perfil_sei.SEI-FESF.disponivel_busca`),
+# e o passo 1 recusava a única instalação em que a pessoa da FESF trabalha.
+# Quem tem vínculo só lá não passava da primeira tela.
+s, cfg, _ = pegar("/configuracao?passo=sistema")
+checar("a tela diz, POR INSTALAÇÃO, o que está disponível — lido do perfil",
+       "coleta: não · busca: sim" in prosa(cfg)
+       and "coleta: sim · busca: sim" in prosa(cfg),
+       "sem a linha de disponibilidade por instância")
+checar("e nenhum rádio do passo 1 vem desabilitado",
+       "disabled" not in cfg, "há instalação desabilitada na tela de sistema")
 s, cfg, _ = pegar("/configuracao", {"csrf": csrf(), "passo": "sistema", "sistema": "SEI-FESF"})
-checar("recusa sistema indisponível", "ainda não está disponível" in cfg)
+checar("aceita a instalação que só tem busca",
+       "ainda não está disponível" not in cfg, "recusou a FESF")
+checar("e avança para o passo seguinte", 'name="passo" value="acesso"' in cfg,
+       "não avançou depois de escolher a FESF")
+# O login DA FESF é `nome.sobrenome`. A validação exigia `@` para todo mundo e
+# recusava o login CERTO, mandando consertar o que não estava quebrado.
+#
+# SEM SENHA de propósito: o que se prova aqui é a validação do LOGIN, e mandar
+# senha guardaria uma credencial da FESF no cofre — o que faria `cofre.abrir`
+# sem `sistema=` recusar mais abaixo, com razão, e a suíte acusaria erro onde
+# não há. Passar do erro de login para o de senha É a prova de que o login foi
+# aceito.
+s, cfg, _ = pegar("/configuracao", {"csrf": csrf(), "passo": "acesso",
+                                    "modo_coleta": "servidor",
+                                    "sei_login": "nome.sobrenome"})
+checar("aceita login sem @ na instalação cujo login é nome.sobrenome",
+       "Informe a senha do SEI" in cfg, "recusou nome.sobrenome na FESF")
+s, cfg, _ = pegar("/configuracao", {"csrf": csrf(), "passo": "acesso",
+                                    "modo_coleta": "servidor",
+                                    "sei_login": "nome.sobrenome@saude.ba.gov.br"})
+checar("e recusa e-mail onde o login não é e-mail, dizendo a forma certa",
+       "Nesta instalação o login é" in prosa(cfg), "aceitou e-mail na FESF")
+# Volta para a SESAB: o resto da suíte percorre o assistente dela.
 s, cfg, _ = pegar("/configuracao?passo=sistema")
 checar("a trilha leva a qualquer passo já resolvido", 'name="passo" value="sistema"' in cfg)
+# TROCAR DE INSTALAÇÃO NO MESMO SEGUNDO TEM DE TROCAR DE VERDADE. `ler()` sem
+# `sistema` devolve a última mexida, ordenando por `atualizado_em DESC, sistema`
+# — e `agora()` tem segundo INTEIRO. Empate no mesmo segundo era desempatado por
+# ALFABETO: 'SEI-FESF' vencia 'SEI-SESAB'. A pessoa trocava, a tela dizia que
+# trocou, e o passo seguinte validava o login contra a instalação ANTIGA.
 s, cfg, _ = pegar("/configuracao", {"csrf": csrf(), "passo": "sistema", "sistema": "SEI-SESAB"})
 checar("aceita SEI-SESAB e volta ao passo pendente",
        'name="passo" value="acesso"' in cfg, "não avançou")
+_cfx = conectar()
+_todas = [r["sistema"] for r in _cfx.execute(
+    """SELECT sistema FROM config_usuario WHERE usuario_id=?
+       ORDER BY atualizado_em DESC, sistema""", (UID,))]
+_cfx.close()
+checar("as duas configurações coexistem (escolher uma não apaga a outra)",
+       sorted(_todas) == ["SEI-FESF", "SEI-SESAB"], str(_todas))
+checar("e a configuração ATIVA passa a ser a escolhida agora, não a alfabética",
+       _todas[:1] == ["SEI-SESAB"], str(_todas))
 
 print("\n3. acesso — a pergunta da senha")
 s, cfg, _ = pegar("/configuracao?passo=acesso")
@@ -359,6 +407,64 @@ _coletor = _P(r"C:\Claude\sei_sistema\painel_sesab\coletor_sesab.py").read_text(
     encoding="utf-8")
 checar("o teste de login pede as mesas da conta ao SEI",
        "SEIAuto.descobrirMesas()" in _coletor and '"mesas"' in _coletor)
+
+
+# ---------------------------------------------------------------------------
+# `coleta.coletar` — a coleta pela estacao que tambem e o servidor (07/09/2026).
+# O coletor de verdade nao roda aqui (abriria o Chromium contra o SEI): `_rodar`
+# e substituido por um duble que so registra o que receberia. O que se prova e o
+# guarda-corpo, nao a coleta.
+# ---------------------------------------------------------------------------
+print("\n-- coleta.coletar: guarda-corpos --")
+import coleta as _col
+_chamadas = []
+
+
+def _rodar_duble(argumentos, credencial, timeout):
+    _chamadas.append({"args": list(argumentos), "chaves": sorted(credencial),
+                      "perfil": credencial.get("perfil") or {}, "timeout": timeout})
+    return 0, "TESTE duble", ""
+
+
+_rodar_real, _col._rodar = _col._rodar, _rodar_duble
+try:
+    c, s = _col.coletar(1, "SEI-INEXISTENTE")
+    checar("instalacao desconhecida e recusada com codigo 4", c == 4 and "desconhecida" in s, s)
+    c, s = _col.coletar(1, "SEI-FESF")
+    checar("FESF sem parser provado e recusada com o MOTIVO do perfil",
+           c == 4 and "indispon" in s and "Detalhada" in s, s)
+    checar("e o coletor nem foi chamado", not _chamadas)
+    cx = conectar()
+    cx.execute("DELETE FROM credencial WHERE usuario_id=1")
+    cx.commit()
+    c, s = _col.coletar(1, "SEI-SESAB")
+    checar("sem credencial no cofre: codigo 3 e frase clara", c == 3 and "credencial" in s, s)
+    cofre.guardar(cx, 1, "SEI-SESAB", "titular@saude.ba.gov.br", "senha-de-teste-xyz")
+    cofre.guardar(cx, 1, "SEI-FESF", "nome.sobrenome", "outra-senha-xyz")
+    cx.commit(); cx.close()
+    c, s = _col.coletar(1, "SEI-SESAB", somente=["SESAB/SAIS/DGGUP/DGESS/ASTEC"])
+    ch = _chamadas[-1]
+    checar("coleta SESAB chama o coletor com --mesas e --somente",
+           ch["args"][:1] == ["--mesas"] and "--somente" in ch["args"], str(ch["args"]))
+    checar("a linha de stdin leva usuario, senha e PERFIL — e nada mais",
+           ch["chaves"] == ["perfil", "senha", "usuario"], str(ch["chaves"]))
+    checar("o perfil e o da instalacao pedida", ch["perfil"].get("instancia") == "SEI-SESAB",
+           str(ch["perfil"].get("instancia")))
+    checar("e nenhum argumento carrega a senha",
+           all("senha-de-teste" not in a for a in ch["args"]))
+    c, s = _col.coletar(1, "SEI-FESF", amostra="FESF/DIGAS/HECC/GAF/ADM")
+    ch = _chamadas[-1]
+    checar("amostra FESF passa pelo guarda-corpo (e a prova do parser)",
+           c == 0 and ch["args"] == ["--testar-login", "--amostra", "FESF/DIGAS/HECC/GAF/ADM"],
+           str((c, ch["args"])))
+    checar("com o perfil da FESF", ch["perfil"].get("instancia") == "SEI-FESF")
+    cx = conectar()
+    n = cx.execute("SELECT COUNT(*) FROM log_acesso WHERE acao='coleta_estacao'").fetchone()[0]
+    cx.close()
+    checar("cada chamada que abre o cofre fica no log_acesso", n >= 2, str(n))
+finally:
+    _col._rodar = _rodar_real
+
 
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:

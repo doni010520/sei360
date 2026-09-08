@@ -119,6 +119,13 @@
       <select name="unidade" style="max-width:280px">
         {% for un in unidades %}<option value="{{ un }}">{{ un }}</option>{% endfor %}
       </select>
+      {# SIGLA À MÃO, além da lista. A lista sai de `snapshot`: instalação que
+         nunca coletou não aparece nela, e sem vínculo ninguém enxerga nada — nem
+         a busca, que já funciona na FESF. O campo digitado vence a lista, a forma
+         da sigla é conferida no servidor e a instalação sai do prefixo. #}
+      <input name="unidade_livre" style="max-width:280px"
+             placeholder="ou digite a sigla: FESF/DIGAS/HECC/GAF/ADM"
+             title="Para unidade que ainda não foi coletada. ORGAO/…, maiúsculas, sem espaço.">
       <button class="bt" type="submit" name="acao" value="vincular">Aplicar</button>
     </div>
     {% endif %}

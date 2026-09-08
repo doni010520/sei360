@@ -1060,6 +1060,66 @@ checar("e a recusa diz o que fazer, em português",
        "não tem dono" in (_j.get("motivo") or "") and "/admin" in (_j.get("motivo") or ""),
        _j.get("motivo", "")[:140])
 
+# ------------------- 7d-ter. a tarefa de COLETA leva instalação e perfil
+# A tarefa de BUSCA já mandava `perfil` (`/api/agente/busca`); a de coleta, não.
+# O coletor sem perfil cai na constante interna — a SESAB —, então uma coleta da
+# FESF entraria no SEI errado e falharia de um jeito que parece senha inválida.
+# As duas metades do mesmo agente não podem falar de instalações diferentes.
+import perfil_sei as _psei                                        # noqa: E402
+cx = conectar()
+_dono_t = cx.execute("SELECT dono_usuario_id FROM agentes WHERE id=1").fetchone()[0]
+_pausa_t = cx.execute("SELECT pausado_motivo FROM agentes WHERE id=1").fetchone()[0]
+cx.execute("UPDATE agentes SET pausado_motivo=NULL WHERE id=1")
+cx.execute("UPDATE agendamento SET ativo=1, motivo_inativo=NULL WHERE agente_id=1")
+cx.execute("DELETE FROM execucao WHERE agente_id=1 AND estado IN ('entregue','em_curso')")
+# Execução ENTREGUE força o ramo "retomando", que responde sem depender de haver
+# janela devida agora — o contrato tem de ser o mesmo nos dois ramos.
+cx.execute("""INSERT INTO execucao(agente_id,janela,estado,gatilho,entregue_em)
+              VALUES(1,?,'entregue','manual_admin',?)""", (agora(), agora()))
+cx.execute("DELETE FROM config_usuario WHERE usuario_id=? AND sistema='SEI-FESF'", (_dono_t,))
+cx.execute("""INSERT INTO config_usuario(usuario_id,sistema,atualizado_em)
+              VALUES(?,'SEI-FESF',?)""", (_dono_t, agora()))
+cx.commit(); cx.close()
+s, corpo, _, _ = assinado("/api/agente/tarefa", metodo="GET")
+_t = json.loads(corpo) if s == 200 else {}
+# A instalação vem da configuração do DONO — e a prova é a recusa citar a FESF:
+# com a instalação saindo do padrão, nada disto apareceria.
+checar("a instalação da tarefa é derivada da configuração do dono",
+       _t.get("instancia") == "SEI-FESF", corpo[:180])
+# E `disponivel_coleta` VIRA TRAVA. Desde que o passo 1 aceita instalação que só
+# serve para buscar, alguém pode configurar coleta na FESF: o coletor entraria, a
+# visualização Detalhada falharia em silêncio (é do SEI 5) e a publicação seria
+# carteira vazia com cara de carteira vazia de verdade.
+checar("instalação sem coletor NÃO recebe tarefa de coleta",
+       _t.get("coletar") is False, corpo[:180])
+checar("e a recusa traz o motivo escrito no perfil, não um texto genérico",
+       _psei.INSTANCIAS["SEI-FESF"]["motivo_sem_coleta"][:40] in (_t.get("motivo") or ""),
+       (_t.get("motivo") or "")[:180])
+checar("dizendo também que a BUSCA continua funcionando lá",
+       "busca nesta instalação continua" in (_t.get("motivo") or ""),
+       (_t.get("motivo") or "")[:180])
+
+cx = conectar()
+cx.execute("DELETE FROM config_usuario WHERE usuario_id=? AND sistema='SEI-FESF'", (_dono_t,))
+cx.commit(); cx.close()
+# Instalação que COLETA: a tarefa sai, com instalação e perfil junto.
+s, corpo, _, _ = assinado("/api/agente/tarefa", metodo="GET")
+_t2 = json.loads(corpo) if s == 200 else {}
+checar("na instalação que coleta, a tarefa é entregue",
+       _t2.get("coletar") is True, corpo[:180])
+checar("e leva a instalação declarada", _t2.get("instancia") == _psei.PADRAO,
+       str(_t2.get("instancia")))
+checar("e o perfil que diz em qual SEI entrar, não uma constante do coletor",
+       (_t2.get("perfil") or {}).get("login_url", "").startswith("https://sip.seibahia"),
+       str(_t2.get("perfil"))[:160])
+checar("o perfil da coleta é o MESMO envelope da busca — uma definição só",
+       _t2.get("perfil") == _psei.envelope_do_coletor(_psei.PADRAO),
+       str(_t2.get("perfil"))[:160])
+cx = conectar()
+cx.execute("DELETE FROM execucao WHERE agente_id=1 AND estado='entregue'")
+cx.execute("UPDATE agentes SET pausado_motivo=? WHERE id=1", (_pausa_t,))
+cx.commit(); cx.close()
+
 # ------------------------- 7d-bis. a fronteira por unidade vale para ESCREVER
 # O defeito era este: o escopo de publicação do agente saía do FORMULÁRIO, sem
 # conferir vínculo, e no modo "todas" era `SELECT DISTINCT unidade FROM snapshot`

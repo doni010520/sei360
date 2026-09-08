@@ -1,6 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Coleta autonoma do Controle de Processos do SEI (SESAB).
+Coleta autonoma do Controle de Processos do SEI.
+
+DUAS INSTALACOES, UM COLETOR
+----------------------------
+SESAB (`seibahia`, SEI 5.0.4) e FESF-SUS (`sei.fesfsus`, SEI 4.0.x). Qual delas
+e esta execucao vem no PERFIL, dentro da mesma linha de stdin da credencial:
+dele saem a URL de login, o campo de orgao (a FESF nao tem) e — repassado ao
+`.js` por `add_init_script` — a versao, que escolhe a familia de seletores da
+tela, e a instancia, que carimba cada linha do JSON. Sem perfil vale a SESAB,
+que e o que sempre valeu.
 
 POR QUE PLAYWRIGHT E NAO UM <script src> NA PAGINA
 --------------------------------------------------
@@ -20,6 +29,7 @@ USO
     python coletor_sesab.py --mesas    # todas as unidades da conta
     python coletor_sesab.py --mesas --plano   # pergunta ao SEI360 o que ja foi lido
     python coletor_sesab.py --buscar          # UMA busca avancada; pedido por stdin
+    python coletor_sesab.py --testar          # entra, confere quem e onde, e sai
 
 SAIDAS
 ------
@@ -99,6 +109,11 @@ ORIGEM = unidade_origem()
 # um logado) nem por variavel de ambiente (vaza em docker inspect e em dump de
 # processo filho). Sem a opcao, a coleta le tudo, como sempre.
 PLANO = "--plano" in sys.argv
+# --somente A,B: coleta SO estas mesas (siglas separadas por virgula). E o que
+# torna uma prova de campo curta: duas mesas em dois minutos, e nao a conta
+# inteira. Sigla que a conta nao tem e erro nomeado dentro do .js.
+SOMENTE = (sys.argv[sys.argv.index("--somente") + 1].split(",")
+           if "--somente" in sys.argv else [])
 # --buscar: roda UMA busca avançada e devolve o envelope. Não coleta, não publica,
 # não escreve em _coletas. O pedido chega por stdin, junto da credencial e do perfil.
 BUSCAR = "--buscar" in sys.argv
@@ -114,7 +129,9 @@ JS_BUSCA = BASE / "pesquisa_sei.js"
 # Existe porque configurar credencial as cegas e o jeito mais rapido de descobrir
 # que a senha estava errada as 07h31 do dia seguinte, com a coleta ja perdida.
 # Custa ~20s e uma tentativa de login, contra ~15 min de uma coleta inteira.
-TESTAR = "--testar-login" in sys.argv
+# `--testar` e o mesmo: quem chama pelo servidor usa o nome longo, quem chama a
+# mao escreve o curto, e as duas grafias nao podem significar coisas diferentes.
+TESTAR = "--testar-login" in sys.argv or "--testar" in sys.argv
 CRED_STDIN = "--credencial-stdin" in sys.argv
 CREDENCIAL = None
 # UMA linha de stdin serve as duas coisas: a credencial do SEI e os dados de
@@ -134,9 +151,42 @@ CONEXAO = (CREDENCIAL or {}).get("plano") or {}
 # raiz saem daqui, e não das constantes acima. Sem ele, o comportamento é o de
 # sempre — a SESAB, para quem roda isto à mão.
 PERFIL_SEI = (CREDENCIAL or {}).get("perfil") or {}
+# --instancia SEI-XXXX: o mesmo envelope, carregado do servidor LOCAL quando não
+# há stdin — é o caso do wrapper agendado da estação e de quem roda à mão. O
+# perfil mora em `sei360/servidor/perfil_sei.py`, ao lado deste diretório; se
+# não estiver lá (estação sem o servidor), a falha é alta e nomeada, nunca a
+# SESAB por omissão: entrar na instalação errada parece senha errada.
+if "--instancia" in sys.argv and not PERFIL_SEI:
+    _inst = sys.argv[sys.argv.index("--instancia") + 1]
+    _srv = BASE.parent / "sei360" / "servidor"
+    if not (_srv / "perfil_sei.py").exists():
+        print(f"--instancia exige {_srv / 'perfil_sei.py'}; nao encontrado")
+        sys.exit(4)
+    sys.path.insert(0, str(_srv))
+    import perfil_sei as _perfil_sei                                 # noqa: E402
+    if not _perfil_sei.existe(_inst):
+        print(f"--instancia {_inst!r}: instalacao desconhecida")
+        sys.exit(4)
+    PERFIL_SEI = _perfil_sei.envelope_do_coletor(_inst)
 if PERFIL_SEI.get("login_url"):
     LOGIN = PERFIL_SEI["login_url"]
     ORGAO = PERFIL_SEI.get("valor_orgao") or None
+# O CAMPO DO ORGAO E DO PERFIL, e `None` é uma RESPOSTA — não uma omissão. A FESF
+# é instalação de um órgão só e o login dela não tem seletor nenhum; a SESAB é a
+# instalação do estado inteiro e o órgão vem do `#selOrgao`.
+# Ausência da chave não é o mesmo que `None`: um perfil que simplesmente não fala
+# de órgão (versão antiga, envelope truncado) tem de cair no comportamento de
+# sempre, senão o login da SESAB passaria a sair sem órgão — e o SEI recusa isso
+# em silêncio, recarregando a tela como se a senha estivesse errada.
+CAMPO_ORGAO = (PERFIL_SEI["campo_orgao"] if "campo_orgao" in PERFIL_SEI
+               else "selOrgao")
+# O QUE O .js PRECISA SABER SOBRE A INSTALAÇÃO. Só isto: instância, versão e
+# raiz. A versão é o que escolhe a família de seletores da tela Controle de
+# Processos (o 5.0.4 tem a visualização Detalhada; o 4.0 não a liga pelo mesmo
+# caminho), e a instância é o que carimba cada linha do JSON — sem ela a
+# ingestão carimba SESAB por falta de opção. NENHUMA credencial entra aqui.
+PERFIL_JS = {k: PERFIL_SEI[k] for k in ("instancia", "versao", "raiz")
+             if PERFIL_SEI.get(k)}
 # ARGUMENTOS DO NAVEGADOR. Em container, o sandbox do Chromium falha no start
 # (namespaces de usuario sem SYS_ADMIN) e o /dev/shm de 64 MB mata a aba em
 # pagina pesada. Quem liga o SEI_SEM_SANDBOX e o Dockerfile; na estacao a
@@ -285,6 +335,18 @@ try:
         if (CREDENCIAL or {}).get("usuario") and (CREDENCIAL or {}).get("senha"):
             ctx.add_init_script("window.__SEI_IGNORAR_CONFIG = true;")
 
+        # O PERFIL VAI PELO MESMO CANAL, E ANTES DO COLETOR. Pelo mesmo motivo da
+        # marca acima: a navegacao do submit do login destroi o contexto da
+        # pagina, e o perfil precisa renascer com ele — se fosse por
+        # `page.evaluate` depois do login, a primeira tela lida ja teria sido
+        # parseada com a familia de seletores errada. A ordem importa: o .js le o
+        # perfil na primeira chamada, e ele tem de estar posto antes.
+        if PERFIL_JS:
+            ctx.add_init_script("window.__SEI_PERFIL = "
+                                + json.dumps(PERFIL_JS, ensure_ascii=False) + ";")
+            log(f"instalacao: {PERFIL_JS.get('instancia')} "
+                f"(SEI {PERFIL_JS.get('versao')})")
+
         # add_init_script re-injeta em TODO documento: o coletor renasce depois da
         # navegacao do login. Com page.evaluate(JS) o contexto morreria no submit.
         ctx.add_init_script(path=str(JS))
@@ -302,16 +364,26 @@ try:
             # SEI recusa em silencio, recarregando a tela. Preenchemos aqui.
             # (o campo submetido e o input[name=pwdSenha] OCULTO; o visivel,
             #  id=pwdSenha type=text, e so para digitacao humana)
-            sel = pg.query_selector("#selOrgao")
+            # A FESF é instalação de um órgão só: o perfil dela declara
+            # `campo_orgao: None` e aqui NÃO se procura seletor nenhum. Procurar
+            # e não achar levava a um aviso falso ("o login vai falhar") em toda
+            # execução da FESF, e um aviso que grita sem motivo é o jeito mais
+            # rápido de ensinar quem lê o log a ignorá-lo.
+            sel = pg.query_selector("#" + CAMPO_ORGAO) if CAMPO_ORGAO else None
+            if CAMPO_ORGAO is None and pg.query_selector("#selOrgao"):
+                # O perfil diz uma coisa e a tela mostra outra. Escolher em
+                # silêncio seria entrar com o órgão errado; recusar a coleta
+                # seria exagero. Declara-se e segue.
+                log("AVISO: o perfil diz que esta instalacao nao tem seletor de "
+                    "orgao, mas a tela de login tem um — nada foi selecionado")
+                alertas.append("perfil sem orgao e tela com #selOrgao")
             if sel:
-                # A FESF é instalação de um órgão só: não há seletor. Escolher
-                # órgão onde não há campo derruba o login com erro que parece
-                # senha errada.
                 if ORGAO:
-                    pg.select_option("#selOrgao", ORGAO)
+                    pg.select_option("#" + CAMPO_ORGAO, ORGAO)
                 escolhido = pg.evaluate(
-                    "() => { const s=document.getElementById('selOrgao');"
-                    "        return s.options[s.selectedIndex].text.trim(); }")
+                    "(id) => { const s=document.getElementById(id);"
+                    "          return s.options[s.selectedIndex].text.trim(); }",
+                    CAMPO_ORGAO)
                 log(f"orgao selecionado: {escolhido}")
                 if not escolhido:
                     log("AVISO: orgao continua em branco — o login vai falhar")
@@ -375,8 +447,47 @@ try:
                 # perde e a descoberta, e quem le precisa saber disso.
                 log(f"login ok, mas nao consegui listar as mesas: {type(e).__name__}")
                 quem["mesas"] = []
+            # EM QUAL INSTALACAO o acesso foi provado. Quem chama guarda o vinculo
+            # por `(instancia, unidade)`: sem esta linha, uma mesa da FESF entraria
+            # no vinculo como se fosse da SESAB. A resposta sai do .js — que e
+            # quem carimba as linhas da coleta —, e nao do dicionario daqui, para
+            # nao haver duas verdades sobre a mesma pergunta.
+            try:
+                quem["instancia"] = pg.evaluate("() => SEIAuto.instanciaAtual()")
+            except Exception:                                     # noqa: BLE001
+                quem["instancia"] = PERFIL_JS.get("instancia")
             log(f"LOGIN OK · usuario={quem.get('usuario')!r} "
-                f"unidade={quem.get('unidade')!r} mesas={len(quem.get('mesas') or [])}")
+                f"unidade={quem.get('unidade')!r} mesas={len(quem.get('mesas') or [])}"
+                f" instancia={quem.get('instancia')!r}")
+            # --amostra SIGLA: le a LISTAGEM de UMA mesa (sem historico, sem
+            # gravar nada) e devolve contagens. Existe para provar um parser novo
+            # contra a tela real em ~1 min — o que a coleta inteira levaria 30 —
+            # e comparar com o que outra leitura da mesma mesa contou. Nao
+            # exporta: e prova, nao coleta.
+            if "--amostra" in sys.argv:
+                sigla = sys.argv[sys.argv.index("--amostra") + 1]
+                log(f"amostra: listando a mesa {sigla}…")
+                try:
+                    am = pg.evaluate("""async (sigla) => {
+                        const mesas = await SEIAuto.descobrirMesas();
+                        const m = (mesas || []).find(x => x.sigla === sigla);
+                        if (!m) return {erro: 'mesa nao encontrada: ' + sigla,
+                                        mesas: (mesas || []).map(x => x.sigla)};
+                        const doc = await SEIAuto.trocarMesa(m);
+                        if (!doc) return {erro: 'troca de mesa falhou: ' + sigla};
+                        const itens = await SEIAuto.listar(doc);
+                        const chaves = itens.length ? Object.keys(itens[0]) : [];
+                        const cheio = {};
+                        chaves.forEach(k => { cheio[k] = itens.filter(i => i && i[k] != null && i[k] !== '' && i[k] !== false).length; });
+                        return {mesa: sigla, linhas: itens.length, chaves, preenchidos: cheio,
+                                instancias: [...new Set(itens.map(i => i.instancia))],
+                                exemplo: itens.slice(0, 2).map(i => ({protocolo: i.protocolo, tipo: i.tipo_processo}))};
+                    }""", sigla)
+                except Exception as e:                            # noqa: BLE001
+                    am = {"erro": f"{type(e).__name__}: {str(e)[:300]}"}
+                print("AMOSTRA_OK " + json.dumps(am, ensure_ascii=False))
+                ctx.close()
+                sys.exit(0 if not am.get("erro") else 1)
             print("TESTE_OK " + json.dumps(quem, ensure_ascii=False))
             ctx.close()
             sys.exit(0)
@@ -413,7 +524,7 @@ try:
         if PLANO and MESAS:
             # A coleta em duas metades, com a pergunta ao servidor no meio.
             log("listando as mesas…")
-            r = pg.evaluate("(o) => SEIAuto.listarTodasAsMesas(o)", {"origem": ORIGEM})
+            r = pg.evaluate("(o) => SEIAuto.listarTodasAsMesas(o)", {"origem": ORIGEM, "somente": SOMENTE})
             if not r or not r.get("itens"):
                 pg.screenshot(path=str(SAIDA / "falha_coleta.png"), full_page=True)
                 log("listagem nao devolveu nada — NADA foi gravado")
@@ -436,11 +547,11 @@ try:
             # acontece (medido: 2 injecoes por execucao, nenhum goto entre elas),
             # mas depender disso e depender de acidente.
             dados = pg.evaluate("(a) => SEIAuto.detalharTodasAsMesas(a.v, a.o)",
-                                {"v": veredito, "o": {"origem": ORIGEM}})
+                                {"v": veredito, "o": {"origem": ORIGEM, "somente": SOMENTE}})
         else:
             log(f"coletando… ({ENTRY})")
             if MESAS:
-                dados = pg.evaluate("(o) => SEIAuto.rodarTodasAsMesas(o)", {"origem": ORIGEM})
+                dados = pg.evaluate("(o) => SEIAuto.rodarTodasAsMesas(o)", {"origem": ORIGEM, "somente": SOMENTE})
             else:
                 # `rodar()` fica numa mesa so e nunca troca de unidade.
                 dados = pg.evaluate(f"() => {ENTRY}")
@@ -452,7 +563,12 @@ try:
             for a in alertas: log(f"  alerta: {a}")
             ctx.close(); sys.exit(2)
 
-        out = SAIDA / f"sei_sesab_{datetime.date.today():%Y-%m-%d}.json"
+        # O NOME CARREGA A INSTALAÇÃO: `sei_sesab_`, `sei_fesf_`. Desde 07/09/2026
+        # a FESF tem coletor, e duas coletas no mesmo dia e na mesma estação não
+        # podem disputar um nome só — a última sobrescreveria a outra em silêncio.
+        # Sem perfil (quem roda à mão, como sempre) continua `sei_sesab_`.
+        _slug = (PERFIL_JS.get("instancia") or "SEI-SESAB").split("-")[-1].lower()
+        out = SAIDA / f"sei_{_slug}_{datetime.date.today():%Y-%m-%d}.json"
 
         # O arquivo e por DIA: duas execucoes no mesmo dia disputam o mesmo nome.
         # Sem isto, uma coleta parcial (mesa caiu, sessao expirou) sobrescreve em

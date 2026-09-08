@@ -47,7 +47,18 @@ padrão da versão — e NÃO foram exercitados contra a tela de Pesquisa da SES
 Enquanto não forem, `SEI-SESAB.busca_ids_medidos` fica falso e a tela diz isso a
 quem for usar. Prometer campo que talvez não exista é pior que dizer que não se
 sabe.
+
+A FORMA DO LOGIN E A FORMA DA SIGLA TAMBÉM SÃO DADO
+---------------------------------------------------
+As duas estavam escritas no meio de `app.py`: a validação exigia `@` no login
+(`app.py:1070`) porque a única instalação conhecida era a SESAB, e o login da
+FESF é `nome.sobrenome`. Uma pessoa da FESF não conseguia passar do passo 2 do
+assistente, com uma mensagem que mandava corrigir um login que estava certo.
+O mesmo vale para a sigla da unidade: `FESF/…` e `SESAB/…` dizem de qual
+instalação a unidade é, e essa é a única fonte que existe antes do primeiro
+snapshot.
 """
+import re
 
 # --------------------------------------------------------------------- campos
 # Ordem importa: o motor tenta os ids na sequência e usa o primeiro que existir.
@@ -102,6 +113,13 @@ INSTANCIAS = {
         "valor_orgao": "23",
         "versao": "5.0.4",
         "exemplo_login": "nome.sobrenome@saude.ba.gov.br",
+        # O rótulo curto é o que cabe numa linha do painel ao lado da sigla da
+        # unidade. `nome` e `curto` são frases; aqui é a etiqueta.
+        "rotulo": "SESAB",
+        # O login desta instalação é o e-mail institucional.
+        "login_regex": r"[^@\s]+@[^@\s]+\.[^@\s]+",
+        "login_dica": "Informe o e-mail institucional completo com o qual você "
+                      "entra no SEI.",
         "prefixo_unidade": "SESAB/",
         "disponivel_coleta": True,
         "disponivel_busca": True,
@@ -126,6 +144,18 @@ INSTANCIAS = {
         "valor_orgao": None,
         "versao": "4.0.x",
         "exemplo_login": "nome.sobrenome",
+        "rotulo": "FESF",
+        # Instalação de órgão único: o login NÃO é e-mail. Exigir `@` aqui — como
+        # `app.py` fazia para todo mundo — recusava o login correto com uma
+        # mensagem que mandava a pessoa consertar o que não estava quebrado.
+        # `nome.sobrenome` E TAMBÉM o login de uma palavra só (`lucaskaram`): a
+        # FESF aceita os dois, e a primeira versão desta regra exigia o ponto —
+        # recusaria o login real do dono da instalação na porta do passo 2
+        # (07/09/2026). O que a regra barra é o que quebra o login: `@`, espaço,
+        # maiúscula.
+        "login_regex": r"[a-z0-9]+(?:[.\-][a-z0-9]+)*",
+        "login_dica": "Nesta instalação o login é nome.sobrenome — sem @, sem "
+                      "espaço e em minúsculas.",
         "prefixo_unidade": "FESF/",
         # A COLETA continua indisponível, e o motivo é concreto: ela depende da
         # visualização Detalhada (`hdnTipoVisualizacao='D'`), que no SEI 4.0 não
@@ -170,6 +200,73 @@ def para_busca():
 
 def para_coleta():
     return sorted(k for k, v in INSTANCIAS.items() if v["disponivel_coleta"])
+
+
+def escolhivel(instancia):
+    """Dá para escolher esta instalação no assistente?
+
+    BUSCA **OU** COLETA, e não só coleta. O passo 1 lia `disponivel_coleta` e
+    recusava a FESF (`app.py:1058`), embora a busca já rodasse nela — quem tem
+    vínculo só na FESF não passava da primeira tela de um sistema que já sabia
+    atendê-la. Escolher a instalação é dizer ONDE se trabalha; o que cada uma
+    oferece hoje a tela mostra ao lado, instância por instância.
+    """
+    p = INSTANCIAS.get(instancia)
+    return bool(p and (p["disponivel_busca"] or p["disponivel_coleta"]))
+
+
+def rotulo(instancia):
+    """Etiqueta curta ("SESAB", "FESF"). Instância desconhecida devolve ela mesma."""
+    p = INSTANCIAS.get(instancia)
+    return p["rotulo"] if p else (instancia or "")
+
+
+def login_valido(instancia, login):
+    """(ok, dica) — a forma do login DESTA instalação.
+
+    Só a forma: conferir se a conta existe exigiria tentar autenticar, e é
+    exatamente isso que o botão "Testar acesso" faz, de propósito.
+    """
+    login = (login or "").strip()
+    if not login:
+        return False, "Informe o login com o qual você entra no SEI."
+    if instancia not in INSTANCIAS:
+        # Instalação que não conhecemos: não há regra para aplicar, e inventar
+        # uma recusaria login correto. Aceita a forma mínima e diz o que fez.
+        return bool(re.fullmatch(r"\S+", login)), "O login não pode ter espaço."
+    p = INSTANCIAS[instancia]
+    if re.fullmatch(p["login_regex"], login):
+        return True, ""
+    return False, p["login_dica"]
+
+
+# A FORMA DA SIGLA. `ORGAO/…`, maiúsculas, sem espaço — é como o SEI escreve
+# unidade nas duas instalações (`SESAB/SAIS/DGGUP/DGESS/CESS`,
+# `FESF/DIGAS/HECC/GAF/ADM`). Serve para o admin poder vincular unidade numa
+# instalação que ainda não tem snapshot nenhum: antes, `app.py:1809` só aceitava
+# sigla já vista em `snapshot`, e como a FESF nunca coletou, nenhuma unidade dela
+# podia ser vinculada — o laço que fechava a FESF fora do produto.
+FORMA_SIGLA = re.compile(r"[A-Z0-9][A-Z0-9.\-]*(?:/[A-Z0-9][A-Z0-9.\-]*)+")
+
+
+def sigla_valida(unidade):
+    return bool(unidade) and bool(FORMA_SIGLA.fullmatch(unidade.strip()))
+
+
+def instancia_da_sigla(unidade):
+    """De qual instalação é esta sigla, pelo prefixo — ou None.
+
+    É a única fonte que existe antes do primeiro snapshot. Devolver None em vez
+    de cair no padrão é de propósito: gravar vínculo com a instalação errada é
+    dar acesso à carteira de outro órgão, e o erro é silencioso.
+    """
+    if not unidade:
+        return None
+    u = unidade.strip()
+    for chave, p in INSTANCIAS.items():
+        if p["prefixo_unidade"] and u.startswith(p["prefixo_unidade"]):
+            return chave
+    return None
 
 
 def envelope_do_coletor(instancia):

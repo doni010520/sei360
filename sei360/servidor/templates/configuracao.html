@@ -110,13 +110,21 @@
       organiza. Escolha a instância em que você trabalha.</p>
       <form method="post" action="/configuracao">
         <input type="hidden" name="csrf" class="csrf"><input type="hidden" name="passo" value="sistema">
+        {# O QUE CADA INSTALAÇÃO OFERECE, DITO POR INSTALAÇÃO, lido do perfil.
+           Antes o rádio da FESF vinha `disabled` com "ainda não disponível" — um
+           texto fixo que era falso: a busca já roda nela. Quem tem vínculo só na
+           FESF ficava preso no passo 1. Agora a instalação é escolhível quando
+           serve para busca OU coleta, e a linha abaixo diz qual das duas falta. #}
         {% for chave, s in sistemas.items() %}
         <label class="opcao {{ '' if s.disponivel else 'off' }}">
           <input type="radio" name="sistema" value="{{ chave }}"
                  {% if config.sistema == chave %}checked{% endif %}
                  {% if not s.disponivel %}disabled{% endif %}>
           <span><b>{{ s.nome }}{% if not s.disponivel %} — ainda não disponível{% endif %}</b>
-          <span>{{ s.descricao }}</span></span>
+          <span>{{ s.descricao }}</span>
+          <span style="display:block;margin-top:3px;font-size:11.5px;color:var(--ink-3)">
+            coleta: {{ 'sim' if s.disponivel_coleta else 'não' }} ·
+            busca: {{ 'sim' if s.disponivel_busca else 'não' }}</span></span>
         </label>
         {% endfor %}
         <div class="acoes-passo"><button class="bt forte" type="submit">Continuar</button></div>

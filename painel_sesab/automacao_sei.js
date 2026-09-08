@@ -1,6 +1,15 @@
 /* ============================================================================
-   AUTOMACAO SEI — SESAB / seibahia.ba.gov.br (SEI 5.0.4)
+   AUTOMACAO SEI — DUAS INSTALACOES, UM COLETOR
+     * SESAB / seibahia.ba.gov.br  (SEI 5.0.4)
+     * FESF-SUS / sei.fesfsus.ba.gov.br  (SEI 4.0.x)
    Coleta o Controle de Processos com datas do historico.
+
+   QUAL INSTALACAO E ESTA
+   ----------------------
+   Quem diz e o PERFIL, entregue por quem chama (ver "O PERFIL DA INSTALACAO"
+   abaixo). Sem perfil vale a SESAB, que e o que sempre valeu. A versao escolhe
+   UMA VEZ uma tabela de seletores — nao ha `if (versao === ...)` espalhado pelo
+   parser, porque isso e o comeco de dois parsers dentro de um arquivo so.
 
    COMO USAR
    ---------
@@ -51,6 +60,44 @@ const CONFIG = {
 };
 
 
+/* ===========================================================================
+   O PERFIL DA INSTALACAO — o que e DESTA instalacao, e nao do SEI
+
+   O coletor nasceu falando com uma instalacao so e ela estava escrita nas
+   entranhas: a raiz, a tabela da listagem, o jeito de ligar a visualizacao
+   Detalhada. Habilitar a FESF nao e acrescentar uma opcao — e tirar do codigo o
+   que so vale para uma instalacao e transformar em DADO. E a mesma regra de
+   `perfil_sei.py` no servidor: UMA lista, N leitores.
+
+   POR QUE POR `window.__SEI_PERFIL` E NAO POR ARGUMENTO
+   Pelo mesmo motivo de `__SEI_IGNORAR_CONFIG`: quem entrega e o
+   `add_init_script` do `coletor_sesab.py`, e a navegacao do submit do login
+   destroi o contexto da pagina — a marca precisa RENASCER com ele. Argumento de
+   funcao morreria na primeira navegacao.
+
+   O perfil NAO carrega credencial. So o que descreve a instalacao: instancia,
+   versao, raiz.
+   =========================================================================== */
+const PERFIL_PADRAO = {
+  instancia: 'SEI-SESAB', versao: '5.0.4', raiz: 'https://seibahia.ba.gov.br/',
+};
+function perfilAtual() {
+  const p = window.__SEI_PERFIL;
+  // `instancia` e o que distingue perfil de sobra de objeto: sem ela nao da para
+  // carimbar a linha, e carimbar errado e pior que nao carimbar.
+  return (p && p.instancia) ? p : PERFIL_PADRAO;
+}
+/* Trocar o perfil em tempo de execucao — para o console e para a conferencia. */
+function perfil(p) {
+  window.__SEI_PERFIL = p || null;
+  const a = perfilAtual();
+  log(`instalacao: ${a.instancia} (SEI ${a.versao}) — ${familia(a).nome}`);
+  return a;
+}
+const instanciaAtual = () => perfilAtual().instancia || null;
+const raizAtual      = () => perfilAtual().raiz || PERFIL_PADRAO.raiz;
+
+
 // Unidade corrente. NAO e fixa: um usuario do SEI pode estar lotado em varias
 // unidades ("mesas"), e a coleta percorre todas. Lida da propria tela a cada troca.
 let UNIDADE = '';
@@ -61,7 +108,6 @@ function unidadeAtual() {
   if (sel && sel.options[sel.selectedIndex]) return N(sel.options[sel.selectedIndex].text);
   return '';
 }
-const RAIZ    = 'https://seibahia.ba.gov.br/';
 const CONC    = 4;        // concorrencia; 6 funciona, 4 e mais gentil com o servidor
 const PAGINA_HISTORICO = 100;   // o SEI pagina o historico em 100 linhas
 
@@ -129,7 +175,14 @@ function ondeEstaACredencial() {
 // ------------------------------------------------------------------- sessao
 const naLogin = () => /login\.php/.test(location.href) || !!document.querySelector('input[type=password]');
 const logado  = () => !!document.getElementById('lnkControleProcessos') ||
-                      !!document.getElementById('frmProcedimentoControlar');
+                      !!document.getElementById('frmProcedimentoControlar') ||
+                      // No 4.0 o pouso do login e a propria tela de controle e o
+                      // link de menu pode nao existir. A barra de unidade existe
+                      // em TODA tela logada das duas versoes (e do irmao desta
+                      // casa, que a usa como ancora unica). Guardada por naLogin
+                      // porque a tela de login nao tem barra nenhuma — e um
+                      // "logado" falso ali faria o coletor nem tentar entrar.
+                      (!naLogin() && !!document.getElementById('lnkInfraUnidade'));
 
 async function logar() {
   const c = lerCredencial();
@@ -200,7 +253,7 @@ function pedindoCodigo(campoSenha, campoUsuario) {
 async function garantirSessao() {
   if (logado()) return true;
   if (naLogin()) return await logar();
-  erro('sem sessao do SEI nesta aba. Abra ' + RAIZ + ' e rode de novo.');
+  erro('sem sessao do SEI nesta aba. Abra ' + raizAtual() + ' e rode de novo.');
   return false;
 }
 
@@ -236,100 +289,434 @@ async function postar(action, sp) {
 }
 
 // ------------------------------------------------ 1) lista de processos
+/* ---------------------------------------------- a tela, por familia de versao
+
+   O QUE MUDA ENTRE AS DUAS INSTALACOES, e so isso:
+
+     * SEI 5.x — tem a visualizacao DETALHADA, que consolida "Recebidos" e
+       "Gerados" numa tabela so (`#tblProcessosDetalhado`) e entrega tipo e
+       especificacao no `aria-label` do link. Liga-se repostando o formulario com
+       `hdnTipoVisualizacao='D'`.
+     * SEI 4.0 — mostra as DUAS tabelas (`#tblProcessosRecebidos`,
+       `#tblProcessosGerados`), paginadas separadamente, sem `aria-label`. E a
+       troca de visualizacao NAO e a funcao global `trocarVisualizacao`: ela nao
+       existe la (medido pelo irmao desta casa, `sei_extractor.py:2765-2870`) —
+       repostar `hdnTipoVisualizacao='D'` devolve a tela antiga SEM ERRO, que e
+       exatamente o motivo de a coleta da FESF ter ficado desabilitada. O caminho
+       e o ICONE.
+
+   A versao e consultada UMA vez e vira esta tabela. O resto do parser nao sabe
+   em que SEI esta.
+
+   MEDIDO x SUPOSTO
+   Medidos (irmao + `referencia-seipro.md` secao S, campo 04/08/2026): os nomes
+   das tabelas, `tr[id^="P"]` como linha, `a.processoVisualizado /
+   .processoNaoVisualizado`, atribuicao por `procedimento_atribuicao_listar`
+   (texto = login, `title` = nome), marcador por `andamento_marcador_gerenciar` +
+   cor no nome do arquivo do icone, anotacao por `anotacao_registrar`,
+   `img[src*="exclamacao"]`, paginacao por `hdn<Tipo>PaginaAtual` com os `value`
+   das options 0-based, e `#hdn<Tipo>NroItens` como total.
+   Supostos: que a Detalhada do 4.0 produza `#tblProcessosDetalhado` (por isso a
+   tabela e DETECTADA na resposta, nunca assumida) e a ordem dos argumentos do
+   tooltip de onde saem tipo/especificacao no 4.0. */
+const FAMILIAS = {
+  '5': { nome: 'SEI 5.x',  campo_visao: 'hdnTipoVisualizacao', valor_visao: 'D',
+         linha: linha5 },
+  '4': { nome: 'SEI 4.0',  campo_visao: null, valor_visao: null,
+         linha: linha4 },
+};
+function familia(p) {
+  const v = String((p || perfilAtual()).versao || '');
+  // Uma versao desconhecida cai na familia 5, que e a instalacao de referencia —
+  // e o log diz qual familia foi usada, para ninguem descobrir isso pelo dado.
+  return FAMILIAS[v.split('.')[0]] || FAMILIAS['5'];
+}
+
+/* As tres listas que a tela pode ter, e os quatro elementos de cada uma. Os
+   nomes derivam do tipo, e a busca e por LISTA DE CANDIDATOS, como em
+   `pesquisa_sei.js`: o que nao casa vira recusa declarada, nunca campo
+   preenchido em silencio. */
+const LISTAS = ['Detalhado', 'Recebidos', 'Gerados'];
+const IDS_LISTA = tipo => ({
+  tabela:    ['tblProcessos' + tipo],
+  paginacao: ['sel' + tipo + 'PaginacaoSuperior'],
+  pagina:    'hdn' + tipo + 'PaginaAtual',
+  total:     ['hdn' + tipo + 'NroItens'],
+});
+
+/* O primeiro id da lista que existir no documento. */
+function acha(doc, ids) {
+  for (const id of ids || []) {
+    const el = (id.startsWith('#') || id.includes('['))
+      ? doc.querySelector(id) : doc.getElementById(id);
+    if (el) return el;
+  }
+  return null;
+}
+
+const numeroDe = el => {
+  if (!el) return null;
+  const v = String(el.value != null ? el.value : (el.textContent || '')).replace(/\D/g, '');
+  return v === '' ? null : parseInt(v, 10);
+};
+
+/* Quais listas ESTA tela realmente tem.
+   A Detalhada CONSOLIDA as outras duas: quando ela existe, ler tambem Recebidos
+   e Gerados seria contar a mesma linha duas vezes. */
+function listasPresentes(doc) {
+  const achadas = LISTAS.filter(t => acha(doc, IDS_LISTA(t).tabela));
+  return achadas.includes('Detalhado') ? ['Detalhado'] : achadas;
+}
+
+/* QUAL VISAO ESTA TELA MOSTRA, pela evidencia e nao pelo que se pediu.
+   Duas evidencias, porque as duas versoes exibem o detalhe de formas
+   diferentes: o 5 troca a tabela por `#tblProcessosDetalhado`; o 4.0 mantem as
+   duas tabelas e acrescenta uma linha `trD<id>` sob cada processo. Perguntar so
+   pela tabela do 5 faria a tela detalhada do 4.0 ser registrada como reduzida —
+   e o registro existe justamente para nao mentir sobre o que foi lido. */
+const visaoDe = doc => (acha(doc, IDS_LISTA('Detalhado').tabela)
+                     || doc.querySelector('tr[id^="trD"]')) ? 'D' : 'R';
+
+/* O tooltip do SEI: onmouseover="infraTooltipMostrar('<texto>','<titulo>')".
+   E de onde o 4.0 tira o que o 5 entrega pronto no `aria-label`. */
+function tooltip(el) {
+  const m = el && (el.getAttribute('onmouseover') || '')
+    .match(/infraTooltipMostrar\('([\s\S]*?)','([\s\S]*?)'\)/);
+  return m ? [N(m[1]), N(m[2])] : [null, null];
+}
+
+/* O SEI entrega autor e data grudados: "fulano@dominio em 22/11/2024 08:41".
+   Guardar a string inteira em anotacao_autor deixava anotacao_data inexistente —
+   e com ela morriam a regra de anotacao desatualizada, a linha da gaveta e a
+   coluna AnotadoEm do CSV. */
+function partirAnotacao(cred) {
+  const pa = cred && cred.match(/^(.*?)\s+em\s+(\d{2}\/\d{2}\/\d{4}[^]*)$/i);
+  return { autor: pa ? N(pa[1]) : (cred || null), data: pa ? N(pa[2]) : null };
+}
+
+const arquivoDoIcone = img =>
+  ((img && img.getAttribute('src')) || '').split('/').pop().split('?')[0];
+
+/* A LINHA DE DETALHE do 4.0 (`trD<id>`), em pares `chave: valor`.
+   Lida do `innerHTML` e nao do `innerText`: aqui o documento vem do DOMParser e
+   nunca e renderizado — `innerText` num documento sem layout devolve o mesmo que
+   `textContent`, com as quebras de linha PERDIDAS, e os pares viram uma linha
+   so. O irmao le por `innerText` porque roda na pagina viva. */
+function paresDoDetalhe(tr) {
+  if (!tr || !/^trD/.test(tr.id || '')) return {};
+  const out = {};
+  ((tr.innerHTML || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '\n'))
+    .split('\n').forEach(l => {
+      const m = l.match(/^\s*([^:]{2,60}?)\s*:\s*(.+?)\s*$/);
+      if (!m) return;
+      // \u0300-\u036f = os acentos que o NFD separou. Escrito por escape, e nao
+      // pelos caracteres: eles ficam fora do Latin-1 e este arquivo atravessa
+      // ferramentas que ainda leem em Latin-1.
+      const k = N(m[1]).toLowerCase().normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+      if (k && !(k in out)) out[k] = N(m[2]);
+    });
+  return out;
+}
+
+/* A LINHA NO SEI 5, visualizacao Detalhada. E o parser que roda na SESAB desde
+   13/08/2026: as posicoes de celula valem NESTA visualizacao e so nela. */
+function linha5(tr) {
+  const td = tr.querySelectorAll('td');
+  const a  = td[2] && td[2].querySelector('a[href*="procedimento_trabalhar"]');
+  if (!a) return null;
+  const aria = a.getAttribute('aria-label') || '';
+  const k = aria.indexOf(' / ');
+  const reg = {
+    id: tr.id.replace('P', ''), href: a.getAttribute('href').replace(/&amp;/g, '&'),
+    protocolo: N(a.textContent),
+    tipo_processo: k > 0 ? aria.slice(0, k).trim() : (N(aria) || null),
+    especificacao: k > 0 ? aria.slice(k + 3).trim() : null,
+    visualizado: !/processoNaoVisualizado/.test(a.className),
+    marcador: null, marcador_cor: null, anotacao: null,
+    anotacao_autor: null, retorno: null, doc_incluido: false,
+    doc_incluido_rotulo: null
+  };
+  const aAtr = td[3] && td[3].querySelector('a');
+  reg.atribuido_login = aAtr ? N(aAtr.textContent) : null;
+  reg.atribuido_nome  = aAtr ? N((aAtr.getAttribute('title') || '')
+                          .replace(/^Atribu.do para\s*/i, '')) : null;
+  // celula de icones: TODOS os links, nao so o primeiro
+  [td[1], td[4]].filter(Boolean).forEach(cel =>
+    cel.querySelectorAll('a').forEach(x => {
+      const al = N(x.getAttribute('aria-label')) || '';
+      const tt = tooltip(x);
+      const arq = arquivoDoIcone(x.querySelector('img'));
+      if (/^Marcador/i.test(al)) {
+        reg.marcador = al.replace(/^Marcador\s*\/\s*/i, '').trim();
+        const m = arq.match(/marcador_(.+)\.svg/); reg.marcador_cor = m ? m[1] : null;
+      } else if (/^Anota/i.test(al)) {
+        reg.anotacao = tt[0] || al.replace(/^Anota..o\s*\/\s*/i, '').trim();
+        const pa = partirAnotacao(tt[1]);
+        reg.anotacao_autor = pa.autor;
+        reg.anotacao_data  = pa.data;
+      } else if (/Devolver|Retorno/i.test(al)) {
+        reg.retorno = al.replace(/^Para Devolver\s*\/\s*/i, '').trim();
+      }
+      if (/exclamacao/.test(arq)) {
+        reg.doc_incluido = true;
+        // O QUE o icone diz. Sem isto nao da para saber se "novo" e novo para
+        // a MESA (documento incluido por outra unidade) ou novo para a PESSOA
+        // (desde o ultimo acesso dela) — e disso depende se o campo pode ou
+        // nao ser reaproveitado entre colegas.
+        reg.doc_incluido_rotulo = al || tt[0] || null;
+      }
+    }));
+  return reg;
+}
+
+/* A LINHA NO SEI 4.0. ANCORADA PELO LINK, nunca pela posicao da celula: o mapa
+   td[1]/td[2]/td[3] vale na tela do 5 e o proprio irmao avisa que ancorar por
+   posicao quebra aqui (`referencia-seipro.md` S.1). */
+function linha4(tr) {
+  const a = tr.querySelector('a.processoVisualizado, a.processoNaoVisualizado')
+         || tr.querySelector('a[href*="procedimento_trabalhar"]');
+  if (!a) return null;
+  const reg = {
+    id: tr.id.replace('P', ''),
+    href: (a.getAttribute('href') || '').replace(/&amp;/g, '&'),
+    protocolo: N(a.textContent),
+    tipo_processo: null, especificacao: null,
+    visualizado: !/processoNaoVisualizado/.test(a.className || ''),
+    marcador: null, marcador_cor: null, anotacao: null,
+    anotacao_autor: null, anotacao_data: null, retorno: null,
+    doc_incluido: false, doc_incluido_rotulo: null,
+    atribuido_login: null, atribuido_nome: null,
+  };
+
+  // ATRIBUICAO: o texto e o login, o `title` e o nome completo (confirmado em
+  // campo). O login vem entre parenteses na tela.
+  const aAtr = tr.querySelector('a[href*="procedimento_atribuicao_listar"]');
+  if (aAtr) {
+    reg.atribuido_login = N(aAtr.textContent).replace(/^\(|\)$/g, '') || null;
+    reg.atribuido_nome  = N((aAtr.getAttribute('title') || '')
+                          .replace(/^Atribu.do para\s*/i, '')) || null;
+  }
+
+  // MARCADOR: o link diz que existe; a COR sai do nome do arquivo do icone. Ela
+  // e nativa — o `style` colorido que a extensao SEI Pro mostra NAO existe no
+  // HTML que o servidor devolve, e descartar o campo por causa disso jogaria
+  // fora metade dos marcadores (615 de 1.137, medido em 13/08/2026).
+  const aMar = tr.querySelector('a[href*="andamento_marcador_gerenciar"]');
+  const imgMar = tr.querySelector('img[src*="marcador"]');
+  if (aMar || imgMar) {
+    const tt = tooltip(aMar);
+    reg.marcador = tt[0] || N(imgMar && imgMar.getAttribute('title'))
+                || N(imgMar && imgMar.getAttribute('alt')) || null;
+    const m = arquivoDoIcone(imgMar).match(/marcador_(.+)\.(?:svg|png|gif)/);
+    reg.marcador_cor = m ? m[1] : null;
+  }
+
+  const aAnot = tr.querySelector('a[href*="anotacao_registrar"]');
+  if (aAnot) {
+    const tt = tooltip(aAnot);
+    reg.anotacao = tt[0] || N(aAnot.getAttribute('title')) || null;
+    const pa = partirAnotacao(tt[1]);
+    reg.anotacao_autor = pa.autor;
+    reg.anotacao_data  = pa.data;
+  }
+
+  const imgExc = tr.querySelector('img[src*="exclamacao"]');
+  if (imgExc) {
+    reg.doc_incluido = true;
+    reg.doc_incluido_rotulo = N(imgExc.getAttribute('alt'))
+                           || N(imgExc.getAttribute('title')) || null;
+  }
+
+  // RETORNO PROGRAMADO: no 5 ele vem rotulado no `aria-label`; aqui e uma
+  // varredura pelos rotulos da linha. SUPOSTO — nao foi visto em campo.
+  Array.from(tr.querySelectorAll('a')).some(x => {
+    const img = x.querySelector && x.querySelector('img');
+    const rot = N((x.getAttribute('aria-label') || '') + ' '
+                + (x.getAttribute('title') || '') + ' '
+                + (img ? (img.getAttribute('alt') || '') : ''));
+    if (!/Devolver|Retorno/i.test(rot)) return false;
+    reg.retorno = rot.replace(/^Para Devolver\s*\/?\s*/i, '').trim() || rot;
+    return true;
+  });
+
+  /* TIPO E ESPECIFICACAO — tres fontes, em ordem, e nulo DECLARADO quando
+     nenhuma casa (quem le precisa saber que a tela nao mostrava, e nao que o
+     processo nao tem):
+       1) `aria-label` — existe em alguns 4.0.x; e o formato do 5;
+       2) a linha de detalhe `trD<id>`, quando a visao Detalhada esta ligada
+          (o irmao le exatamente estes pares);
+       3) o tooltip do link — SUPOSTO que o titulo seja o tipo e o texto a
+          especificacao. Se estiver invertido, os dois campos saem TROCADOS, e
+          nao vazios: e o que a rodada de campo tem de conferir primeiro. */
+  const aria = a.getAttribute('aria-label') || '';
+  if (aria) {
+    const k = aria.indexOf(' / ');
+    reg.tipo_processo = k > 0 ? aria.slice(0, k).trim() : (N(aria) || null);
+    reg.especificacao = k > 0 ? aria.slice(k + 3).trim() : null;
+  }
+  if (!reg.tipo_processo) {
+    const det = paresDoDetalhe(tr.nextElementSibling);
+    reg.tipo_processo = det.tipo || det.tipo_do_processo || det.tipo_de_processo || null;
+    reg.especificacao = reg.especificacao || det.especificacao || det.descricao || null;
+  }
+  if (!reg.tipo_processo) {
+    const tt = tooltip(a);
+    reg.tipo_processo = tt[1] || null;
+    reg.especificacao = reg.especificacao || tt[0] || null;
+  }
+  return reg;
+}
+
+/* LIGAR A VISUALIZACAO DETALHADA — e DIZER qual visao foi lida.
+
+   Falhar aqui nao e motivo para parar: a visao reduzida tem as MESMAS linhas, so
+   sem o detalhe. O que nao pode e ninguem ficar sabendo — sem o registro, um
+   `tipo_processo` vazio fica indistinguivel de processo sem tipo. */
+async function abrirDetalhada(form, action, fam, fonteDoc) {
+  if (fam.campo_visao) {
+    const sp = new URLSearchParams(new FormData(form));
+    sp.set(fam.campo_visao, fam.valor_visao);
+    const doc = await postar(action, sp);
+    return { doc, visao: visaoDe(doc) };
+  }
+  const url = urlDaDetalhada(fonteDoc);
+  if (url) {
+    try {
+      const doc = new DOMParser().parseFromString(await pegar(url), 'text/html');
+      if (listasPresentes(doc).length) return { doc, visao: visaoDe(doc) };
+      erro('o icone da Visualizacao Detalhada abriu uma tela sem lista de '
+         + 'processos — seguindo na visao reduzida');
+    } catch (e) {
+      if (String(e).includes('SESSAO')) throw e;
+      erro(`a Visualizacao Detalhada nao abriu (${String(e).slice(0, 40)}) — `
+         + 'seguindo na visao reduzida');
+    }
+  } else {
+    log('sem icone de Visualizacao Detalhada nesta tela — visao reduzida');
+  }
+  // Sem detalhada, reposta o proprio formulario: o documento que a paginacao usa
+  // tem de ser a RESPOSTA, porque e nela que vivem os hidden de pagina.
+  const doc = await postar(action, new URLSearchParams(new FormData(form)));
+  return { doc, visao: 'R' };
+}
+
+/* O caminho para a Detalhada no 4.0, tirado da propria tela.
+   Nunca montado a mao: `infra_hash` morto nao devolve erro — o SEI INVALIDA a
+   sessao de quem esta trabalhando. */
+function urlDaDetalhada(doc) {
+  for (const a of Array.from(doc.querySelectorAll('a'))) {
+    const img = a.querySelector && a.querySelector('img');
+    const rot = N((a.getAttribute('aria-label') || '') + ' '
+               + (a.getAttribute('title') || '') + ' '
+               + (img ? (img.getAttribute('alt') || '') + ' '
+                      + (img.getAttribute('title') || '') : '') + ' '
+               + (a.textContent || ''));
+    if (!/detalhad|ver detalhes/i.test(rot)) continue;
+    const href = a.getAttribute('href') || '';
+    if (/controlador/.test(href)) return href.replace(/&amp;/g, '&');
+    const oc = (a.getAttribute('onclick') || '').match(/'([^']*controlador[^']*)'/);
+    if (oc) return oc[1].replace(/&amp;/g, '&');
+    // Achou o icone e nenhuma URL nele: dizer, em vez de seguir calado.
+    erro('achei o icone da Visualizacao Detalhada e nenhuma URL nele — a '
+       + 'listagem vai sair da visao reduzida');
+    return null;
+  }
+  return null;
+}
+
 /* `fonte` e o documento de onde sai o form inicial. Existe por causa da troca de
    mesa: a unidade da sessao muda por fetch, mas o DOM VIVO continua na unidade
    antiga — e o action do form vivo carrega infra_unidade_atual da unidade errada.
    Quem troca de mesa passa aqui o documento devolvido pelo POST da troca. */
 async function listar(fonte) {
-  const form = (fonte || document).getElementById('frmProcedimentoControlar');
+  const doc0 = fonte || document;
+  const form = doc0.getElementById('frmProcedimentoControlar');
   if (!form) throw new Error('nao estamos no Controle de Processos');
   const action = form.getAttribute('action');
+  const fam = familia();
 
-  const sp0 = new URLSearchParams(new FormData(form));
-  sp0.set('hdnTipoVisualizacao', 'D');               // visualizacao detalhada
-  const d0 = await postar(action, sp0);
+  const { doc: d0, visao } = await abrirDetalhada(form, action, fam, doc0);
 
-  const f2 = d0.getElementById('frmProcedimentoControlar');
+  const f2 = d0.getElementById('frmProcedimentoControlar') || form;
   const base = new URLSearchParams();                // campos vem do form DA RESPOSTA:
-  f2.querySelectorAll('input,select').forEach(e => { // e la que existe hdnDetalhadoPaginaAtual
+  f2.querySelectorAll('input,select').forEach(e => { // e la que existe hdn<Tipo>PaginaAtual
     if (!e.name) return;
     if ((e.type === 'checkbox' || e.type === 'radio') && !e.checked) return;
     base.set(e.name, e.value);
   });
-  base.set('hdnTipoVisualizacao', 'D');
+  if (fam.campo_visao) base.set(fam.campo_visao, fam.valor_visao);
 
-  const sel = d0.getElementById('selDetalhadoPaginacaoSuperior');
-  const pgs = sel ? Array.from(sel.options).map(o => o.value) : ['0'];   // value e 0-based
+  const listas = listasPresentes(d0);
   const out = [], vistos = new Set();
+  let semTipo = 0;
 
-  for (const pg of pgs) {
-    const sp = new URLSearchParams(base);
-    sp.set('hdnDetalhadoPaginaAtual', pg);
-    const doc = await postar(action, sp);
-    doc.querySelectorAll('#tblProcessosDetalhado tbody tr[id^="P"]').forEach(tr => {
-      const id = tr.id.replace('P', '');
-      if (vistos.has(id)) return;
-      vistos.add(id);
-      const td = tr.querySelectorAll('td');
-      const a  = td[2] && td[2].querySelector('a[href*="procedimento_trabalhar"]');
-      if (!a) return;
-      const aria = a.getAttribute('aria-label') || '';
-      const k = aria.indexOf(' / ');
-      const reg = {
-        id, href: a.getAttribute('href').replace(/&amp;/g, '&'),
-        protocolo: N(a.textContent),
-        tipo_processo: k > 0 ? aria.slice(0, k).trim() : (N(aria) || null),
-        especificacao: k > 0 ? aria.slice(k + 3).trim() : null,
-        visualizado: !/processoNaoVisualizado/.test(a.className),
-        marcador: null, marcador_cor: null, anotacao: null,
-        anotacao_autor: null, retorno: null, doc_incluido: false,
-        doc_incluido_rotulo: null
-      };
-      const aAtr = td[3] && td[3].querySelector('a');
-      reg.atribuido_login = aAtr ? N(aAtr.textContent) : null;
-      reg.atribuido_nome  = aAtr ? N((aAtr.getAttribute('title') || '')
-                              .replace(/^Atribu.do para\s*/i, '')) : null;
-      // celula de icones: TODOS os links, nao so o primeiro
-      [td[1], td[4]].filter(Boolean).forEach(cel =>
-        cel.querySelectorAll('a').forEach(x => {
-          const al = N(x.getAttribute('aria-label')) || '';
-          const tt = (x.getAttribute('onmouseover') || '')
-                     .match(/infraTooltipMostrar\('([\s\S]*?)','([\s\S]*?)'\)/);
-          const ic = (x.querySelector('img') || {}).getAttribute
-                     ? x.querySelector('img').getAttribute('src') : '';
-          const arq = (ic || '').split('/').pop().split('?')[0];
-          if (/^Marcador/i.test(al)) {
-            reg.marcador = al.replace(/^Marcador\s*\/\s*/i, '').trim();
-            const m = arq.match(/marcador_(.+)\.svg/); reg.marcador_cor = m ? m[1] : null;
-          } else if (/^Anota/i.test(al)) {
-            reg.anotacao = tt ? N(tt[1]) : al.replace(/^Anota..o\s*\/\s*/i, '').trim();
-            // O SEI entrega autor e data grudados: "fulano@dominio em 22/11/2024 08:41".
-            // Guardar a string inteira em anotacao_autor deixava anotacao_data
-            // inexistente — e com ela morriam a regra de anotacao desatualizada,
-            // a linha da gaveta e a coluna AnotadoEm do CSV.
-            const cred = tt ? N(tt[2]) : null;
-            const pa = cred && cred.match(/^(.*?)\s+em\s+(\d{2}\/\d{2}\/\d{4}[^]*)$/i);
-            reg.anotacao_autor = pa ? N(pa[1]) : cred;
-            reg.anotacao_data  = pa ? N(pa[2]) : null;
-          } else if (/Devolver|Retorno/i.test(al)) {
-            reg.retorno = al.replace(/^Para Devolver\s*\/\s*/i, '').trim();
-          }
-          if (/exclamacao/.test(arq)) {
-            reg.doc_incluido = true;
-            // O QUE o icone diz. Sem isto nao da para saber se "novo" e novo para
-            // a MESA (documento incluido por outra unidade) ou novo para a PESSOA
-            // (desde o ultimo acesso dela) — e disso depende se o campo pode ou
-            // nao ser reaproveitado entre colegas.
-            reg.doc_incluido_rotulo = al || (tt ? N(tt[1]) : null) || null;
-          }
-        }));
-      reg.mesa_coleta = UNIDADE;      // marcado AQUI: o exportar() le do localStorage,
-      out.push(reg);                  // entao marcar depois de salvar nao teria efeito
-    });
-    await dorme(240);
+  for (const tipo of listas) {
+    const ids = IDS_LISTA(tipo);
+    const sel = acha(d0, ids.paginacao);
+    const pgs = sel && sel.options ? Array.from(sel.options).map(o => o.value) : ['0'];
+    const decl = numeroDe(acha(d0, ids.total));       // o total que a TELA declara
+    let nesta = 0;
+    for (const pg of pgs) {                           // os `value` sao 0-based
+      const sp = new URLSearchParams(base);
+      sp.set(ids.pagina, pg);
+      const doc = await postar(action, sp);
+      const tbl = acha(doc, ids.tabela);
+      if (tbl) tbl.querySelectorAll('tbody tr[id^="P"]').forEach(tr => {
+        nesta++;
+        const id = tr.id.replace('P', '');
+        if (vistos.has(id)) return;                   // o mesmo processo nas duas listas
+        vistos.add(id);
+        const reg = fam.linha(tr);
+        if (!reg) return;
+        if (!reg.tipo_processo) semTipo++;
+        // De qual LISTA a linha veio. No 4.0 a tela responde "Gerados x
+        // Recebidos" e nao ha o que derivar; na Detalhada do 5 as duas viraram
+        // uma e a origem sai de quem gerou (ver exportar()).
+        reg.origem_tabela = (tipo === 'Detalhado') ? null : tipo;
+        // De qual INSTALACAO. Sem isto a ingestao carimba SESAB por falta de
+        // opcao, e o dado de uma fundacao entra na carteira de um orgao do
+        // estado, em silencio (`ingestao.py:233-235`).
+        reg.instancia = instanciaAtual();
+        reg.mesa_coleta = UNIDADE;    // marcado AQUI: o exportar() le do localStorage,
+        out.push(reg);                // entao marcar depois de salvar nao teria efeito
+      });
+      await dorme(240);
+    }
+    // O TOTAL DECLARADO PELA PROPRIA TELA fecha a conta. Sem ele, uma paginacao
+    // que para no meio devolve metade com cara de tudo.
+    if (decl != null && nesta < decl) {
+      erro(`${tipo}: a tela declara ${decl} processo(s) e a leitura trouxe `
+         + `${nesta} — leitura INCOMPLETA desta lista`);
+    }
+    log(`  ${tipo}: ${nesta} linha(s) em ${pgs.length} pagina(s)`
+      + (decl != null ? ` (a tela declara ${decl})` : ''));
+  }
+
+  if (!listas.length) {
+    /* NENHUMA TABELA CONHECIDA CASOU. Duas coisas muito diferentes se parecem
+       aqui, e confundi-las e o modo de falha que este projeto persegue:
+       mesa sem processo nenhum (rotina — a conta da SESAB tem 5 assim) e
+       seletor quebrado por mudanca de versao. O que separa as duas e a
+       EVIDENCIA de que ha processos na tela. */
+    const soltas = d0.querySelectorAll('tr[id^="P"]').length;
+    const declara = LISTAS.some(t => (numeroDe(acha(d0, IDS_LISTA(t).total)) || 0) > 0);
+    if (soltas || declara) {
+      throw new Error(`nenhuma tabela de processos casou (${fam.nome}, visao `
+        + `${visao}) e ha processos nesta tela (${soltas} linha(s)) — recuso `
+        + 'dar a mesa por vazia');
+    }
+    log(`nenhuma tabela de processos nesta tela (${fam.nome}, visao ${visao}) — `
+      + 'esta mesa nao tem processos');
+  }
+  if (semTipo) {
+    log(`${semTipo} de ${out.length} linha(s) sem tipo/especificacao `
+      + `(${fam.nome}, visao ${visao})`);
   }
   localStorage.setItem('__SEI_LISTA', JSON.stringify(out));
-  log(`lista: ${out.length} processos`);
+  log(`lista: ${out.length} processos (${fam.nome}, visao ${visao}, `
+    + `${listas.join('+') || 'nenhuma lista'})`);
   return out;
 }
 
@@ -763,16 +1150,83 @@ async function descobrirMesas() {
     erro('nao achei o seletor de unidade — a conta pode ter uma unidade so');
     return [{ id: null, sigla: unidadeAtual(), via: 'atual' }];
   }
-  const doc = new DOMParser().parseFromString(await pegar(url), 'text/html');
-  const mesas = Array.from(doc.querySelectorAll('input[name="chkInfraItem"]'))
-    .map(inp => {
-      const td = inp.closest('tr').querySelectorAll('td');
-      return { id: inp.value, sigla: N(td[1] && td[1].textContent),
-               descricao: N(td[2] && td[2].textContent), via: 'selecao' };
-    })
-    .filter(m => m.id && /\//.test(m.sigla));   // sigla de unidade sempre tem barra
+  /* A LISTA DE UNIDADES PODE TER MAIS DE UMA PAGINA. A conta da FESF alcanca 33
+     mesas; ler so a primeira pagina devolveria uma lista curta com cara de
+     completa — e as mesas de fora sumiriam do painel sem uma linha de log. O
+     irmao pagina clicando em "Proxima"; aqui a tela e lida por fetch, entao o
+     que serve e a URL do proprio link. */
+  const mesas = [], vistos = new Set();
+  let pagina = url, voltas = 0, declarado = null;
+  while (pagina && voltas < 20) {
+    voltas++;
+    const doc = new DOMParser().parseFromString(await pegar(pagina), 'text/html');
+    if (declarado == null) declarado = totalDeUnidades(doc);
+    let novas = 0;
+    mesasDaTela(doc).forEach(m => {
+      if (vistos.has(m.id)) return;
+      vistos.add(m.id); mesas.push(m); novas++;
+    });
+    // Pagina que nao traz nada novo nao paga a proxima requisicao.
+    pagina = novas ? proximaPaginaDeUnidades(doc) : null;
+  }
+  /* O TOTAL QUE A PROPRIA TELA DECLARA fecha a conta ("Lista de Unidades com
+     Permissao (N registros)"). Mesa que some da descoberta nao aparece como
+     falha em lugar nenhum: ela simplesmente deixa de existir para a coleta. */
+  if (declarado != null && mesas.length < declarado) {
+    erro(`a tela declara ${declarado} unidade(s) e eu li ${mesas.length} — `
+       + 'pode haver mesa que ficou de fora da coleta');
+  }
   log(`mesas da conta (${mesas.length}): ${mesas.map(m => m.sigla).join(', ') || '(so a atual)'}`);
   return mesas.length ? mesas : [{ id: null, sigla: unidadeAtual(), via: 'atual' }];
+}
+
+/* As mesas de UMA pagina da tela de selecao de unidade.
+   O `title` do proprio radio e a sigla no 4.0 (medido pelo irmao); a celula e a
+   alternativa, e e o que sempre funcionou no 5. */
+function mesasDaTela(doc) {
+  const csv = (doc.getElementById('hdnInfraItens') || {}).value || '';
+  const declarados = new Set(String(csv).split(',').map(s => N(s)).filter(Boolean));
+  return Array.from(doc.querySelectorAll('input[name="chkInfraItem"]'))
+    .map(inp => {
+      const tr = inp.closest ? inp.closest('tr') : null;
+      const td = tr ? tr.querySelectorAll('td') : [];
+      return { id: N(inp.value),
+               sigla: N(inp.getAttribute('title')) || N(td[1] && td[1].textContent),
+               descricao: N(td[2] && td[2].textContent), via: 'selecao' };
+    })
+    /* Sigla de unidade tem barra — e foi esse filtro que impediu 97 itens de
+       menu de virarem "mesas". A excecao legitima e a unidade raiz de uma
+       instalacao de orgao unico, e para ela o id declarado em `hdnInfraItens`
+       serve de prova de que a linha e mesmo uma unidade. */
+    .filter(m => m.id && m.sigla && (/\//.test(m.sigla) || declarados.has(m.id)));
+}
+
+/* "Lista de Unidades com Permissao (33 registros)" — o total que a tela declara. */
+function totalDeUnidades(doc) {
+  const t = N(doc.body ? doc.body.textContent : '');
+  const m = t.match(/unidades?[^()]{0,60}\((\d[\d.]*)\s*registros?/i)
+         || t.match(/\((\d[\d.]*)\s*registros?\)/i);
+  return m ? parseInt(m[1].replace(/\./g, ''), 10) : null;
+}
+
+/* A proxima pagina da tela de selecao, quando houver.
+   Link de "Proxima" SEM URL (so `onclick` de submit) e recusa DECLARADA: melhor
+   dizer que pode ter ficado mesa de fora do que devolver lista curta calada. */
+function proximaPaginaDeUnidades(doc) {
+  const cand = Array.from(doc.querySelectorAll('a')).find(a => {
+    const img = a.querySelector && a.querySelector('img');
+    const rot = N((a.textContent || '') + ' ' + (a.getAttribute('title') || '')
+              + ' ' + (img ? (img.getAttribute('alt') || '') : ''));
+    return /pr.xima|>>/i.test(rot);
+  });
+  if (!cand) return null;
+  const href = cand.getAttribute('href') || '';
+  if (/controlador/.test(href)) return href.replace(/&amp;/g, '&');
+  const oc = (cand.getAttribute('onclick') || '').match(/'([^']*controlador[^']*)'/);
+  if (oc) return oc[1].replace(/&amp;/g, '&');
+  erro('a tela de unidades tem "Proxima" e nenhuma URL nele — pode haver mesa '
+     + 'que ficou de fora da coleta');
+  return null;
 }
 
 /* Ultimo documento que sabidamente reflete a unidade ATIVA da sessao.
@@ -932,6 +1386,9 @@ async function restaurarOrigem(mesas) {
 function carimbarInventario(mesas, falhas) {
   INVENTARIO = {
     mesas_conta: mesas.map(m => m.sigla), mesas_falhas: falhas,
+    // DE QUAL INSTALACAO e esta execucao. Fica no inventario para o caso de
+    // alguem exportar do console depois, com o perfil ja trocado.
+    instancia: instanciaAtual(),
     unidade_origem: ORIGEM,
     unidade_final: RESTAURADA ? ORIGEM : (ULTIMA_MESA || null),
     restaurada: RESTAURADA,
@@ -953,8 +1410,24 @@ async function listarTodasAsMesas(opts = {}) {
   if (!await garantirSessao()) return null;
   // DESCOBRIR ANTES DE DEFINIR: a origem declarada so vale se estiver entre as
   // mesas da conta, e conferir isso exige a lista.
-  const mesas = await descobrirMesas();
-  if (!definirOrigem(mesas, opts.origem)) return null;
+  const todas = await descobrirMesas();
+  if (!definirOrigem(todas, opts.origem)) return null;
+  /* opts.somente: coleta SO estas siglas. Existe para a prova de campo de um
+     parser novo (2 mesas em 2 min, nao 33 em 30) e para a estacao que so quer
+     parte da conta. A origem e conferida contra a conta INTEIRA acima, porque a
+     volta no fim vai para ela. Sigla pedida que a conta nao tem e ERRO nomeado,
+     nunca "0 processos" com cara de mesa vazia. */
+  let mesas = todas;
+  if (Array.isArray(opts.somente) && opts.somente.length) {
+    const pedidas = new Set(opts.somente);
+    mesas = todas.filter(m => pedidas.has(m.sigla));
+    const faltam = opts.somente.filter(s => !todas.some(m => m.sigla === s));
+    if (faltam.length) {
+      erro(`--somente pede mesa(s) que esta conta nao tem: ${faltam.join(', ')}`);
+      return null;
+    }
+    log(`somente ${mesas.length} de ${todas.length} mesa(s): ${opts.somente.join(', ')}`);
+  }
   const tudo = [], feitas = [], falhas = [];
   try {
   for (const mesa of mesas) {
@@ -1007,6 +1480,9 @@ async function listarTodasAsMesas(opts = {}) {
   // O que o servidor precisa para decidir. So os campos da GUARDA — quem hasheia
   // e o servidor, para nao haver duas implementacoes do mesmo hash divergindo.
   return {
+    // A INSTANCIA VAI NO ENVELOPE, e nao so nas linhas: o servidor decide a
+    // trava por `(instancia, conta)` antes de olhar processo nenhum.
+    instancia: instanciaAtual(),
     mesas: INVENTARIO.mesas_conta, falhas,
     itens: tudo.map(r => ({
       id: r.id, mesa: r.mesa_coleta,
@@ -1242,6 +1718,14 @@ function exportar(lista) {
     // Sem inventario, uma coleta parcial fica indistinguivel de uma completa.
     o.mesas_conta  = INVENTARIO ? INVENTARIO.mesas_conta  : [r.mesa_coleta].filter(Boolean);
     o.mesas_falhas = INVENTARIO ? INVENTARIO.mesas_falhas : [];
+    /* DE QUAL INSTALACAO DO SEI E ESTA LINHA. Sem o campo, `ingestao.py:233-235`
+       carimba 'SEI-SESAB' — que era ler o que existia enquanto so havia uma
+       instalacao, e vira invencao no dia em que ha duas. A ordem e: o que a
+       linha trouxe da coleta, senao o inventario da execucao, senao o perfil
+       de agora. */
+    o.instancia = r.instancia
+               || (INVENTARIO && INVENTARIO.instancia)
+               || instanciaAtual();
     // ONDE A CONTA FICOU. Nenhuma coluna, log ou tabela do projeto registrava
     // isso: era impossivel auditar, do dado colhido, se a sessao voltou para a
     // unidade da titular. Sem este carimbo o desvio de 13/08 a 27/08 ficou
@@ -1267,9 +1751,13 @@ function exportar(lista) {
     const nossas = (INVENTARIO && INVENTARIO.mesas_conta && INVENTARIO.mesas_conta.length)
       ? INVENTARIO.mesas_conta
       : (r.mesas_coleta || [r.mesa_coleta].filter(Boolean));
-    o.origem = o.gerador_unidade
+    /* No 4.0 nao ha o que derivar: a tela tem UMA TABELA PARA CADA e a linha
+       sabe de qual veio. Derivar quando a resposta esta escrita na tela e
+       trocar o que o SEI diz por uma inferencia nossa. */
+    delete o.origem_tabela;
+    o.origem = r.origem_tabela || (o.gerador_unidade
       ? (nossas.includes(o.gerador_unidade) ? 'Gerados' : 'Recebidos')
-      : null;
+      : null);
     return o;
   });
   const b = new Blob([JSON.stringify(saida, null, 1)], { type: 'application/json' });
@@ -1343,8 +1831,13 @@ window.SEIAuto = { rodar, rodarTodasAsMesas, listarTodasAsMesas, detalharTodasAs
                    descobrirMesas, trocarMesa, listar, coletarDatas,
                    consertarTruncados, exportar, credencial, esquecer, limparCache,
                    mesasPorArvore, mesasPorAndamento, camposDaMesa,  // expostos para conferencia
+                   perfil, perfilAtual, instanciaAtual,
+                   // o parser da tela, exposto para a conferencia sem navegador
+                   listasPresentes, paresDoDetalhe, linha4, linha5, mesasDaTela,
+                   totalDeUnidades, urlDaDetalhada,
                    keepAlive, custo, logado, garantirSessao, unidadeAtual,
                    ondeEstaACredencial };
-log('SEIAuto pronto. Primeiro uso: SEIAuto.credencial("login","senha") — depois SEIAuto.rodar()');
+log(`SEIAuto pronto (${perfilAtual().instancia}, ${familia().nome}). `
+  + 'Primeiro uso: SEIAuto.credencial("login","senha") — depois SEIAuto.rodar()');
 log('SEIAuto.custo() mostra o volume de rede por execucao.', '#666a72');
 })();

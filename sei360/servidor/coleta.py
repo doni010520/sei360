@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 import cofre
+import perfil_sei
 from banco import agora, conectar, registrar
 
 def _achar_coletor():
@@ -90,7 +91,35 @@ def _ambiente():
                      "SEI_SEM_SANDBOX", "SEI_PERFIL_DIR")}
 
 
-def sincronizar_unidades(cx, usuario_id, mesas, instancia="SEI-SESAB"):
+def instancia_do_usuario(cx, usuario_id, registrar_aviso=None):
+    """A instalação desta pessoa: a credencial única, senão a configuração ativa.
+
+    O PADRÃO ESCRITO À MÃO ERA A FONTE DO ERRO. `"SEI-SESAB"` aparecia como valor
+    default aqui e como `or "SEI-SESAB"` em `testar_acesso`: quem só tem conta na
+    FESF teria as mesas dela gravadas como vínculos da SESAB — acesso à carteira
+    de outro órgão, criado em silêncio por um argumento omitido.
+
+    Deriva do que existe, nesta ordem: credencial guardada (se houver só uma, é
+    dela que a coleta usa a senha), configuração ativa, e só então o padrão — com
+    aviso no log, porque cair no padrão é um palpite, não uma leitura.
+    """
+    r = cx.execute("SELECT sistema FROM credencial WHERE usuario_id=?",
+                   (usuario_id,)).fetchall()
+    if len(r) == 1 and perfil_sei.existe(r[0]["sistema"]):
+        return r[0]["sistema"]
+    c = cx.execute("""SELECT sistema FROM config_usuario WHERE usuario_id=?
+                      ORDER BY atualizado_em DESC, sistema LIMIT 1""",
+                   (usuario_id,)).fetchone()
+    if c and perfil_sei.existe(c["sistema"]):
+        return c["sistema"]
+    if registrar_aviso:
+        registrar(cx, usuario_id, "instancia_presumida",
+                  alvo=f"{registrar_aviso} · sem credencial nem configuração; "
+                       f"assumido {perfil_sei.PADRAO}")
+    return perfil_sei.PADRAO
+
+
+def sincronizar_unidades(cx, usuario_id, mesas, instancia=None):
     """Espelha no `usuario_unidade` o que o SEI mostrou a esta pessoa.
 
     Devolve (novas, tiradas). Mexe SÓ nos vínculos de origem 'sei': o que um
@@ -100,9 +129,16 @@ def sincronizar_unidades(cx, usuario_id, mesas, instancia="SEI-SESAB"):
     Tirar as que sumiram é tão importante quanto acrescentar as novas: quem foi
     removido de uma unidade no SEI tem de parar de vê-la aqui, e ninguém vai
     lembrar de avisar o sistema.
+
+    `instancia=None` DERIVA da pessoa em vez de assumir a SESAB — ver
+    `instancia_do_usuario`. O default literal de antes gravava mesa da FESF como
+    vínculo da SESAB toda vez que alguém esquecesse o argumento.
     """
     if not mesas:
         return [], []
+    if not instancia:
+        instancia = instancia_do_usuario(cx, usuario_id,
+                                         registrar_aviso="sincronizar_unidades")
     # AS TRÊS CONSULTAS FILTRAM PELA INSTALAÇÃO. Nome de unidade não é único
     # entre instalações, e `usuario_unidade` tem a coluna desde a migração das
     # duas. Sem o filtro, sincronizar as mesas da SESAB APAGARIA os vínculos da
@@ -161,15 +197,25 @@ def testar_acesso(usuario_id, ip=None):
     # e `cofre.abrir` levanta ValueError com uma mensagem que já explica tudo.
     # Ela vira a resposta da tela, não um erro sem texto.
     try:
+        instancia = _instancia_de(cx, usuario_id)
         login, senha = cofre.abrir(cx, usuario_id, motivo="teste_de_acesso", ip=ip,
-                                   sistema=_instancia_de(cx, usuario_id))
+                                   sistema=instancia)
     except ValueError as ex:
         return False, str(ex)
-    cx.commit(); cx.close()
     if not login:
+        cx.close()
         return False, "Nenhuma credencial guardada.", ""
+    # O PERFIL DA INSTALAÇÃO VIAJA COM A CREDENCIAL. Sem ele o coletor cai na
+    # constante interna — a SESAB — e o teste de uma credencial da FESF batia na
+    # URL de login da SESAB, falhando de um jeito que parece senha errada (achado
+    # de 07/09/2026, na porta do parser 4.0). A busca já mandava o envelope
+    # (`atendente.py`); o teste de acesso era o único caminho que não mandava.
+    instancia = instancia or instancia_do_usuario(cx, usuario_id, "teste_de_acesso")
+    envelope = perfil_sei.envelope_do_coletor(instancia)
+    cx.commit(); cx.close()
 
-    codigo, saida, _ = _rodar(["--testar-login"], {"usuario": login, "senha": senha},
+    codigo, saida, _ = _rodar(["--testar-login"],
+                              {"usuario": login, "senha": senha, "perfil": envelope},
                               TIMEOUT_TESTE_S)
     linha = next((l for l in saida.splitlines() if l.startswith("TESTE_OK ")), None)
     cx = conectar()
@@ -179,9 +225,15 @@ def testar_acesso(usuario_id, ip=None):
         # O QUE O SEI MOSTROU vira o vínculo. A fronteira do SEI360 passa a ser
         # a do SEI daquela pessoa, provada por ela ter entrado — e não uma lista
         # que um admin montou a partir da coleta de outro.
-        novas, tiradas = sincronizar_unidades(cx, usuario_id, mesas,
-                                              _instancia_de(cx, usuario_id)
-                                              or "SEI-SESAB")
+        #
+        # A INSTALAÇÃO É A QUE FOI TESTADA. O `or "SEI-SESAB"` de antes era um
+        # palpite disfarçado de default: quem tem credencial só na FESF teria as
+        # mesas dela gravadas como SESAB. `instancia_do_usuario` lê a credencial
+        # e, na falta dela, a configuração — e registra quando não achou nenhuma.
+        novas, tiradas = sincronizar_unidades(
+            cx, usuario_id, mesas,
+            _instancia_de(cx, usuario_id)
+            or instancia_do_usuario(cx, usuario_id, registrar_aviso="testar_acesso"))
         registrar(cx, usuario_id, "teste_acesso_ok",
                   alvo=f"{quem.get('unidade') or '-'} · {len(mesas)} mesa(s)", ip=ip)
         cx.commit(); cx.close()
@@ -213,3 +265,71 @@ def testar_acesso(usuario_id, ip=None):
     # nelas porque o coletor nunca a imprime.
     cauda = " · ".join(l.strip() for l in saida.splitlines()[-3:] if l.strip())
     return False, motivos.get(codigo, f"Falhou com código {codigo}."), cauda[:300]
+
+
+# ---------------------------------------------------------------------------
+# COLETA PELA ESTAÇÃO QUE TAMBÉM É O SERVIDOR — 07/09/2026
+#
+# Enquanto o servidor roda NA MESMA máquina da coleta (hoje: Flask local em
+# 127.0.0.1), não há por que a credencial morar em dois lugares. O cofre
+# (AES-256-GCM, chave fora do banco) é custódia MELHOR que o `btoa` do
+# localStorage do perfil, e a pessoa só digita a senha num lugar: o passo
+# "acesso" de /configuracao. O wrapper agendado (`_run_coleta.cmd`) chama
+# `python coleta.py coletar <usuario_id> <instancia>`; a credencial vai por
+# stdin ao mesmo `coletor_sesab.py` de sempre, com o perfil da instalação.
+#
+# NÃO é "o servidor coleta": no VPS este comando não roda — lá o executor da
+# coleta continua sendo o agente na estação (ARQUITETURA_ACESSO §7.1). O que
+# muda é só de onde sai a senha quando estação e servidor coincidem.
+# ---------------------------------------------------------------------------
+def coletar(usuario_id, instancia, somente=None, amostra=None, timeout=None):
+    """Roda a coleta (ou uma amostra) da instalação com a credencial do cofre.
+
+    Devolve (codigo, saida). Recusa, com motivo do perfil, instalação cujo
+    parser ainda não foi provado (`disponivel_coleta: False`) — a menos que seja
+    `amostra`, que é justamente a prova. Nunca imprime a credencial.
+    """
+    if not perfil_sei.existe(instancia):
+        return 4, f"instalação desconhecida: {instancia!r}"
+    p = perfil_sei.perfil(instancia)
+    if not p["disponivel_coleta"] and not amostra:
+        return 4, (f"{instancia}: coleta ainda indisponível — "
+                   f"{p.get('motivo_sem_coleta') or 'sem parser provado'}")
+    cx = conectar()
+    try:
+        login, senha = cofre.abrir(cx, usuario_id, motivo="coleta_estacao", sistema=instancia)
+    except ValueError as ex:
+        cx.close()
+        return 3, f"cofre: {ex}"
+    if not login:
+        cx.close()
+        return 3, f"nenhuma credencial guardada para o usuário {usuario_id} em {instancia}"
+    registrar(cx, usuario_id, "coleta_estacao",
+              alvo=f"{instancia} · {'amostra ' + amostra if amostra else 'coleta'}"
+                   + (f" · somente {','.join(somente)}" if somente else ""))
+    cx.commit(); cx.close()
+    args = ["--testar-login", "--amostra", amostra] if amostra else ["--mesas"]
+    if somente and not amostra:
+        args += ["--somente", ",".join(somente)]
+    cred = {"usuario": login, "senha": senha, "perfil": perfil_sei.envelope_do_coletor(instancia)}
+    del senha
+    return _rodar(args, cred, timeout or (TIMEOUT_TESTE_S * 3 if amostra else TIMEOUT_COLETA_S))[:2]
+
+
+if __name__ == "__main__":
+    import argparse
+    sys.stdout.reconfigure(encoding="utf-8")
+    ap = argparse.ArgumentParser(description="coleta pela estação que também é o servidor")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("coletar", help="coleta com a credencial do cofre")
+    c.add_argument("usuario_id", type=int)
+    c.add_argument("instancia")
+    c.add_argument("--somente", help="siglas separadas por vírgula (prova curta)")
+    c.add_argument("--amostra", help="lista UMA mesa e sai, sem gravar (prova do parser)")
+    a = ap.parse_args()
+    codigo, saida = coletar(a.usuario_id, a.instancia,
+                            somente=a.somente.split(",") if a.somente else None,
+                            amostra=a.amostra)
+    print(saida if isinstance(saida, str) else "")
+    print(f"coleta.py: {a.instancia} exit={codigo}")
+    sys.exit(codigo)

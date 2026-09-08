@@ -47,11 +47,24 @@ gera o ZIP certo — só depois de o portão acima sair 0. Não zipe a pasta pel
 Explorer: ela carrega o banco de produção e a sessão do SEI, e um upload não tem
 "desfazer".
 
+> **Nota de 07/09/2026.** O portão acima fecha limpo — sai 0 — desde
+> 01/09/2026, porque o bloco CONFIG do `automacao_sei.js` foi esvaziado nesse
+> dia. **Isso não quer dizer que a Fatia 0 terminou**: o CONFIG foi esvaziado
+> **sem** semear antes a nova senha no perfil da estação (a ordem exigida é
+> rotacionar → semear → esvaziar; ver `ARQUITETURA_ACESSO.md` §3.6-bis), e a
+> tarefa `SEI_SESAB_Coleta` está desabilitada desde 27/08/2026. **A rotação da
+> senha (A0) continua sem registro em documento ou banco nenhum**
+> (`credencial_rotacionada_em` permanece NULL). Ver
+> `PLANO_EXECUCAO_2026-09-07.md` §0 e §3 (S1–S3).
+
 ## 2. Variáveis de ambiente
 
 A lista completa está em `../ARQUITETURA_ACESSO.md` §3.5 — inclusive as que o
-documento pediu por meses e **o código nunca leu** (`SEI360_SECRET_KEY`,
-`SEI360_DB`, `SEI360_SNAPSHOTS`).
+documento pediu por meses e **o código nunca leu** (`SEI360_DB`,
+`SEI360_SNAPSHOTS`, `FERIADOS_BA`, `SMTP_*`, `AUDIT_SINK_*`). *(Corrigido em
+07/09/2026: esta lista incluía `SEI360_SECRET_KEY` — errado, ver
+`ARQUITETURA_ACESSO.md:130`: ela é **também aceita**, como alias de
+`SEI360_SEGREDO`.)*
 
 O mínimo para o serviço não subir pela metade:
 
@@ -98,11 +111,22 @@ Depois de entrar, cada usuário vai em **Configuração da coleta** (menu de con
 canto superior direito do painel) e percorre cinco passos: sistema, o login com que
 ela entra no SEI, quais mesas, em que horários e qual estação executa.
 
-O que fica no servidor: sistema, login, mesas, horários. O que **não** fica: a senha
-do SEI — ela é digitada no agente, na estação da pessoa, e vai para o Gerenciador de
-Credenciais do Windows. A tela diz isso com todas as letras, porque o motivo importa:
-o SEI carimba o nome da pessoa em cada movimento, e senha no servidor significaria
-alguém agindo no SEI em nome dela com o registro oficial dizendo que foi ela.
+**Nota de 07/09/2026 — corrigido.** Os dois parágrafos abaixo descreviam só o
+modo `estação`, como se fosse o único. Desde 26/08/2026 o **modo padrão é
+`servidor` (cofre)**: a pessoa digita a senha do SEI no painel, e ela fica
+**cifrada no cofre do servidor** (AES-256-GCM, chave em `SEI360_CHAVE_MESTRA`),
+decifrada **em memória, só no instante em que uma busca é executada**
+(`ARQUITETURA_ACESSO.md` §6.0, §6.1) — é o que permite a busca avançada rodar
+sem depender de estação nenhuma ligada.
+
+O modo **estação** continua existindo, como alternativa: quem prefere não
+guardar a senha no servidor a digita no agente, na estação da própria pessoa, e
+ela vai para o Gerenciador de Credenciais do Windows — nesse modo, e só nesse, o
+servidor nunca a vê. A pessoa escolhe entre os dois em `/configuracao`, e a tela
+diz com todas as letras qual está em vigor: o SEI carimba o nome da pessoa em
+cada movimento, e a diferença entre os dois modos é **quem mais, além dela,
+passa a ser capaz de agir com a credencial** — ver `ARQUITETURA_ACESSO.md` §6.0
+e §6.3 para o conjunto de quem consegue ler a senha no modo servidor.
 
 Quem só vai **ler** a carteira não precisa de nada disso: entra e lê o que a coleta
 de outra pessoa já trouxe para as unidades a que ela tem vínculo. A coleta é
@@ -168,12 +192,18 @@ por varredura de certificado, é uma aposta.
 
 Honestidade sobre o estado, para ninguém descobrir em produção:
 
-- **O expurgo existe, mas ninguém o dispara sozinho.** `expurgo.py` apaga snapshot
-  histórico com mais de 30 dias, log de acesso com mais de 180 e sessão morta —
-  e nunca toca no snapshot **corrente** de uma unidade, por mais velho que seja
-  (apagar deixaria a unidade em branco, e branco lê-se como "nada parado"). Hoje
-  ele roda pelo botão em `/admin` ou por `python expurgo.py`. Falta agendá-lo:
-  sem isso, a medição diz ~745 MB por ano.
+- **O expurgo roda sozinho, de forma oportunista — não por agendador dedicado.**
+  *(Corrigido em 07/09/2026: esta linha dizia que ninguém o disparava e que
+  faltava agendá-lo; não é mais verdade.)* `_faxina_se_devida` (`app.py:2543-2582`)
+  chama `expurgo.py` a cada 20 h, verificado dentro do ciclo normal de
+  requisições do servidor — não é um cron nem uma thread própria: só dispara se
+  alguém bater numa rota nesse intervalo. `expurgo.py` apaga snapshot histórico
+  com mais de 30 dias, log de acesso com mais de 180 e sessão morta — e nunca
+  toca no snapshot **corrente** de uma unidade, por mais velho que seja (apagar
+  deixaria a unidade em branco, e branco lê-se como "nada parado"). Continua
+  existindo o botão manual em `/admin` e `python expurgo.py`. **Risco que
+  fica:** por ser oportunista, depende de tráfego; um fim de semana sem ninguém
+  abrir o painel é um fim de semana sem faxina, e nada avisa disso.
 - **A imagem nunca foi construída.** Não havia Docker na estação de
   desenvolvimento. O código foi exercitado sob as condições do container
   (volume vazio, módulo importado sem `__main__`, `X-Forwarded-Proto`), e as duas

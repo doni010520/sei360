@@ -1,8 +1,10 @@
 # SEI360 — Especificação
 
 > Ferramenta de triagem da carteira de processos do SEI.
-> Instância de referência: **SESAB / seibahia.ba.gov.br — SEI 5.0.4**, órgão `GOVBA`.
-> Última atualização: 12/08/2026.
+> Instâncias: **SESAB (SEI 5.0.4)** e **FESF-SUS (SEI 4.0)** — detalhe de login e órgão por instância em §5-quater.
+> Última atualização: 07/09/2026.
+>
+> *(Nota de 07/09/2026: até esta data o cabeçalho dizia "Instância de referência: SESAB" e "12/08/2026", desatualizado desde as seções acrescentadas em 21, 25, 26 e 27/08. Corrigido — ver `PLANO_EXECUCAO_2026-09-07.md` §2.1, C8.)*
 
 ---
 
@@ -15,6 +17,8 @@ Um painel que responde três perguntas que o Controle de Processos do SEI não r
 3. **Onde o processo está agora, e o que foi combinado sobre ele?**
 
 Não substitui o SEI. É espelho: se o SEI não mostraria aquela linha àquele usuário, o painel também não mostra.
+
+**Nota de 07/09/2026 — objetivo ampliado.** As três perguntas acima descrevem a carteira que chega à mesa; o produto cresceu além disso desde 21/08/2026 e o objetivo precisa dizer isso: **busca avançada** (§5-ter) para o que não está na carteira; um **poço** de cache entre pessoas da mesma unidade (§5-bis); **2FA e recuperação de senha** por e-mail (§5-duodecies); e **duas instalações do SEI** — SESAB e FESF-SUS (§5-quater, §5-quinquies-bis) —, cada uma com carteira, credencial e grau de prontidão próprios. Isto soma-se às três perguntas originais; não as substitui.
 
 ---
 
@@ -32,6 +36,8 @@ Nenhum componente recebe senha, cookie, semente TOTP ou material de sessão de t
 | Conta de serviço institucional única | Mesmo problema, e vê mais do que qualquer usuário real — o isolamento viraria responsabilidade do nosso código |
 | Enviar o cookie de sessão ao servidor | Credencial bearer com o risco inteiro e sem benefício |
 | Campo de senha do SEI em tela nossa | Está a um atributo `action=` de virar a opção reprovada, e alguém digita ali por hábito |
+
+> **Nota de 07/09/2026 — revogação parcial, prometida em `ARQUITETURA_ACESSO.md:5` e `:868` desde 18/08/2026 e nunca escrita até hoje.** A linha 1 desta tabela ("Servidor guardando senha do SEI por usuário") foi revogada em 21/08/2026 **para o modo servidor**: a credencial passou a ficar cifrada no cofre do servidor, decifrada em memória no instante da busca (`ARQUITETURA_ACESSO.md` §6.0, §6.1). As linhas 2 a 4 continuam integralmente descartadas. O modo **estação** — em que o servidor nunca vê a senha — continua existindo, é a alternativa que preserva a frase de abertura desta seção, e a pessoa escolhe entre os dois em `/configuracao`.
 
 O 2FA anunciado nesta instância só seria "resolvido" desativando-o ou guardando os dois fatores no mesmo lugar — contornar um controle de segurança do órgão.
 
@@ -290,11 +296,17 @@ produção: **0,45 GB por worker**, com 1,5 GB reservados ao sistema.
 
 ### A decisão que não é minha
 
+> **Nota de 07/09/2026 — pergunta respondida em 21/08/2026** (ver
+> `ARQUITETURA_ACESSO.md` §6.0): **sim**, por escrito, pelo dono do sistema. Desde
+> então a busca roda **no container**, não na estação. O texto abaixo é o
+> raciocínio de antes da resposta, mantido porque explica o porquê da decisão;
+> ver §5-octies e §5-terdecies para o que passou a valer de fato.
+
 > **O container do VPS passa a rodar Chromium com a credencial do SEI de outras
 > pessoas — revogando por escrito o §6.1 e o §3.7 do `ARQUITETURA_ACESSO.md` —
 > sim ou não?**
 
-Enquanto a resposta não vier, a busca roda **na estação**, pelo agente, exatamente
+Enquanto a resposta não vinha, a busca rodava **na estação**, pelo agente, exatamente
 como a coleta. O servidor faz o mesmo nas duas hipóteses: valida, enfileira,
 trava, reconcilia, grava e expurga. Muda só **quem executa o processo do coletor**
 — e é por isso que a resposta pode chegar depois sem nada ser reescrito.
@@ -303,6 +315,50 @@ E há um teto acima de qualquer arquitetura: o arquivo de credenciais registra 2
 **"ANUNCIADO na tela de login"** na SESAB e "possível" na FESF. Se o segundo fator
 passar a ser exigido, nenhuma quantidade de navegadores resolve — a busca ao vivo
 depende de uma sessão que só a pessoa consegue abrir.
+
+---
+
+## 5-quinquies-bis. Escopo FESF-SUS
+
+Nota de 07/09/2026 — seção nova, registrando o que hoje se sabe sobre o escopo
+institucional da FESF-SUS. Ver também `ARQUITETURA_ACESSO.md` §9 e
+`PLANO_EXECUCAO_2026-09-07.md` §4 e §7 (F10).
+
+**Titular da credencial FESF:** o dono do sistema (Diretor Geral do HECC),
+`[nome a confirmar]`. É pessoa distinta da titular SESAB — A1 e A2 valem **por
+instância**: um termo assinado para a SESAB não cobre a FESF, e vice-versa.
+
+**Mesas:** 33, todas sob `FESF/DIGAS/HECC`. As 12 maiores, com contagem do
+oráculo (extrator irmão, `sei_sistema/sei_extractor.py`, medidas em 03/09/2026):
+
+| Mesa | Processos |
+|---|---|
+| HECC | 850 |
+| GC | 794 |
+| GAF | 407 |
+| GAF/CAF | 231 |
+| GAF/ALMOX | 201 |
+| DG | 185 |
+| DM | 183 |
+| GAF/RH | 145 |
+| ASTEC | 66 |
+| GO/HIG | 32 |
+| GO | 29 |
+| GAF/ADM | 20 |
+
+(Lista completa das 33 em `sei_sistema/sei_extraidos/_multi_mesa_results.json`.)
+
+**Personalidade jurídica:** a FESF-SUS é pessoa jurídica distinta da SESAB. O
+registro de base legal (§9.2 do `ARQUITETURA_ACESSO.md`) e o A3 (controladora)
+foram escritos pensando na SESAB; a FESF precisa do próprio ato —
+**A3-bis (controladora, base legal para dados FESF)** `[a decidir]`.
+
+**2FA:** "possível" na FESF, ainda **não medido em campo** — status herdado do
+arquivo de credenciais do extrator irmão, não de uma verificação própria do
+SEI360.
+
+**Coleta:** só quando `perfil_sei.py` tiver `disponivel_coleta: True` para a
+FESF — hoje é `False` (§5-quater). Até lá, a FESF **busca e não coleta**.
 
 ---
 
@@ -1162,6 +1218,34 @@ Outros dezoito achados sustentados aguardam: nenhum relógio varre a fila (a bus
 id 1 viveu 926 s sob um teto de 90 s, e só morreu quando alguém abriu a tela); o
 motivo da falha é reconstruído da configuração ATUAL, não da que valia no pedido;
 e `/api/agente/busca` entrega pela instalação ativa da config, não pela da busca.
+
+## 5-quaterdecies. 01/09 — o passo 3 sem o passo 2
+
+Registrado em 07/09/2026, fato ocorrido em 01/09/2026.
+
+`ARQUITETURA_ACESSO.md` §3.6-bis lista a ordem obrigatória antes do primeiro build:
+rotacionar a senha (1), semear a nova no perfil da estação (2), só então esvaziar o
+bloco CONFIG (3) — "sem isso, esvaziar o CONFIG faz a coleta agendada falhar no
+login, em silêncio." Em 01/09/2026 o passo 3 aconteceu sem o passo 2.
+
+Os fatos, medidos em 07/09/2026:
+
+- O bloco CONFIG de `automacao_sei.js` tem `mtime` de **01/09/2026 09:54**.
+- `__SEI_CRED` **não existe** em nenhum arquivo do `_perfil_sei` (a semeadura no
+  perfil nunca aconteceu).
+- A tabela `credencial` do cofre tem **0 linhas**.
+- A tarefa `SEI_SESAB_Coleta` está **desabilitada desde 27/08/2026**.
+- **11 das 14 coletas em disco nunca entraram no banco** (12, 13, 15, 16, 17, 19,
+  20, 22, 23, 24 e 25/08) — o painel mostra 27/08 porque `ingestao.py` foi rodado
+  à mão em 01/09, e essa execução manual não alcançou o restante do acervo.
+- **2 tentativas manuais de coleta em 01/09 terminaram em timeout do SEI** (`exit
+  4`), não em falha de credencial.
+
+Consequência: a coleta SESAB está sem credencial em lugar nenhum — nem no CONFIG
+(esvaziado), nem no perfil (nunca semeado), nem no cofre (0 linhas). Só o cookie de
+sessão de 01/09 11:11 sustentaria um login, e cookies de sessão expiram. Ver
+`PLANO_EXECUCAO_2026-09-07.md` §0, item 1, e §3 (S1–S3) para o plano de
+recuperação.
 
 ## 6. Isolamento — decisão pendente
 

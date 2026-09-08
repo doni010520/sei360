@@ -473,6 +473,168 @@ _cx.execute("DELETE FROM usuarios WHERE id=?", (_uid_f,))
 _cx.commit()
 _cx.close()
 
+print("\nA FESF NO PRODUTO: VINCULO SEM SNAPSHOT E INGESTAO POR INSTALACAO")
+# O laco que mantinha a FESF fora do produto: o vinculo so aceitava unidade que
+# ja existisse em `snapshot`, a FESF nunca coletou uma linha, e sem vinculo
+# ninguem enxerga nada nela — nem a busca, que ja funciona. Nao havia primeira
+# peca. Fora do snapshot, a sigla e a unica fonte, e ela e informativa.
+import json as _js, tempfile as _tmp                                # noqa: E402
+from pathlib import Path as _Pth                                    # noqa: E402
+import ingestao as _ing                                             # noqa: E402
+
+UNI_FESF = "FESF/DIGAS/HECC/GAF/ADM"
+_admf = next(p for p in pessoas if p.papel == "admin")
+_sofesf = Pessoa("m.sofesf@teste.local", "servidor", [])
+_sofesf.entrar()
+_admf.pega("/admin/usuarios")                       # renova o cookie de CSRF
+
+_st, _c = _admf.pega("/admin/usuarios/lote",
+                     {"csrf": _admf.csrf, "acao": "vincular",
+                      "ids": str(_sofesf.uid), "unidade_livre": UNI_FESF})
+_cx = _bk.conectar()
+_vin = [(r["instancia"], r["unidade"], r["origem"]) for r in _cx.execute(
+    "SELECT COALESCE(instancia,'SEI-SESAB') AS instancia, unidade, origem "
+    "FROM usuario_unidade WHERE usuario_id=?", (_sofesf.uid,))]
+checar("admin vincula unidade da FESF sem existir snapshot nenhum dela",
+       _vin == [("SEI-FESF", UNI_FESF, "admin")], f"status {_st} · {_vin}")
+checar("a instalacao sai do PREFIXO da sigla, nao do padrao",
+       _vin and _vin[0][0] == "SEI-FESF", str(_vin))
+_n_log = _cx.execute("SELECT COUNT(*) FROM log_acesso WHERE acao='vincular_sem_snapshot' "
+                     "AND unidade LIKE ?", (f"%{UNI_FESF}",)).fetchone()[0]
+checar("e fica registrado no log que o vinculo nasceu SEM snapshot",
+       _n_log >= 1, str(_n_log))
+
+# A FRONTEIRA NAO AFROUXOU: quem so tem vinculo na FESF nao ve nada da SESAB.
+_uf = _ap.unidades_do(_sofesf.uid)
+_sf = _ap.snapshots_de(_cx, _sofesf.uid, _uf)
+checar("quem so tem vinculo na FESF nao recebe snapshot nenhum da SESAB",
+       _sf == {}, str(_sf))
+checar("e a carteira dele sai vazia", len(_ap.carteira(_uf, _sofesf.uid)) == 0)
+_pares = _ap.unidades_do(_sofesf.uid, com_instancia=True)
+checar("`unidades_do` sabe dizer de qual instalacao e cada vinculo",
+       _pares == [("SEI-FESF", UNI_FESF)], str(_pares))
+_cx.commit(); _cx.close()
+
+_st, _c = _admf.pega("/admin/usuarios/lote",
+                     {"csrf": _admf.csrf, "acao": "vincular",
+                      "ids": str(_sofesf.uid), "unidade_livre": "gabinete do secretario"})
+checar("sigla fora da forma ORGAO/… e recusada", "Unidade desconhecida" in _c, _c[:180])
+_st, _c = _admf.pega("/admin/usuarios/lote",
+                     {"csrf": _admf.csrf, "acao": "vincular",
+                      "ids": str(_sofesf.uid), "unidade_livre": "XPTO/ALGUMA"})
+checar("prefixo de instalacao desconhecida tambem e recusado, dizendo os validos",
+       "de qual instalação" in _c, _c[:180])
+
+# ---- INGESTAO: a instalacao entra no recorte de "corrente" e de queda.
+UNI_DUPLA = "TESTE/MESMA-SIGLA"
+
+
+def _arq(nome, linhas):
+    p = _Pth(_tmp.gettempdir()) / nome
+    p.write_text(_js.dumps(linhas, ensure_ascii=False), encoding="utf-8")
+    return str(p)
+
+
+def _linhas(unidade, quantos, prefixo, instancia=None):
+    fora = []
+    for k in range(quantos):
+        d = {"id": f"{prefixo}-{k}", "protocolo": f"P-{prefixo}-{k}",
+             "mesa_coleta": unidade, "mesas_coleta": [unidade],
+             "mesas_conta": [unidade], "mesas_falhas": [],
+             "marco_unidade": "01/08/2026 09:00", "visualizado": True}
+        if instancia:
+            d["instancia"] = instancia
+        fora.append(d)
+    return fora
+
+
+_arq_sesab = _arq("sei360_t_dupla_sesab.json", _linhas(UNI_DUPLA, 10, "sesab"))
+_r1 = _ing.ingerir(_arq_sesab, instancia="SEI-SESAB")
+checar("ingestao aceita a instalacao por argumento", _r1.get("instancia") == "SEI-SESAB",
+       str(_r1.get("instancia")))
+# MESMA SIGLA, OUTRA INSTALACAO, e com MENOS processos: sem o recorte por
+# instalacao, os 3 da FESF seriam comparados com os 10 da SESAB ("queda
+# suspeita", snapshot retido) e ainda EXPIRARIAM o corrente da SESAB.
+_arq_fesf = _arq("sei360_t_dupla_fesf.json",
+                 _linhas(UNI_DUPLA, 3, "fesf", instancia="SEI-FESF"))
+_r2 = _ing.ingerir(_arq_fesf)
+checar("a instalacao DECLARADA pelo coletor e lida do proprio dado",
+       _r2.get("instancia") == "SEI-FESF", str(_r2.get("instancia")))
+_cx = _bk.conectar()
+_est = {r["instancia"]: r["estado"] for r in _cx.execute(
+    "SELECT COALESCE(instancia,'SEI-SESAB') AS instancia, estado FROM snapshot "
+    "WHERE unidade=?", (UNI_DUPLA,))}
+checar("ingerir a FESF NAO expira o corrente da SESAB de mesma sigla",
+       _est.get("SEI-SESAB") == "corrente", str(_est))
+checar("e o snapshot da FESF entra corrente, sem queda suspeita contra a outra",
+       _est.get("SEI-FESF") == "corrente", str(_est))
+_cx.close()
+
+# Sem declaracao E sem argumento, cai no padrao — e DIZ que caiu.
+_r3 = _ing.ingerir(_arq("sei360_t_muda.json", _linhas("TESTE/SEM-DIZER", 4, "muda")))
+checar("sem quem diga a instalacao, cai no padrao E avisa",
+       _r3.get("instancia") == "SEI-SESAB" and _r3.get("aviso_instancia"),
+       str(_r3.get("aviso_instancia")))
+_cx = _bk.conectar()
+_n_al = _cx.execute("SELECT COUNT(*) FROM alerta WHERE tipo='instancia_indefinida'").fetchone()[0]
+checar("e o aviso vira alerta, nao so texto de retorno", _n_al >= 1, str(_n_al))
+_cx.close()
+
+# Declaracao x expectativa: vence quem esteve la, e a divergencia fica dita.
+_r4 = _ing.ingerir(_arq("sei360_t_diverge.json",
+                        _linhas("TESTE/DIVERGE", 4, "div", instancia="SEI-FESF")),
+                   instancia="SEI-SESAB")
+checar("declaracao do coletor vence o palpite de quem publicou",
+       _r4.get("instancia") == "SEI-FESF", str(_r4.get("instancia")))
+checar("e a divergencia fica dita, nao escolhida em silencio",
+       "valeu a declarada" in (_r4.get("aviso_instancia") or ""),
+       str(_r4.get("aviso_instancia")))
+
+# ---- IDEMPOTENCIA POR sha256. O wrapper da estacao vai chamar a ingestao todo
+# dia; quando a coleta do dia falha, o arquivo mais recente continua sendo o de
+# ontem — e ele nao pode entrar de novo nem devolver erro todo dia.
+_r5 = _ing.ingerir(_arq_sesab, instancia="SEI-SESAB")
+checar("o MESMO arquivo nao entra duas vezes", _r5.get("ja_ingerido") is True, str(_r5)[:160])
+checar("e a recusa diz por que, com o snapshot que ja o tem",
+       "já foi ingerido" in (_r5.get("motivo") or ""), str(_r5.get("motivo"))[:160])
+_cx = _bk.conectar()
+_n_snap = _cx.execute("SELECT COUNT(*) FROM snapshot WHERE unidade=? AND "
+                      "COALESCE(instancia,'SEI-SESAB')='SEI-SESAB'", (UNI_DUPLA,)).fetchone()[0]
+checar("nada foi duplicado nem reescrito", _n_snap == 1, str(_n_snap))
+_cx.close()
+_r6 = _ing.ingerir(_arq_sesab, forcar=True, instancia="SEI-SESAB")
+checar("--forcar continua reprocessando quem quer mesmo reprocessar",
+       not _r6.get("ja_ingerido"), str(_r6)[:120])
+
+# ---- O PAINEL ROTULA A INSTALACAO quando ha mais de uma.
+_duas = Pessoa("m.duas@teste.local", "servidor", [])
+_cx = _bk.conectar()
+for _i in ("SEI-SESAB", "SEI-FESF"):
+    _cx.execute("""INSERT INTO usuario_unidade(usuario_id,instancia,unidade,concedida_em)
+                   VALUES(?,?,?,?)""", (_duas.uid, _i, UNI_DUPLA, _bk.agora()))
+_cx.commit()
+_sd = _ap.snapshots_de(_cx, _duas.uid, [UNI_DUPLA])
+checar("a mesma sigla nas DUAS instalacoes devolve dois snapshots, nao um",
+       len(_sd) == 2 and {i for i, _ in _sd} == {"SEI-SESAB", "SEI-FESF"}, str(_sd))
+try:
+    _sd[UNI_DUPLA]
+    _ambiguo = False
+except KeyError as _e:
+    _ambiguo = "mais de uma instalação" in str(_e)
+checar("ler por nome ambiguo recusa em vez de devolver a errada", _ambiguo, "nao levantou")
+_su = _ap.snapshots_de(_cx, pessoas[1].uid, [UMA])
+checar("e o nome de uma instalacao so continua sendo lido por nome",
+       _su.get(UMA) is not None, str(_su))
+_cx.close()
+_duas.entrar()
+_st, _painel_duas = _duas.pega("/")
+checar('o painel rotula a instalacao de cada mesa quando ha mais de uma',
+       'class="inst">SESAB<' in _painel_duas and 'class="inst">FESF<' in _painel_duas,
+       f"status {_st}")
+_st, _painel_um = pessoas[1].pega("/")
+checar("e nao rotula nada para quem so tem uma instalacao (ruido que se aprende a ignorar)",
+       'class="inst">' not in _painel_um, f"status {_st}")
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)

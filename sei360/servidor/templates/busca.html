@@ -52,7 +52,7 @@
       <div class="linha-campos">
         <div class="campo"><label for="instancia">Instalação do SEI</label><select id="instancia">
             {% for i in instancias %}
-            <option value="{{ i.id }}" {{ 'selected' if i.id == instancia }}>{{ i.nome }}</option>
+            <option value="{{ i.id }}" {{ 'selected' if i.id == instancia }}>{{ i.nome }}{% if not i.medidos %} · ids não medidos{% endif %}</option>
             {% endfor %}
           </select>
         </div>
@@ -73,6 +73,19 @@
           </label>
         </div>
       </div>
+      {# `medidos` CHEGAVA E NUNCA APARECIA. O servidor manda, por instalação, se
+         os ids dos campos da tela Pesquisa foram exercitados contra ELA
+         (`perfil_sei.busca_ids_medidos`) — e a tela não renderizava nada. Filtro
+         que não casa com campo nenhum muda o universo da resposta sem mudar uma
+         linha do resultado: quem pesquisa precisa saber disso ANTES, não depois. #}
+      {% for i in instancias %}{% if i.id == instancia and not i.medidos %}
+      <div class="pq" style="margin-top:2px;color:var(--espera)">
+        <b>Os ids desta instalação não foram medidos em campo.</b> Os campos são procurados
+        por uma lista de nomes alternativos; o que não casar com nada <b>não é preenchido</b>,
+        e a busca declara o que ficou de fora no resultado. Confira os filtros aplicados
+        antes de tratar o número como completo.
+      </div>
+      {% endif %}{% endfor %}
       <div class="pq" style="margin-top:2px">
         <b>Com tramitação na unidade</b> traz também o que já passou pela mesa e não está
         mais aberto nela. É por causa desse filtro que a mesa acima importa: a pesquisa é

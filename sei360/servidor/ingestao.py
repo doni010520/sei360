@@ -71,8 +71,15 @@ def carregar(caminho=None):
     if caminho:
         arq = Path(caminho)
     else:
-        cand = sorted(RAIZ_COLETAS.glob("sei_sesab_*.json"))
-        cand = [c for c in cand if ".anterior" not in c.name]
+        # `sei_<instalacao>_<dia>.json` — sesab, fesf... O prefixo deixou de ser
+        # fixo em 07/09/2026, quando a FESF passou a ter coletor: dois arquivos
+        # de instalações diferentes no mesmo dia não podem disputar um nome só.
+        # Sem caminho explícito vale o mais recente pela DATA do nome, não pela
+        # ordem alfabética — `sei_sesab_2026-09-07` e `sei_fesf_2026-09-07` são
+        # do mesmo dia e o desempate é o mtime.
+        cand = sorted((c for c in RAIZ_COLETAS.glob("sei_*_*.json")
+                       if ".anterior" not in c.name and c.name.count("_") >= 2),
+                      key=lambda c: (c.name.rsplit("_", 1)[-1], c.stat().st_mtime))
         if not cand:
             sys.exit("nenhuma coleta em _coletas/")
         arq = cand[-1]
@@ -226,13 +233,34 @@ def ingerir(caminho=None, forcar=False, agente_id=None, execucao_id=None,
     arq, dados = carregar(caminho)
     if not dados:
         sys.exit("coleta vazia — nada a ingerir")
-    # DE QUAL INSTALAÇÃO do SEI é esta coleta. Quem declara é o coletor, no
-    # próprio dado; o argumento é para quem ingere à mão. As coletas que já estão
-    # em disco não têm o campo e são todas da SESAB — ler isso como 'SEI-SESAB'
-    # é ler o que existe, não presumir.
-    instancia = (instancia
-                 or next((d.get("instancia") for d in dados if d.get("instancia")), None)
-                 or "SEI-SESAB")
+    # DE QUAL INSTALAÇÃO do SEI é esta coleta. Três fontes, nesta ordem:
+    #
+    #   1. o que o COLETOR declarou no próprio dado — vence, porque ele é o único
+    #      que esteve lá. Se a pessoa configurou SESAB e o coletor entrou na
+    #      FESF, o fato é a FESF: gravar pela configuração poria a carteira de um
+    #      órgão dentro da do outro, que é exatamente o vazamento que a fronteira
+    #      existe para impedir;
+    #   2. o `instancia=` de quem chamou (o servidor deriva da configuração do
+    #      dono do agente; o operador diz na linha de comando);
+    #   3. o padrão — e AÍ FICA DITO. Cair calado em 'SEI-SESAB' é como toda
+    #      coleta da FESF nasceria carimbada como SESAB sem uma linha de aviso.
+    #
+    # As 14 coletas que já estão em disco não têm o campo e são todas da SESAB;
+    # para elas o caminho 2 (ou o 3, com aviso) é o certo.
+    instancia_declarada = next((d.get("instancia") for d in dados if d.get("instancia")), None)
+    instancia_pedida = instancia
+    instancia = instancia_declarada or instancia_pedida or "SEI-SESAB"
+    aviso_instancia = None
+    if instancia_declarada and instancia_pedida and instancia_declarada != instancia_pedida:
+        aviso_instancia = (
+            f"a coleta declara instalação {instancia_declarada!r} e quem publicou "
+            f"esperava {instancia_pedida!r}; valeu a declarada, que é a do coletor "
+            f"que de fato entrou no SEI. Confira a configuração de quem publicou.")
+    elif not instancia_declarada and not instancia_pedida:
+        aviso_instancia = (
+            f"nem a coleta nem quem a publicou disseram de qual instalação do SEI "
+            f"ela é; ingerida como {instancia} (padrão). Se não for, o dado está "
+            f"carimbado com o órgão errado.")
     # Coleta ANTERIOR a marca `_fresco` (que diz se a linha foi lida de verdade
     # nesta execucao). Nela, toda linha com historico foi lida — nao havia poco
     # de onde pular. Sem esta normalizacao, cada arquivo do disco entraria com
@@ -262,6 +290,29 @@ def ingerir(caminho=None, forcar=False, agente_id=None, execucao_id=None,
         coletado_em = datetime.fromtimestamp(arq.stat().st_mtime, TZ).isoformat(timespec="seconds")
 
     cx = conectar()
+    # O MESMO ARQUIVO NÃO ENTRA DUAS VEZES. O wrapper da estação vai chamar a
+    # ingestão todo dia, depois de cada coleta; quando a coleta do dia falha, o
+    # arquivo mais recente de `_coletas/` continua sendo o de ontem, e ele seria
+    # reingerido — criando execução, snapshots e alertas novos para dado que já
+    # está no banco, e reescrevendo a procedência do que estava lá. `sha256` já
+    # era gravado em `snapshot` e nunca era lido.
+    #
+    # Recusa CALMA: sai sem erro, dizendo o que houve. Um passo diário que
+    # devolve código de falha todo dia é um passo que alguém desliga.
+    # `--forcar` continua passando: é o gesto de quem quer mesmo reprocessar.
+    ja = cx.execute("""SELECT s.id, s.unidade, s.coletado_em, s.execucao_id
+                       FROM snapshot s WHERE s.sha256=? ORDER BY s.id LIMIT 1""",
+                    (sha,)).fetchone()
+    if ja and not forcar:
+        cx.close()
+        return {"arquivo": arq.name, "unidades": [], "falhas": [],
+                "execucao_id": ja["execucao_id"], "resumos": 0,
+                "resumos_sem_procedencia": 0, "recortadas": [],
+                "instancia": instancia, "ja_ingerido": True,
+                "motivo": (f"este arquivo já foi ingerido (sha256 igual ao do "
+                           f"snapshot {ja['id']}, {ja['unidade']}, coletado em "
+                           f"{str(ja['coletado_em'])[:16]}). Nada foi alterado; "
+                           f"use --forcar para reprocessar mesmo assim.")}
     if execucao_id is None:
         cx.execute("""INSERT INTO execucao(agente_id,janela,estado,gatilho,entregue_em,
                       iniciado_em,terminado_em,exit_code,log_resumo)
@@ -273,7 +324,14 @@ def ingerir(caminho=None, forcar=False, agente_id=None, execucao_id=None,
     resumos = indexar_resumos()
     relatorio = {"arquivo": arq.name, "unidades": [], "falhas": falhas,
                  "execucao_id": execucao_id, "resumos": 0,
-                 "resumos_sem_procedencia": 0, "recortadas": recortadas}
+                 "resumos_sem_procedencia": 0, "recortadas": recortadas,
+                 "instancia": instancia, "ja_ingerido": False}
+    if aviso_instancia:
+        relatorio["aviso_instancia"] = aviso_instancia
+        cx.execute("""INSERT INTO alerta(ts,tipo,severidade,execucao_id,texto)
+                      VALUES(?,?,?,?,?)""",
+                   (agora(), "instancia_indefinida", "media", execucao_id,
+                    aviso_instancia))
     if recortadas:
         # O que ficou de fora fica DITO. Recortar em silêncio seria a mesma classe
         # de erro que recusar tudo: em ambos os casos alguém acha que coletou o
@@ -327,10 +385,17 @@ def ingerir(caminho=None, forcar=False, agente_id=None, execucao_id=None,
         # não contra a de outra pessoa. Comparar com a de outro dono produziria
         # "queda de 625 para 5" só porque duas pessoas alcançam quantidades
         # diferentes da mesma unidade — o que é normal e não é queda nenhuma.
+        #
+        # E NA MESMA INSTALAÇÃO. A chave efetiva era `(unidade, dono)`, e nome de
+        # unidade não é único entre instalações: um `FESF/GABINETE` com 20
+        # processos seria comparado com o `SESAB/GABINETE` de 600 do mesmo dono e
+        # entraria retido como "queda suspeita" — um alarme sobre uma comparação
+        # que nunca fez sentido. `banco.py:279-283` já promete este recorte.
         anterior = cx.execute(
             "SELECT unicos FROM snapshot WHERE unidade=? AND estado='corrente' "
-            "AND dono_usuario_id IS ? ORDER BY coletado_em DESC LIMIT 1",
-            (unidade, dono)).fetchone()
+            "AND dono_usuario_id IS ? AND COALESCE(instancia,'SEI-SESAB')=? "
+            "ORDER BY coletado_em DESC LIMIT 1",
+            (unidade, dono, instancia)).fetchone()
         suspeito, motivo, estado = 0, None, "corrente"
         if sem_carimbo and agente_id is not None:
             # Publicacao de agente sem horario declarado: o dado entra, mas
@@ -411,11 +476,16 @@ def ingerir(caminho=None, forcar=False, agente_id=None, execucao_id=None,
             # POR DONO. Sem o recorte, a coleta de uma pessoa expirava a de
             # outra na mesma unidade — e quem tivesse coletado de manhã perderia
             # a carteira dele porque um colega coletou à tarde.
+            # E POR INSTALAÇÃO, pela mesma razão uma camada acima: com a chave
+            # `(unidade, dono)`, ingerir `FESF/GABINETE` EXPIRAVA o
+            # `SESAB/GABINETE` corrente do mesmo dono — a carteira de um órgão
+            # sumia do painel porque a de outro chegou, sem alerta nenhum.
             atual = cx.execute("""SELECT id, coletado_em FROM snapshot
                                   WHERE unidade=? AND estado='corrente' AND id<>?
                                     AND dono_usuario_id IS ?
+                                    AND COALESCE(instancia,'SEI-SESAB')=?
                                   ORDER BY coletado_em DESC LIMIT 1""",
-                               (unidade, snap, dono)).fetchone()
+                               (unidade, snap, dono, instancia)).fetchone()
             if atual and atual["coletado_em"] > coletado_em:
                 cx.execute("UPDATE snapshot SET estado='rejeitado', motivo=? WHERE id=?",
                            (f"coleta de {coletado_em[:16]} é anterior à corrente "
@@ -425,8 +495,9 @@ def ingerir(caminho=None, forcar=False, agente_id=None, execucao_id=None,
                      "motivo": "mais antiga que a corrente"})
                 continue
             cx.execute("UPDATE snapshot SET estado='expirado' WHERE unidade=? AND "
-                       "estado='corrente' AND id<>? AND dono_usuario_id IS ?",
-                       (unidade, snap, dono))
+                       "estado='corrente' AND id<>? AND dono_usuario_id IS ? "
+                       "AND COALESCE(instancia,'SEI-SESAB')=?",
+                       (unidade, snap, dono, instancia))
 
         for d in linhas:
             vals = [d.get(o) for _, o in CAMPOS]
@@ -474,8 +545,29 @@ def ingerir(caminho=None, forcar=False, agente_id=None, execucao_id=None,
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    rel = ingerir(args[0] if args else None, forcar="--forcar" in sys.argv)
-    print(f"arquivo : {rel['arquivo']}  (execucao {rel['execucao_id']})")
+    # `--instancia SEI-FESF` — de qual instalação é o arquivo, para quando o
+    # coletor ainda não declara isso no JSON. Sem ele a ingestão manual cai no
+    # padrão, e agora DIZ que caiu.
+    inst_cli = None
+    for i, a in enumerate(sys.argv):
+        if a.startswith("--instancia="):
+            inst_cli = a.split("=", 1)[1]
+        elif a == "--instancia" and i + 1 < len(sys.argv):
+            inst_cli = sys.argv[i + 1]
+    if inst_cli:
+        args = [a for a in args if a != inst_cli]
+    rel = ingerir(args[0] if args else None, forcar="--forcar" in sys.argv,
+                  instancia=inst_cli)
+    if rel.get("ja_ingerido"):
+        # Exit 0: não é falha. O passo diário do wrapper chama isto toda vez, e
+        # devolver erro quando não há nada novo ensina a ignorar o código de saída.
+        print(f"arquivo : {rel['arquivo']}")
+        print(f"  NADA A FAZER — {rel['motivo']}")
+        sys.exit(0)
+    print(f"arquivo : {rel['arquivo']}  (execucao {rel['execucao_id']}, "
+          f"{rel.get('instancia')})")
+    if rel.get("aviso_instancia"):
+        print(f"  AVISO   {rel['aviso_instancia']}")
     for u in rel["unidades"]:
         if u["estado"] == "falhou":
             print(f"  FALHOU  {u['unidade']} — snapshot anterior mantido")

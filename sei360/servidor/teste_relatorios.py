@@ -1505,6 +1505,23 @@ print("\n-- a procedencia e a MESMA regra das duas telas --")
 # O mutante que escapou: trocar `estado_coleta` de volta por uma derivacao a
 # partir dos processos. A tela do relatorio voltava a ficar VERDE onde
 # /relatorios fica VERMELHA, e nada reclamava.
+# O CASO E CRIADO AQUI, NAO ESPERADO DA BASE. Ate 27/08 a copia da base trazia
+# unidade com linha sem detalhe por acidente da coleta; a ingestao de 27/08
+# (1182/1182 lidas) apagou o acidente e o teste passou a reprovar sem defeito
+# nenhum — a classe de verificacao que o SPECS §5-undecies ja condenou ("testa a
+# manha de ontem"). Uma linha da primeira unidade do usuario perde o `medido_em`
+# na COPIA isolada; o que se prova continua o mesmo: as duas telas leem esse
+# NULL do mesmo jeito.
+_cxs = conectar()
+_alvo = _cxs.execute("""SELECT p.snapshot_id, p.id_sei FROM processo p
+                        JOIN snapshot s ON s.id=p.snapshot_id
+                        WHERE s.estado='corrente' AND s.unidade=? LIMIT 1""",
+                     (_uns[0],)).fetchone()
+if _alvo:
+    _cxs.execute("UPDATE processo SET medido_em=NULL WHERE snapshot_id=? AND id_sei=?",
+                 (_alvo["snapshot_id"], _alvo["id_sei"]))
+    _cxs.commit()
+_cxs.close()
 _ec = _app.estado_coleta(_uns, 2)
 _mp = _R.montar("permanencia", _uns, usuario_id=2)
 checar("a tarja do relatorio tem as MESMAS unidades da tela anterior",
@@ -1768,6 +1785,36 @@ _cx13.close()
 cx = conectar()
 cx.execute("UPDATE usuarios SET ativo=0 WHERE email=?", (CONTA,))
 cx.commit(); cx.close()
+
+
+
+# ---------------------------------------------------------------------------
+# O DICIONARIO DE RESUMOS E LIDO COM A MESMA CHAVE COM QUE FOI MONTADO.
+# Em 07/09/2026 a dedup do laco de `carteira()` passou a ser (instancia, id_sei)
+# e o dicionario continuou indexado so por `id_sei`: `.get(tupla)` devolvia None
+# em 100% das linhas e NENHUM resumo aparecia no painel — sem erro, sem log, e
+# com /admin anunciando a contagem certa na mesma hora. Chave montada de um jeito
+# e lida de outro nao levanta excecao: devolve vazio, que e o modo de falha que
+# este projeto persegue.
+# ---------------------------------------------------------------------------
+print("\n-- o resumo chega ao painel --")
+_uns2 = _app.unidades_do(2)
+_cart = _app.carteira(_uns2, 2)
+_cx9 = conectar()
+_marc9 = ",".join("?" * len(_uns2))
+_no_banco = _cx9.execute(
+    f"""SELECT COUNT(DISTINCT r.id_sei) FROM resumo r
+        JOIN processo p ON p.id_sei = r.id_sei
+        JOIN snapshot s ON s.id = p.snapshot_id
+                       AND COALESCE(s.instancia,'SEI-SESAB') = r.instancia
+        WHERE s.estado='corrente' AND s.unidade IN ({_marc9})""", _uns2).fetchone()[0]
+_cx9.close()
+_na_tela = sum(1 for x in _cart if x.get("resumo_curto"))
+checar(f"todo resumo da carteira aparece na tela ({_na_tela} de {_no_banco})",
+       _no_banco > 0 and _na_tela == _no_banco,
+       f"banco tem {_no_banco}, a tela mostra {_na_tela} — chave montada e chave lida divergem")
+
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)

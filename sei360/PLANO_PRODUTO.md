@@ -445,6 +445,23 @@ ligado à suíte — provado contra o defeito real que o motivou.
 * **A senha do SEI em `automacao_sei.js`** continua comprometida e precisa ser
   rotacionada — proteger segredo já vazado não é proteção.
 
+## Nota de 07/09/2026 — a auditoria de 19/08 está fechada no código
+
+Conferido no código, sem que nenhum documento tivesse dito isso até esta data
+(ver `PLANO_EXECUCAO_2026-09-07.md` §2.4). Três bloqueios críticos apontados na
+auditoria de 19/08 estão **fechados**:
+
+* a migração do esquema passou a rodar **no import** de `app.py:35` (antes só
+  rodava em `__main__`, que o `gunicorn app:app` nunca executa);
+* `semear.py --so-contas` existe e é o caminho documentado de bootstrap
+  (`servidor/LEIAME_EASYPANEL.md` §3);
+* `destino_interno` está tratado como conjunto em `app.py:195` e `:419`.
+
+O que continua **aberto**, sem código novo desde 19/08:
+
+* a assinatura HMAC do agente usa o **próprio Bearer** como chave — garante
+  integridade, não sigilo (`ARQUITETURA_ACESSO.md` §6, "O que ainda não existe");
+* a senha **provisória** de conta nova não tem expiração.
 
 ---
 
@@ -502,3 +519,22 @@ INCOMPLETA" que não filtra por execução, e a duplicação da marcação do me
 
 **Suíte: 355 verificações, 0 falha.** Cada achado corrigido virou teste — sem
 isso, a suíte voltaria a passar com o defeito vivo.
+
+---
+
+# CRITÉRIOS DE SUCESSO — proposta de 07/09/2026, a aprovar pelo dono
+
+Até esta data não existia critério de RESULTADO nenhum — só "pronto" técnico por
+fatia (`ARQUITETURA_ACESSO.md` §10, este documento §7). Os quatro abaixo são
+**proposta da engenharia**, não decisão do dono, e ficam marcados como proposta
+enquanto não forem aprovados, alterados ou substituídos.
+
+| # | Critério | Como medir | Situação em 07/09/2026 |
+|---|---|---|---|
+| 1 | **≥ 95% das janelas úteis cumpridas, por instância** | execuções com sucesso ÷ janelas devidas no calendário útil, separado por `instancia` | SESAB: 11 dias corridos sem nenhuma coleta; FESF: nenhuma coleta jamais rodou |
+| 2 | **Dado com ≤ 1 dia útil de defasagem no painel** | idade do snapshot corrente por unidade, contra o calendário de dias úteis (a mesma régua de R0, §2.1) | SESAB: defasagem de 11 dias; FESF: sem dado |
+| 3 | **Usuários ativos por semana** | sessões distintas por `usuario_id` numa janela de 7 dias | não medido — 3 contas ativas hoje, de 64 |
+| 4 | **Redução dos processos parados +90 dias** | `rel_permanencia`, faixa "+90d", na mesma régua (R0) | baseline **526**, medido em 19/08/2026; alvo `[a definir]` pelo dono |
+
+Nenhum dos quatro é critério técnico de "pronto" — são medida de resultado, e só
+viram compromisso quando o dono aprovar (ou substituir por outros).

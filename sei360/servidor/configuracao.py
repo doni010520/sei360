@@ -26,9 +26,28 @@ troca em um clique, e o assistente explica os dois em português, na hora da
 escolha, e não num documento que ninguém abre.
 """
 import json
+from datetime import datetime
 
 import perfil_sei
-from banco import agora  # noqa: F401  (usado em gravar())
+from banco import TZ
+
+
+def _carimbo():
+    """`agora()` com fração de segundo — só para ordenar ESTA tabela.
+
+    `ler()` sem `sistema` devolve "a última configuração que a pessoa mexeu", e a
+    ordem era `atualizado_em DESC, sistema`. Com `agora()` em segundo INTEIRO,
+    trocar de instalação e salvar dentro do mesmo segundo dava EMPATE — e o
+    desempate alfabético fazia 'SEI-FESF' vencer 'SEI-SESAB'. Medido: a pessoa
+    escolhia a SESAB no passo 1, a tela dizia que avançou, e o passo 2 validava o
+    login contra a FESF — recusando o e-mail CERTO com a mensagem da outra
+    instalação. Enquanto houve uma instalação só isso era invisível.
+
+    ISO com microssegundos continua ordenando certo, em texto, contra o ISO sem
+    eles: no mesmo segundo compara-se '.' (0x2E) com '-' (0x2D) do offset, e o
+    carimbo mais preciso fica DEPOIS — que é a ordem verdadeira.
+    """
+    return datetime.now(TZ).isoformat(timespec="microseconds")
 
 # UMA lista de instâncias, em `perfil_sei.py`. Esta aqui é a projeção do que a
 # TELA precisa saber — nome, exemplo de login, se dá para usar — derivada do
@@ -36,19 +55,27 @@ from banco import agora  # noqa: F401  (usado em gravar())
 # FESF como "não validada" enquanto o coletor tinha a URL da SESAB fixa no meio
 # do arquivo, e nada no código sabia de nenhuma das duas coisas.
 #
-# `disponivel` aqui quer dizer COLETA, que é o que este assistente configura. A
-# busca tem disponibilidade própria (uma instância pode servir para buscar e não
-# para coletar — é o caso da FESF hoje), e quem lê isso é a tela de busca.
+# `disponivel` quer dizer ESCOLHÍVEL: a instalação serve para busca OU para
+# coleta. Antes ele era `disponivel_coleta`, e a tela desabilitava o rádio da
+# FESF com "ainda não disponível" — falso, porque a busca já roda nela. Quem tem
+# vínculo só na FESF não passava do passo 1 de um sistema que já sabia atendê-la.
+#
+# As duas disponibilidades continuam separadas e VÃO PARA A TELA, uma por
+# instância ("coleta: sim/não · busca: sim/não"). Texto fixo mentiria na primeira
+# vez que uma das duas mudasse; isto sai do perfil e acompanha o perfil.
 SISTEMAS = {
     k: {
         "nome": v["nome"],
         "curto": v["curto"],
         "descricao": v["descricao"]
                      + ("" if v["disponivel_coleta"]
-                        else " A coleta ainda não roda aqui: " + v["motivo_sem_coleta"]),
+                        else " A coleta ainda não roda aqui: "
+                             + v.get("motivo_sem_coleta", "motivo não registrado.")),
         "login_url": v["login_url"],
         "exemplo_login": v["exemplo_login"],
-        "disponivel": v["disponivel_coleta"],
+        "rotulo": v["rotulo"],
+        "disponivel": perfil_sei.escolhivel(k),
+        "disponivel_coleta": v["disponivel_coleta"],
         "disponivel_busca": v["disponivel_busca"],
     }
     for k, v in perfil_sei.INSTANCIAS.items()
@@ -123,7 +150,7 @@ def gravar(cx, usuario_id, decidiu=None, **campos):
                 json.dumps(atual["janelas"], ensure_ascii=False),
                 atual["dias"], atual.get("modo_coleta", "servidor"), atual["passo"],
                 json.dumps(atual["decididos"], ensure_ascii=False),
-                atual["concluida_em"], agora()))
+                atual["concluida_em"], _carimbo()))
     return atual
 
 

@@ -11,6 +11,8 @@
 
 O EasyPanel hospeda **painel, banco, autorização e regras de triagem**; a **coleta continua rodando na estação Windows da titular da credencial**, executada por um agente local que pergunta ao servidor quando há janela devida — de modo que **nenhuma senha do SEI, nenhum cookie de sessão e nenhum navegador existem dentro do container**.
 
+> **Nota de 07/09/2026 — revogado em parte, em 21/08/2026 (ver §6.0).** A frase acima descreve só a **coleta**, que continua exatamente assim. Deixou de valer para a **busca avançada**: desde 21/08/2026 o container passou a rodar Chromium e Playwright, e a credencial de quem busca é decifrada em memória ali dentro (§6.0, §3.5, §3.6). Nenhuma senha do SEI e nenhum navegador existiam no container até 21/08; hoje existem, para a busca — nunca para a coleta.
+
 Formulação negativa, que é a que importa: *quem tomar o servidor leva a base coletada — grave, notificável — e não leva a capacidade de agir no SEI em nome de ninguém.*
 
 ---
@@ -35,15 +37,17 @@ Não apresentar isto como continuidade técnica das fases 1-2: **é a Fase 3, de
 
 ### 2.2 Aceites e atos exigidos ANTES do primeiro Dockerfile
 
-| # | Ato | Quem assina | Bloqueia o quê |
-|---|---|---|---|
-| **A0** | **Rotação da senha do SEI da titular** (ação, não aceite — ver 2.3) | titular | tudo |
-| **A1** | Termo de isolamento por unidade (§6, leitura A como fronteira, B como apresentação) — **texto exato na seção 8** | gestor da unidade + titular | qualquer endpoint que devolva carteira |
-| **A2** | Termo de imputação nominal — ciência de que a trilha do SEI passará a conter atos de máquina em nome da titular — **texto exato na seção 6.6** | titular + gestor | primeira coleta orquestrada pelo servidor |
-| **A3** | Ato do órgão designando a SESAB **controladora**, com finalidade e encarregado; **contrato de hospedagem no CNPJ do órgão** | SESAB | provisionamento do host |
-| **A4** | Base legal registrada + registro das operações (art. 37) + RIPD simplificado | encarregado | exposição no Traefik |
-| **A5** | **Lista nominal** de quem tem conta no painel do EasyPanel e no host, com MFA obrigatório nessas contas | admin de infraestrutura | exposição no Traefik |
-| **A6** | Decisão datada sobre **local do host** — (a) VPS BR contratado pelo órgão ou (c) servidor interno. **(b) fora do Brasil descartado por decisão** (seção 9.6) | SESAB/TIC | provisionamento do host |
+*(Colunas Responsável e Prazo acrescentadas em 07/09/2026 — nenhuma pessoa nem data está registrada em documento ou banco algum para A0–A6; ver `PLANO_EXECUCAO_2026-09-07.md` §2.6. Preenchidas com placeholder até existir registro.)*
+
+| # | Ato | Quem assina | Bloqueia o quê | Responsável | Prazo |
+|---|---|---|---|---|---|
+| **A0** | **Rotação da senha do SEI da titular** (ação, não aceite — ver 2.3) | titular | tudo | [a nomear] | [a datar] |
+| **A1** | Termo de isolamento por unidade (§6, leitura A como fronteira, B como apresentação) — **texto exato na seção 8** | gestor da unidade + titular | qualquer endpoint que devolva carteira | [a nomear] | [a datar] |
+| **A2** | Termo de imputação nominal — ciência de que a trilha do SEI passará a conter atos de máquina em nome da titular — **texto exato na seção 6.6** | titular + gestor | primeira coleta orquestrada pelo servidor | [a nomear] | [a datar] |
+| **A3** | Ato do órgão designando a SESAB **controladora**, com finalidade e encarregado; **contrato de hospedagem no CNPJ do órgão** | SESAB | provisionamento do host | [a nomear] | [a datar] |
+| **A4** | Base legal registrada + registro das operações (art. 37) + RIPD simplificado | encarregado | exposição no Traefik | [a nomear] | [a datar] |
+| **A5** | **Lista nominal** de quem tem conta no painel do EasyPanel e no host, com MFA obrigatório nessas contas | admin de infraestrutura | exposição no Traefik | [a nomear] | [a datar] |
+| **A6** | Decisão datada sobre **local do host** — (a) VPS BR contratado pelo órgão ou (c) servidor interno. **(b) fora do Brasil descartado por decisão** (seção 9.6) | SESAB/TIC | provisionamento do host | [a nomear] | [a datar] |
 
 ### 2.3 Contradição a registrar sem suavizar
 
@@ -81,11 +85,13 @@ ESTAÇÃO WINDOWS (titular)                 EASYPANEL (Traefik + Docker)
 
 O servidor **nunca** fala com `sip.seibahia.ba.gov.br`. Com isso somem, de uma vez, alcance de rede, DNS split-horizon da PRODEB, latência sobre milhares de requisições, risco de bloqueio de faixa de datacenter, `shm_size`/`ipc:host`, seccomp, sandbox do Chromium e build pesado de imagem Playwright. Sobra a questão jurídica do host, que é a que realmente decide.
 
+> **Nota de 07/09/2026.** O diagrama e o parágrafo acima descrevem só o caminho da **coleta**, que continua exatamente assim — o servidor de fato nunca fala com o SEI para coletar. Desde 21/08/2026 existe um segundo caminho, o da **busca avançada** (§6.0), em que o MESMO container roda Chromium/Playwright e fala diretamente com o SEI da instância buscada. "SEM Playwright" no diagrama acima descreve `sei360-web` antes de 21/08; hoje a mesma imagem também executa `atendente.py`, com Playwright — ver §3.5, §3.6 e §3.6-bis ("Dois serviços, se a memória apertar").
+
 ### 3.2 Serviços no EasyPanel
 
 | Serviço | Tipo | Recursos | Réplicas |
 |---|---|---|---|
-| `sei360-web` | **App service** (Swarm serve; não há Chromium, logo nenhuma exigência de Compose) | 256 MB / 0,5 vCPU | 1 hoje; escalável quando o banco sair para Postgres |
+| `sei360-web` | **App service** (Swarm serve) | ~~256 MB / 0,5 vCPU~~ **mínimo 2 GB** *(corrigido 07/09/2026: desde 21/08/2026 a imagem inclui Chromium/Playwright para a busca — ~0,45 GB por busca simultânea, ver §3.6-bis; a premissa "não há Chromium" não vale mais)* | 1 hoje; escalável quando o banco sair para Postgres |
 | banco | **SQLite em volume**, no próprio `sei360-web` | — | — |
 
 **Postgres do EasyPanel: não provisionar agora.** É 1.165 linhas por coleta, um único processo escritor. Provisiona-se quando e se `sei360-web` precisar de mais de uma réplica.
@@ -94,7 +100,7 @@ O servidor **nunca** fala com `sip.seibahia.ba.gov.br`. Com isso somem, de uma v
 
 - Container escuta `8000` (gunicorn, `-w 2 --threads 4`, `--timeout 60`).
 - Traefik publica `443` com Let's Encrypt.
-- **Enquanto não houver segundo fator no painel (seção 5.7): middleware de restrição por IP do órgão ou VPN.** HTTPS garante que dado de saúde trafega cifrado até quem quer que tenha achado a URL — não é autenticação.
+- **Enquanto o segundo fator do painel não estiver ARMADO (seção 5.7): middleware de restrição por IP do órgão ou VPN.** HTTPS garante que dado de saúde trafega cifrado até quem quer que tenha achado a URL — não é autenticação. *(Nota de 07/09/2026: o segundo fator existe no código desde 25–27/08/2026 — §3.5-bis — mas nasce desligado; a redação anterior dizia "não houver", como se não existisse. A restrição de origem continua obrigatória até alguém armar a política.)*
 - CSP fechada: `default-src 'self'; connect-src 'self'; font-src 'self' data:; script-src 'self'`.
 
 ### 3.4 Volumes
@@ -104,7 +110,7 @@ O servidor **nunca** fala com `sip.seibahia.ba.gov.br`. Com isso somem, de uma v
 | `/data/db` | `sei360.db` (SQLite/WAL) | vida do sistema | **cifrado, com chave custodiada FORA do painel do EasyPanel** |
 | `/data/snapshots` | JSON bruto recebido, gzipado (~2,5 MB/dia crus) | **30 dias**, expurgo por job | idem |
 
-**Não existe** volume de perfil de navegador. **Não existe** volume de screenshots — `falha_login.png` e `falha_coleta.png` são tela cheia do Controle de Processos, com nomes, logins e anotações livres; **ficam na estação**, expurgados em 7 dias pelo agente, e o servidor recebe apenas nome do arquivo e carimbo, para o operador saber onde olhar.
+**Não existe** volume de perfil de navegador **para a coleta** — a coleta continua na estação. *(Nota de 07/09/2026: para a busca, existe sim, desde 21/08/2026 — `/dados/_perfil_sei`, dentro deste mesmo volume; ver §3.5, §3.5-bis e §6.0. A frase original valia em 18/08 e não foi atualizada quando a busca migrou para o container.)* **Não existe** volume de screenshots — `falha_login.png` e `falha_coleta.png` são tela cheia do Controle de Processos, com nomes, logins e anotações livres; **ficam na estação**, expurgados em 7 dias pelo agente, e o servidor recebe apenas nome do arquivo e carimbo, para o operador saber onde olhar.
 
 ### 3.5 Variáveis de ambiente
 
@@ -453,6 +459,8 @@ snapshot(id INTEGER PK, execucao_id INTEGER, unidade TEXT NOT NULL,
 
 A divergência **218 coletados / 214 únicos** em COMASUP (18/08, "4 já vistos") não é erro: é processo presente em mais de uma mesa. **O gate compara `coletados`**, não o `COUNT` do campo `mesa_coleta` — senão a dedup entre mesas é lida como perda.
 
+> **Nota de 07/09/2026.** O `UNIQUE(execucao_id, unidade)` acima presume uma `execucao` de um `agente` — mas `agentes.dono_usuario_id` pode ser NULL (coleta de bootstrap, compartilhada por toda a unidade; ver §7.3 e `SPECS.md` §5-nonies). O esquema não impede isso, e não deveria: é o estado inicial de qualquer instalação nova.
+
 ### 4.5 Conteúdo
 
 ```sql
@@ -534,7 +542,7 @@ Server-side, não cookie assinado. Token opaco `secrets.token_urlsafe(32)`; o ba
 - **Auto-provisionamento semeado pelo snapshot:** o primeiro acesso é liberado para e-mail institucional que **já apareça** em `atribuido_login` ou `processo_mesa.atribuido` do snapshot corrente, com a unidade derivada dali; o admin apenas aprova. Isso existe porque a alternativa — admin cadastrar um a um os **58 atribuídos nominais distintos** da carteira, entregando token fora de banda — não acontece na prática, nascem 2 ou 3 contas, e o painel volta a ser ferramenta de um gestor só, caso em que o servidor não se justificava.
 - Fora dessa lista: criação manual pelo admin, com token de uso único válido 48 h.
 - `/admin/usuarios`: criar, **desativar (nunca apagar — o log referencia)**, redefinir senha, vincular/desvincular unidade, revogar sessões ativas. Toda ação administrativa vai para `log_acesso`.
-- **Sem segundo fator no painel na v1**, e isso é dito ao decisor em vez de escondido. Compensação enquanto não existir: restrição de origem no Traefik (IP do órgão ou VPN) e sessão curta. **O painel do EasyPanel, esse sim, exige MFA e lista nominal (A5)** — ele é chave-mestra sobre tudo o que está descrito aqui.
+- **Sem segundo fator ARMADO no painel** — *(nota de 07/09/2026: esta linha dizia "sem segundo fator na v1", como se ele não existisse; o código foi escrito em 25–27/08/2026, §3.5-bis. O que continua verdade é que ele nasce desligado e nenhuma política foi armada até hoje)* —, e isso é dito ao decisor em vez de escondido. Compensação enquanto não existir: restrição de origem no Traefik (IP do órgão ou VPN) e sessão curta. **O painel do EasyPanel, esse sim, exige MFA e lista nominal (A5)** — ele é chave-mestra sobre tudo o que está descrito aqui.
 
 ---
 
@@ -599,6 +607,8 @@ Esse conjunto tem de ser nomeado — "a equipe de TI" não é resposta. É um co
 
 ### 6.6 Imputação visível — TEXTO EXATO do termo A2
 
+> **Nota de 07/09/2026.** O item 5 abaixo, antes desta data, afirmava sem ressalva que "o painel hospedado não [possui a senha] nem pode obtê-la" — verdade em 18/08/2026, quando este termo foi escrito, e **falsa desde 21/08/2026** para quem usa o modo servidor (§6.0). Reescrito abaixo para dizer a verdade nos dois modos. Nenhum termo já assinado com a redação anterior perde validade por este ajuste; é a redação que passa a valer para novas assinaturas.
+
 > **TERMO DE CIÊNCIA — OPERAÇÃO AUTOMATIZADA COM CREDENCIAL NOMINAL (SEI360)**
 >
 > Eu, [NOME COMPLETO], matrícula [Nº], lotada em [UNIDADE], titular do login [LOGIN] do SEI Bahia, declaro estar ciente e de acordo com o seguinte:
@@ -607,7 +617,7 @@ Esse conjunto tem de ser nomeado — "a equipe de TI" não é resposta. É um co
 > 2. **Todos os acessos realizados por essa rotina serão registrados no log do SEI em meu nome**, ainda que eu não os tenha praticado pessoalmente. Estou ciente de que isso afeta o não-repúdio dos registros de acesso associados ao meu login.
 > 3. A rotina **altera a unidade ativa da minha sessão** ao percorrer as mesas de trabalho. Se eu estiver utilizando o SEI no mesmo momento, a unidade ativa poderá mudar sem ação minha.
 > 4. A duração medida de uma execução completa foi de **14 minutos e 47 segundos** (coleta de 18/08/2026, 6 mesas, 1.165 processos). As janelas programadas são [HORÁRIOS], [Nº] vezes por dia útil.
-> 5. Minha senha do SEI **não** será armazenada em servidor, nuvem ou infraestrutura de terceiro. Ela permanecerá exclusivamente nesta estação, no Cofre de Credenciais do Windows, e o painel hospedado não a possui nem pode obtê-la.
+> 5. Minha senha do SEI **não é armazenada em texto legível em lugar nenhum**. Se eu optar pelo modo **estação**, ela fica exclusivamente nesta estação, no Cofre de Credenciais do Windows, e o painel hospedado não a possui. Se eu optar pelo modo **servidor** (para a busca avançada), ela fica **cifrada no cofre do painel** (AES-256-GCM) e é **decifrada em memória, apenas no instante em que uma busca minha é executada**; nesse caso o painel hospedado **passa a ser capaz de obtê-la**, e um conjunto maior de pessoas passa a ser capaz de lê-la: quem tiver acesso ao painel administrativo do EasyPanel, root do host, cópia de disco ou de memória feita pelo provedor, ou qualquer falha de execução remota de código nesta aplicação (§6.0 e §6.3 detalham esse conjunto e o comparam ao da estação).
 > 6. **Nenhum usuário do painel SEI360 pode disparar coleta em meu nome.** Somente o agendamento interno e, quando necessário, um administrador nomeado abrindo janela extra — registrada com o nome dele.
 > 7. Comprometo-me a comunicar imediatamente à equipe do SEI360 qualquer troca da minha senha do SEI, ciente de que a troca interrompe a coleta.
 > 8. Estou ciente de que posso revogar esta autorização a qualquer momento, por escrito, e de que a revogação efetiva do acesso automatizado se dá pela troca da minha senha no SEI.
@@ -654,7 +664,7 @@ Toda estimativa anterior de "~4 min" está errada por cerca de 3,7x, e com ela c
 
 - **A entrega da tarefa é o lock**, feita em transação: o servidor só entrega se houver janela devida, se não houver execução `entregue`/`em_curso` para aquele agente, e se a janela ainda não fechou com sucesso. `max_entregas_janela = 2` é teto absoluto.
 - `flock` local no agente impede duas execuções sobre o mesmo perfil (perfil Chromium é single-writer; duas execuções o corrompem).
-- **Uma unidade pertence a um agente.** Publicação fora de `unidades_esperadas` é recusada e vira alerta.
+- **Uma unidade pertence a um agente NOMINAL.** Publicação fora de `unidades_esperadas` é recusada e vira alerta. *(Nota de 07/09/2026: exceção que já existia e não estava dita aqui — a coleta de bootstrap, sem dono, `dono_usuario_id=NULL`, fica COMPARTILHADA por toda a unidade até cada pessoa passar a coletar a própria; não é lacuna, é o estado inicial de qualquer instalação. Ver `SPECS.md` §5-nonies e `LEIAME_EASYPANEL.md` §3.)*
 - **Zero retry.** Retry por fora do processo reintroduz o retry cego que o disjuntor de duas quedas existe para impedir, e cada tentativa derruba a sessão real.
 
 ### 7.4 Watchdog — o sexto estado que nenhum desenho anterior tratava
@@ -721,6 +731,7 @@ Registro com falha entra como **pendente**, nunca como concluído nos totais (§
 | `falha_*.png` | estação | **7 dias** | **gatilho próprio do agente, independente do sucesso da coleta** — o caminho que gera os PNGs é exatamente o caminho em que o resto não roda |
 | `log_acesso` | banco + espelho | 180 dias | job diário |
 | `tentativas_login` | banco | 30 dias | job diário |
+| `resumo` (resumo de IA) | banco | **60 dias** | job diário — *linha ausente até 07/09/2026; o prazo já existia no código (`expurgo.py`, `DIAS['resumo']=60`, ver `PLANO_PRODUTO.md` Fatia 8) e não estava nesta tabela* |
 
 ### 7.8 Alerta de coleta atrasada — e o semáforo consciente de calendário
 
@@ -777,7 +788,7 @@ Três reforços que o dado real exige:
 > b) O filtro "somente os meus processos" existirá como recurso de visualização, à escolha do usuário, e **não** como barreira de segurança.
 > c) Processos classificados no SEI como Restritos só serão exibidos a usuários vinculados à unidade correspondente, acompanhados da respectiva hipótese legal.
 > d) Campos de texto livre (especificação, anotações, interessados, observações de acompanhamento) somente serão exibidos na tela de detalhe, a usuários vinculados à unidade do processo, e **não** integrarão listagens nem exportações de escopo ampliado.
-> e) **Não existirá busca por texto livre** de abrangência global no painel.
+> e) **Não existirá busca por texto livre sobre a base local do painel.** *(Nota de 07/09/2026: desde 21/08/2026 existe busca avançada — ver `SPECS.md` §5-ter —, mas ela interroga o SEI diretamente, com a credencial de quem pergunta; a base local do SEI360 continua sem busca por texto livre. O resultado da busca não vira snapshot, não entra no poço, não cria linha em `processo` e não é servido a mais ninguém.)*
 > f) O perfil de administrador do painel **não** confere acesso a carteira de nenhuma unidade; administrar contas e agentes não é ler processos.
 > g) Todo acesso a processo será registrado em log próprio do painel (usuário, identificador do processo, data/hora e endereço de origem), com retenção de 180 dias.
 >
@@ -830,7 +841,9 @@ Vias do art. 33, na configuração realista:
 
 **Conclusão: (b) descartada por decisão, não por preferência técnica.** Reforço convergente, secundário: com a duração medida de 14m47s, latência transatlântica sobre milhares de requisições sequenciadas a CONC=4 empurra a coleta para muito além da janela — mas esse não é o argumento decisivo.
 
-**DECISÃO PENDENTE (A6/P1) — (a) VPS BR contratado pelo órgão x (c) servidor interno.** Recomendação: **(c) > (a)**. Diferença que precisa ser dita: em VPS comercial o provedor tem acesso de hipervisor, o cliente **não controla cifragem de disco, não desabilita swap do host e não impede snapshot** — então (a) só é admissível se o provedor for declarado **operador com acesso efetivo**, em contrato no CNPJ do órgão (art. 39), e com o passivo minimizado em consequência disso. Só (c) tira o provedor da fronteira de confiança.
+> **Nota de 07/09/2026:** a pergunta abaixo foi **respondida de fato em 21/08/2026** pela decisão do dono (§6.0): via **(a)**, VPS na HostGator. O que segue pendente é registrar a **região** do host (tem de ser Brasil — ver a conclusão acima) e o contrato no CNPJ do órgão (A3). O texto original fica como registro da recomendação que não prevaleceu.
+
+**DECISÃO (A6/P1) — (a) VPS BR contratado pelo órgão x (c) servidor interno.** Recomendação da época: **(c) > (a)**. Diferença que precisa ser dita: em VPS comercial o provedor tem acesso de hipervisor, o cliente **não controla cifragem de disco, não desabilita swap do host e não impede snapshot** — então (a) só é admissível se o provedor for declarado **operador com acesso efetivo**, em contrato no CNPJ do órgão (art. 39), e com o passivo minimizado em consequência disso. Só (c) tira o provedor da fronteira de confiança.
 
 ### 9.7 Minimização, elevada a regra de arquitetura
 
@@ -896,7 +909,7 @@ Só se a TIC/PRODEB criar conta de serviço institucional com escopo de leitura 
 
 | Descartado | Por quê |
 |---|---|
-| **Playwright/Chromium no container** | é o que dispensa `shm_size`, `ipc:host`, seccomp, sandbox, `--no-sandbox`, App x Compose service, build pesado em CI e 2 GB de limite de memória — e o que mantém a linha 3 da tabela do §2 intacta |
+| **Playwright/Chromium no container** — ***revogado em 21/08/2026 para a busca, ver §6.0*** | valia até 21/08: dispensava `shm_size`, `ipc:host`, seccomp, sandbox, `--no-sandbox`, App x Compose service, build pesado em CI e 2 GB de limite de memória. **Nota de 07/09/2026:** a coleta continua sem Chromium no container (esta linha continua valendo para ELA); a busca passou a exigir tudo isso — inclusive o mínimo de 2 GB (§3.6-bis) — por decisão do dono, não por reversão técnica |
 | **Senha do SEI em secret do EasyPanel** | secret de PaaS não é cofre: legível em `docker inspect`, `/proc/1/environ` e no `.env` do host. Não é mitigação, é redistribuição |
 | **Cofre por usuário com Argon2id + chave em memória** | protege o dump frio e nada mais; falha diariamente por falta de chave após qualquer redeploy, e gera pressão previsível para "guardar a chave no servidor" — que colapsa o desenho na linha 1 do §2 |
 | **Leitor de TOTP / semente em variável / fila de código** | contornar controle de segurança do órgão |
@@ -918,32 +931,32 @@ Só se a TIC/PRODEB criar conta de serviço institucional com escopo de leitura 
 
 ## 12. Perguntas abertas — só o usuário responde
 
-**P1 — Onde fica o host? (a) VPS BR contratado pelo órgão ou (c) servidor interno.** — DECISÃO PENDENTE (A6)
+**P1 — Onde fica o host? (a) VPS BR contratado pelo órgão ou (c) servidor interno.** — **RESPONDIDA em 07/09/2026** (de fato, em 21/08/2026, pela escolha do dono: HostGator/EasyPanel — via **(a)**; região BR a confirmar `[a datar]`). *Texto original da recomendação, mantido porque a decisão real foi tomada em sentido contrário a ela:*
 *Recomendação:* **(c)**. *Custo de (c):* depende de Docker+Traefik liberados pela TIC, egresso permitido e fila de provisionamento interna — pode levar meses e não está sob controle da engenharia. *Custo de (a):* provisionamento em dias, mas o provedor entra na fronteira de confiança com acesso de hipervisor (sem controle de cifragem de disco, swap ou snapshot), exige contrato no CNPJ do órgão com cláusula de operador, e o passivo do art. 39 passa a existir. **(b) fora do Brasil: descartada por decisão, ver 9.6.**
 
-**P2 — A segunda coleta diária existe? Em que horário?** — DECISÃO PENDENTE
+**P2 — A segunda coleta diária existe? Em que horário?** — **PENDENTE** *(conferido em 07/09/2026)*
 *Recomendação:* **19:00**, dias úteis, fora do expediente. *Custo de manter em horário comercial:* ~15 min de sessão de robô com a unidade ativa da titular mudando durante o trabalho dela, duas vezes por dia — e isso precisa constar no termo A2. *Custo de 1x/dia apenas:* dado da tarde envelhece 24 h; para triagem com mediana de permanência de 9 dias, o impacto é baixo.
 
-**P3 — Quem assina A1-A6, e em que prazo?**
+**P3 — Quem assina A1-A6, e em que prazo?** — **PENDENTE** *(conferido em 07/09/2026)*
 *Recomendação:* fechar A1 e A2 primeiro (dependem de duas pessoas identificadas) e tocar A3/A4 em paralelo com o encarregado. *Custo de esperar todos:* o servidor não sobe, mas as Fatias 0-2 entregam melhoria real na estação. *Custo de subir antes:* expor por Traefik decide o §6 por omissão e cria tratamento sem controlador formalizado.
 
-**P4 — Pedir à TIC/PRODEB uma conta de serviço institucional com escopo de leitura?**
+**P4 — Pedir à TIC/PRODEB uma conta de serviço institucional com escopo de leitura?** — **PENDENTE** *(conferido em 07/09/2026)*
 *Recomendação:* **pedir**, como alvo de médio prazo, mesmo sabendo que a resposta pode demorar ou ser negativa. É a única saída que remove a imputação nominal. *Custo de pedir:* expõe formalmente a automação, e a TIC pode responder proibindo — que é uma resposta legítima e melhor de receber agora que depois. *Custo de não pedir:* a imputação nominal fica permanente e a Fatia 9 nunca se desbloqueia.
 
-**P5 — Quem tem conta no painel do EasyPanel e no host?** — precisa de lista nominal (A5)
+**P5 — Quem tem conta no painel do EasyPanel e no host?** — **PENDENTE**, precisa de lista nominal (A5) *(conferido em 07/09/2026)*
 *Recomendação:* o menor conjunto possível, com MFA obrigatório e restrição de origem na porta administrativa. *Custo de restringir:* dependência de poucas pessoas para operação. *Custo de não restringir:* esse conjunto é chave-mestra sobre a base inteira e sobre o log que deveria auditá-lo — segurança que depende de o administrador do PaaS ser irrepreensível não é segurança.
 
-**P6 — Quem gera os resumos, com que chave e com que verba?** — DECISÃO PENDENTE
+**P6 — Quem gera os resumos, com que chave e com que verba?** — **PENDENTE** *(conferido em 07/09/2026; as travas de código estão prontas — ver `PLANO_PRODUTO.md` Fatia 7 — a decisão de ligar, não)*
 Hoje **116 de 1.165 processos não têm resumo, e os 1.049 existentes descrevem a coleta de 13/08** sob um cabeçalho que diz 18/08. *Recomendação:* job com dono declarado, chave em secret, agendado após a coleta; enquanto não existir, selo de idade no card e contador no cabeçalho. *Custo de manter manual:* o campo mais lido da tela é o mais velho da tela, e a distância cresce um dia por dia. *Custo de automatizar:* chave de API, verba recorrente e mais um caminho que lê texto livre com dado de saúde — o que traz o RIPD junto.
 
-**P7 — A coleta continua na estação pessoal da titular ou vai para uma máquina dedicada?** — DECISÃO PENDENTE
+**P7 — A coleta continua na estação pessoal da titular ou vai para uma máquina dedicada?** — **PENDENTE** *(conferido em 07/09/2026; a taxa de 1 janela perdida em 6 já produziu 11 dias corridos parados — ver `PLANO_EXECUCAO_2026-09-07.md` §0)*
 *Recomendação:* **máquina dedicada** ligada permanentemente, com logon automático e sessão bloqueada. *Custo de manter na estação atual:* a taxa base observada é **1 janela perdida em 6** (14/08, sexta-feira, dia útil, sem execução) e a tarefa exige logon interativo. *Custo da dedicada:* um equipamento a mais sob a guarda de alguém, com o mesmo requisito de disco cifrado — e a credencial nominal continua sendo de pessoa física.
 
-**P8 — Quantas contas o painel terá: os 58 atribuídos ou só gestores?**
+**P8 — Quantas contas o painel terá: os 58 atribuídos ou só gestores?** — **PENDENTE** *(conferido em 07/09/2026; 62 contas já têm vínculo semeado por medição — §5-undecies do SPECS.md —, mas a decisão formal de quantas ATIVAR não foi tomada)*
 *Recomendação:* abrir para os 58, via auto-provisionamento semeado pelo snapshot com aprovação do admin. *Custo de abrir:* mais gente lendo a base, log de acesso maior, suporte. *Custo de restringir a 2-3 gestores:* o produto vira relatório de um gestor só — caso em que o servidor não se justificava e a Fase 3 inteira perde a razão.
 
-**P9 — O painel fica exposto na internet aberta ou atrás de VPN/IP do órgão?**
+**P9 — O painel fica exposto na internet aberta ou atrás de VPN/IP do órgão?** — **PENDENTE** *(conferido em 07/09/2026)*
 *Recomendação:* **atrás de VPN ou restrição de IP**, ao menos enquanto não houver segundo fator no painel. *Custo:* servidor em teletrabalho ou em celular precisa de VPN. *Custo de abrir:* uma tela de login sem MFA, com senha escolhida por usuário, protegendo dado sensível de saúde, encontrável por varredura de certificado.
 
-**P10 — Retenção: 30 dias de JSON bruto e 180 dias de log de acesso são aceitáveis?**
+**P10 — Retenção: 30 dias de JSON bruto e 180 dias de log de acesso são aceitáveis?** — **PENDENTE** *(conferido em 07/09/2026)*
 *Recomendação:* sim — 30 dias cobrem a janela de reprocessamento e 180 dias cobrem investigação de incidente. *Custo de reter mais:* cópias quase idênticas de dado pessoal acumulando, snapshot velho degradando qualidade (art. 6º, V) e atrapalhando pedido de correção (art. 18, III). *Custo de reter menos:* perde-se a capacidade de reconstruir o que o painel mostrava numa data passada.
