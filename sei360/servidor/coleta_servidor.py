@@ -220,19 +220,55 @@ def _achar_json(instancia, desde):
     return mais_novo
 
 
+# DE QUANTO EM QUANTO TEMPO ESTE MÓDULO MANDA PULSO. Bem abaixo de
+# `app.SEM_PULSO_MIN` (5 min) — a mesma varredura (`varrer_execucoes`) que
+# destrava estação de verdade travada marcava, achada em campo em 08/09/2026,
+# QUALQUER coleta de mais de 5 min como "travada" (exit_code 5), porque este
+# módulo nunca escrevia `heartbeat_em`. A coleta em si tinha terminado bem —
+# só o registro é que mentia, e mentia com a MESMA cara de uma trava real.
+_PULSO_S = 60
+
+
+def _pulsar(execucao_id, parar):
+    """Atualiza `heartbeat_em` a cada `_PULSO_S`, com conexão própria — esta
+    função roda numa thread separada, e conexão sqlite não se compartilha
+    entre threads. Nunca deixa uma exceção de pulso derrubar a coleta: um
+    pulso perdido é o pior caso que este laço já existe para evitar."""
+    while not parar.wait(_PULSO_S):
+        try:
+            c = banco.conectar()
+            try:
+                c.execute("UPDATE execucao SET heartbeat_em=? WHERE id=? AND estado='em_curso'",
+                         (banco.agora(), execucao_id))
+                c.commit()
+            finally:
+                c.close()
+        except Exception:                                          # noqa: BLE001
+            pass
+
+
 def _executar(agente_id, execucao_id, janela, instancia):
     """Roda uma coleta já reivindicada e publica o resultado. Nunca deixa a
     `execucao` presa em 'em_curso': todo caminho de saída grava um estado
     terminal, inclusive quando algo dá exceção no meio."""
     cx = banco.conectar()
     inicio = time.time()
+    parar_pulso = threading.Event()
+    pulso = None
     try:
         ag = cx.execute("SELECT dono_usuario_id FROM agentes WHERE id=?",
                         (agente_id,)).fetchone()
         uid = ag["dono_usuario_id"]
-        cx.execute("UPDATE execucao SET estado='em_curso', iniciado_em=? WHERE id=?",
-                   (banco.agora(), execucao_id))
+        cx.execute("UPDATE execucao SET estado='em_curso', iniciado_em=?, heartbeat_em=? WHERE id=?",
+                   (banco.agora(), banco.agora(), execucao_id))
         cx.commit()
+        # O PULSO SOBE ANTES DO SUBPROCESSO BLOQUEANTE. `coleta.coletar()` só
+        # devolve quando o coletor termina — até 30 min — e não há ponto
+        # nenhum no meio para escrever um heartbeat por conta própria; por
+        # isso ele mora numa thread à parte, não numa chamada síncrona aqui.
+        pulso = threading.Thread(target=_pulsar, args=(execucao_id, parar_pulso),
+                                 name=f"pulso-coleta-{execucao_id}", daemon=True)
+        pulso.start()
 
         codigo, saida = _coletar(uid, instancia)
         estado = _EXIT_PARA_ESTADO.get(codigo, "infra")
@@ -264,6 +300,9 @@ def _executar(agente_id, execucao_id, janela, instancia):
         estado, codigo, saida = "infra", None, f"falha no executor ({type(ex).__name__})"
         publicado = None
     finally:
+        parar_pulso.set()
+        if pulso is not None:
+            pulso.join(timeout=5)          # nunca bloqueia pra sempre por um pulso preso
         duracao = round(time.time() - inicio)
         try:
             cx.execute("""UPDATE execucao SET estado=?, terminado_em=?, duracao_s=?,

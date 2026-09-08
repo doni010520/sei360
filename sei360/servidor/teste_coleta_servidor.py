@@ -159,6 +159,39 @@ r3 = cs._decidir(cx, ag4)
 checar("recusa citando a execução em curso",
        r3[0] is None and str(ex) in r3[1], r3)
 
+print("\nH2. O PULSO ESCREVE heartbeat_em ENQUANTO 'em_curso' (bug real de 08/09/2026:")
+print("    sem isto, a faxina de app.varrer_execucoes marca QUALQUER coleta de mais")
+print("    de 5 min como 'travada', mesmo terminando bem)")
+import threading as _th
+_parar = _th.Event()
+_antes = cx.execute("SELECT heartbeat_em FROM execucao WHERE id=?", (ex,)).fetchone()["heartbeat_em"]
+_thread_pulso = _th.Thread(target=cs._pulsar, args=(ex, _parar), daemon=True)
+_pulso_s_original = cs._PULSO_S
+cs._PULSO_S = 0.05          # não espera 60s de verdade só para provar que pulsa
+_thread_pulso.start()
+time.sleep(0.3)
+_parar.set()
+_thread_pulso.join(timeout=2)
+cs._PULSO_S = _pulso_s_original
+_depois = cx.execute("SELECT heartbeat_em FROM execucao WHERE id=?", (ex,)).fetchone()["heartbeat_em"]
+checar("heartbeat_em muda de vazio para preenchido",
+       _antes is None and _depois is not None, (_antes, _depois))
+
+print("\nH3. O PULSO NÃO ESCREVE FORA DE 'em_curso' (não reviver execução já terminada)")
+cx.execute("UPDATE execucao SET estado='concluida', heartbeat_em=NULL WHERE id=?", (ex,))
+cx.commit()
+_parar2 = _th.Event()
+_thread_pulso2 = _th.Thread(target=cs._pulsar, args=(ex, _parar2), daemon=True)
+cs._PULSO_S = 0.05
+_thread_pulso2.start()
+time.sleep(0.3)
+_parar2.set()
+_thread_pulso2.join(timeout=2)
+cs._PULSO_S = _pulso_s_original
+_apos_concluida = cx.execute("SELECT heartbeat_em FROM execucao WHERE id=?", (ex,)).fetchone()["heartbeat_em"]
+checar("execução concluída não ganha heartbeat (WHERE estado='em_curso' no UPDATE)",
+       _apos_concluida is None, _apos_concluida)
+
 print("\nI. OS TRÊS MOTIVOS DE _motivo_servidor(), SEM CONFUNDIR UM COM O OUTRO")
 os.environ["SEI360_COLETA_SERVIDOR"] = "0"
 checar("desligado por variável: ligado() é False", cs.ligado() is False)
