@@ -148,7 +148,7 @@
     Nenhuma senha do SEI existe neste servidor — a ausência é decisão de arquitetura, não lacuna.
   </div>
   <table class="grade">
-    <tr><th>Estação</th><th>Unidades</th><th>Credencial</th><th>Versão</th><th>Último contato</th><th>Agendamento</th></tr>
+    <tr><th>Estação</th><th>Unidades</th><th>Credencial</th><th>Dono</th><th>Versão</th><th>Último contato</th><th>Agendamento</th></tr>
     {% for a in agentes %}
     <tr>
       <td><b>{{ a.nome_estacao }}</b>
@@ -162,6 +162,23 @@
       <td class="mono" style="font-size:10.5px">{{ a.unidades_esperadas }}</td>
       <td style="font-size:12px">{{ a.credencial_titular or '—' }}<br>
         <span class="mono" style="font-size:10.5px;color:var(--ink-3)">{{ a.credencial_login_mascarado or '' }}</span></td>
+      <td style="font-size:12px">
+        {# "Novo agente" (abaixo) nunca perguntou o dono — só o modo servidor
+           grava isto sozinho, ao nascer. Sem esta forma, ligar uma estação já
+           instalada à conta de quem tem a credencial exigia UPDATE direto no
+           banco pelo shell do host. #}
+        <form method="post" action="/admin/agente" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+          <input type="hidden" name="csrf" class="csrf">
+          <input type="hidden" name="acao" value="dono"><input type="hidden" name="id" value="{{ a.id }}">
+          <select name="dono_usuario_id" style="max-width:150px">
+            <option value="">— nenhum —</option>
+            {% for us in usuarios %}
+            <option value="{{ us.id }}" {% if a.dono_usuario_id==us.id %}selected{% endif %}>{{ us.email }}</option>
+            {% endfor %}
+          </select>
+          <button class="bt" type="submit" title="Quem tem a credencial do SEI usada por este agente">Salvar</button>
+        </form>
+      </td>
       <td class="mono">{{ a.versao_agente or '—' }}</td>
       <td class="mono" style="font-size:10.5px">{{ (a.ultimo_contato_em or 'nunca')[:16].replace('T',' ') }}</td>
       <td>
@@ -205,7 +222,7 @@
         </div>
       </td>
     </tr>
-    {% else %}<tr><td colspan="6" class="vazio-msg">nenhum agente cadastrado</td></tr>{% endfor %}
+    {% else %}<tr><td colspan="7" class="vazio-msg">nenhum agente cadastrado</td></tr>{% endfor %}
   </table>
 
   <div class="cartao" style="margin-top:16px">

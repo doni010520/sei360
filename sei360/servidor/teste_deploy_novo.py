@@ -129,6 +129,36 @@ escopo = json.loads(cx.execute("SELECT unidades_esperadas FROM agentes WHERE id=
 cx.close()
 checar(f"escopo gravado por texto livre ({escopo})", UNIDADE in escopo and len(escopo) == 2)
 
+# ---------------------------------------------------------------- 4b. o dono
+print("\n4b. dono do agente (estação física, ligada depois de criada)")
+# "Novo agente" (a estação física) nunca perguntou o dono — só o modo servidor
+# grava isso sozinho, ao nascer (`aplicar_agendamento`). Antes desta forma, ligar
+# uma estação já instalada à conta de quem tem a credencial exigia UPDATE direto
+# no banco pelo shell do host (foi o que aconteceu com FESF/Laisa, 08/09/2026).
+cx = conectar()
+cx.execute("""INSERT INTO usuarios(email,papel,criado_em) VALUES(?,?,datetime('now'))""",
+           ("dona.teste@fesfsus.ba.gov.br", "servidor"))
+uid_dona = cx.execute("SELECT last_insert_rowid()").fetchone()[0]
+cx.commit(); cx.close()
+
+r = c.get("/admin")
+checar("a tela oferece campo para ligar o agente a uma conta",
+       b'name="dono_usuario_id"' in r.data and b"dona.teste@fesfsus.ba.gov.br" in r.data)
+
+r = c.post("/admin/agente", data={"csrf": csrf, "acao": "dono", "id": str(aid),
+                                  "dono_usuario_id": str(uid_dona)})
+cx = conectar()
+dono = cx.execute("SELECT dono_usuario_id FROM agentes WHERE id=?", (aid,)).fetchone()[0]
+cx.close()
+checar(f"dono gravado pela tela (uid={dono})", dono == uid_dona)
+
+r = c.post("/admin/agente", data={"csrf": csrf, "acao": "dono", "id": str(aid),
+                                  "dono_usuario_id": ""})
+cx = conectar()
+dono = cx.execute("SELECT dono_usuario_id FROM agentes WHERE id=?", (aid,)).fetchone()[0]
+cx.close()
+checar("'— nenhum —' limpa o dono de volta para NULL", dono is None, str(dono))
+
 # ---------------------------------------------------------------- 5. publicação
 print("\n5. vínculo do agente e primeira publicação")
 import hashlib

@@ -2389,6 +2389,23 @@ def admin_agente():
                    (json.dumps(lista, ensure_ascii=False), aid))
         registrar(cx, request.usuario["usuario_id"], "editar_escopo_agente",
                   alvo=str(aid), unidade=";".join(lista) or "vazio")
+    elif f.get("acao") == "dono":
+        # DONO liga o agente a uma CONTA do sistema (banco.py: "sem dono, a
+        # trilha do SEI carimba um nome que o painel não sabe de quem é"). No
+        # modo servidor isso já nasce certo (`aplicar_agendamento` grava o uid
+        # de quem configurou), mas "Novo agente" — a estação física, instalada
+        # por um admin — nunca perguntou isso, e não existia tela para
+        # corrigir depois. A primeira vez que precisou (FESF/Laisa,
+        # 08/09/2026) só saiu com UPDATE direto no banco pelo shell do host.
+        bruto = (f.get("dono_usuario_id") or "").strip()
+        novo_dono = int(bruto) if bruto.isdigit() else None
+        cx.execute("UPDATE agentes SET dono_usuario_id=? WHERE id=?", (novo_dono, aid))
+        dono_email = None
+        if novo_dono:
+            r = cx.execute("SELECT email FROM usuarios WHERE id=?", (novo_dono,)).fetchone()
+            dono_email = r["email"] if r else None
+        registrar(cx, request.usuario["usuario_id"], "editar_dono_agente",
+                  alvo=str(aid), unidade=dono_email or "nenhum")
     elif f.get("acao") == "janela_extra":
         # Janela extra e ATO DE ADMIN, com autor gravado. Sem gatilho e autor, a
         # unica coleta fora de horario da carteira ficaria indistinguivel de uma
