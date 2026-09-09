@@ -1287,6 +1287,15 @@ def montar(rid, unidades, quem=None, usuario_id=None, login=None):
                                if len(medidos) > 1 else None)
     resultado["gerado_em"] = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
     resultado["grafico"] = None if rel.get("lista") else grafico(resultado)
+    # OS PROCESSOS QUE SUSTENTAM OS NÚMEROS. A planilha saía só com o agregado:
+    # "Sem responsável 137" e nenhum meio de saber QUAIS 137 — quem recebia por
+    # e-mail não tinha como conferir nem como agir, e voltava a pedir a lista à
+    # mão. Vai como SEGUNDA aba, com os campos que este relatório mediu, para a
+    # pessoa reproduzir qualquer linha filtrando na própria planilha.
+    # A fronteira é a mesma da tela: `dados` já veio recortado por unidade e por
+    # dono em `carregar()`, e a rota do .xlsx aplica o mesmo `pode_ver`.
+    resultado["processos"] = dados
+    resultado["campos_medidos"] = list(rel["campos"])
     return resultado
 
 
@@ -1298,6 +1307,90 @@ def _num_pct(cel):
         except ValueError:
             return cel
     return cel
+
+
+# A aba "Processos" da planilha: identificação primeiro, o que o relatório mediu
+# depois. Os rótulos são os da TELA — quem abre o .xlsx não conhece
+# `atribuido_nome` nem `_dias_unidade`, e nome de coluna de banco numa planilha
+# que circula por e-mail é ruído que a pessoa tem de decifrar.
+DETALHE_FIXO = [
+    ("protocolo",      "Processo"),
+    ("tipo_processo",  "Tipo"),
+    ("_unidades",      "Unidade(s) da minha carteira"),
+    ("_mesas",         "Aberto em (árvore do SEI)"),
+    ("atribuido_nome", "Responsável"),
+    ("_dias_unidade",  "Dias na unidade"),
+    ("_dias_parado",   "Dias sem movimento"),
+    ("marco_unidade",  "Entrou na unidade em"),
+]
+DETALHE_ROTULO = {
+    "visualizado":     "Tem marca de visualização",
+    "atribuido_login": "Login do responsável",
+    "doc_incluido":    "Documento novo",
+    "nivel_acesso":    "Nível de acesso",
+    "mesas_divergem":  "Árvore e andamento divergem",
+    "marcador":        "Marcador",
+    "origem":          "Origem",
+    "gerador_unidade": "Unidade geradora",
+    "documentos":      "Documentos",
+    "movimentos":      "Movimentos",
+    "_assuntos":       "Assuntos",
+    "assuntos":        "Assuntos",
+    "ultimo_movimento": "Último movimento",
+}
+
+
+def _cel_detalhe(v):
+    """Valor de processo -> célula. Lista vira texto, booleano vira sim/não."""
+    if v is None or v == "":
+        return ""
+    if isinstance(v, bool):
+        return "sim" if v else "não"
+    if isinstance(v, (list, tuple)):
+        return "; ".join(str(x) for x in v)
+    if isinstance(v, dict):
+        # `ultimo_movimento` é {dh, un, de}: interessa o que aconteceu e quando.
+        return " · ".join(str(v[k]) for k in ("dh", "un", "de") if v.get(k))
+    return v
+
+
+def _aba_processos(wb, resultado):
+    """Segunda aba: um processo por linha, com o que o relatório mediu."""
+    procs = resultado.get("processos")
+    if not procs:
+        return
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    colunas = list(DETALHE_FIXO)
+    ja = {c for c, _ in colunas}
+    for campo in resultado.get("campos_medidos") or []:
+        # `assuntos` chega como JSON cru da coluna; `_assuntos` é a lista já
+        # decodificada por `carregar()`. Na planilha vale a decodificada.
+        chave = "_assuntos" if campo == "assuntos" else campo
+        if chave not in ja:
+            colunas.append((chave, DETALHE_ROTULO.get(chave, campo)))
+            ja.add(chave)
+
+    ws = wb.create_sheet("Processos")
+    ws.append([f"Os {len(procs)} processo(s) por trás dos números da primeira aba."])
+    ws["A1"].font = Font(bold=True)
+    ws.append(["Filtre por uma coluna para reproduzir qualquer linha do relatório."])
+    ws.append([])
+    cab = ws._current_row + 1
+    ws.append([rot for _, rot in colunas])
+    for cel in ws[cab][:len(colunas)]:
+        cel.font = Font(bold=True, color="FFFFFF")
+        cel.fill = PatternFill("solid", fgColor="0F5257")
+        cel.alignment = Alignment(vertical="center")
+    for d in procs:
+        ws.append([_cel_detalhe(d.get(c)) for c, _ in colunas])
+    ws.freeze_panes = ws.cell(cab + 1, 1)
+    ws.auto_filter.ref = f"A{cab}:{get_column_letter(len(colunas))}{cab + len(procs)}"
+    for i, (chave, rot) in enumerate(colunas, 1):
+        largura = max([len(str(rot))] +
+                      [len(str(_cel_detalhe(d.get(chave)))) for d in procs[:200]])
+        ws.column_dimensions[get_column_letter(i)].width = min(52, max(12, largura + 3))
 
 
 def para_xlsx(resultado, caminho_ou_buffer):
@@ -1378,5 +1471,6 @@ def para_xlsx(resultado, caminho_ou_buffer):
         largura = max([len(str(resultado["colunas"][i-1]))] +
                       [len(str(l[i-1])) for l in resultado["linhas"] if len(l) >= i] or [10])
         ws.column_dimensions[get_column_letter(i)].width = min(60, max(12, largura + 3))
+    _aba_processos(wb, resultado)
     wb.save(caminho_ou_buffer)
     return caminho_ou_buffer

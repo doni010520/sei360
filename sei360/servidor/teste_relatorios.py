@@ -1815,6 +1815,57 @@ checar(f"todo resumo da carteira aparece na tela ({_na_tela} de {_no_banco})",
        f"banco tem {_no_banco}, a tela mostra {_na_tela} — chave montada e chave lida divergem")
 
 
+# ---------------------------------------------------------------------------
+# A PLANILHA LEVA OS PROCESSOS, não só o agregado.
+# Saía com "Sem responsável 137" e nenhum meio de saber QUAIS 137: quem recebia
+# por e-mail não tinha como conferir nem como agir, e voltava a pedir a lista à
+# mão. Teste de unidade do exportador — não depende de base semeada, de
+# propósito: o que está sob teste é o FORMATO do arquivo, não o número nele.
+# ---------------------------------------------------------------------------
+print("")
+print("planilha: a aba dos processos")
+import io as _io                                                  # noqa: E402
+
+from openpyxl import load_workbook                                # noqa: E402
+
+_procs = [
+    {"protocolo": "019.0001.2026.0000001-11", "tipo_processo": "Ofício",
+     "_unidades": ["SESAB/X"], "_mesas": ["SESAB/X", "SESAB/Y"], "atribuido_nome": None,
+     "_dias_unidade": 120, "_dias_parado": 300, "marco_unidade": "01/05/2026 09:00",
+     "visualizado": False, "doc_incluido": True, "mesas_divergem": True},
+    {"protocolo": "019.0001.2026.0000002-22", "tipo_processo": "Memorando",
+     "_unidades": ["SESAB/Y"], "_mesas": ["SESAB/Y"], "atribuido_nome": "Fulana",
+     "_dias_unidade": 3, "_dias_parado": 3, "marco_unidade": "06/09/2026 09:00",
+     "visualizado": True, "doc_incluido": False, "mesas_divergem": False},
+]
+_res = {"id": "triagem", "titulo": "Panorama de triagem", "pergunta": "?",
+        "colunas": ["Situação", "Processos"], "linhas": [["Sem responsável", 1]],
+        "total": 2, "procedencia": [], "cobertura": [], "destaques": [],
+        "medido_em": "09/09/2026", "gerado_em": "09/09/2026 15:00",
+        "processos": _procs,
+        "campos_medidos": ["visualizado", "doc_incluido", "mesas_divergem"]}
+_b = _io.BytesIO(); rel.para_xlsx(_res, _b); _b.seek(0)
+_wb = load_workbook(_b)
+checar("a planilha traz uma segunda aba com os processos",
+       "Processos" in _wb.sheetnames, str(_wb.sheetnames))
+_ws = _wb["Processos"]
+_cab = [c.value for c in _ws[4] if c.value]
+checar("o número do processo é a primeira coluna",
+       bool(_cab) and _cab[0] == "Processo", str(_cab[:3]))
+checar("os campos que o relatório MEDIU viram coluna",
+       "Árvore e andamento divergem" in _cab and "Documento novo" in _cab, str(_cab))
+_linhas = [list(r) for r in _ws.iter_rows(min_row=5, values_only=True)]
+checar(f"uma linha por processo ({len(_linhas)})", len(_linhas) == len(_procs))
+checar("booleano vira sim/não, e lista vira texto",
+       "sim" in _linhas[0] and "SESAB/X; SESAB/Y" in _linhas[0], str(_linhas[0]))
+checar("a aba tem filtro, que é como se reproduz cada linha do relatório",
+       bool(_ws.auto_filter.ref), str(_ws.auto_filter.ref))
+_res.pop("processos")
+_b2 = _io.BytesIO(); rel.para_xlsx(_res, _b2); _b2.seek(0)
+checar("sem processos no resultado, a planilha sai como antes",
+       load_workbook(_b2).sheetnames == ["Panorama de triagem"])
+
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)
