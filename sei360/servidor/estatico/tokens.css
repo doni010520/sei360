@@ -4,7 +4,7 @@
    POR QUE ESTE ARQUIVO EXISTE
    ---------------------------
    Até 09/09/2026 havia TRÊS paletas nunca reconciliadas: `painel_v2.html`
-   (sempre escuro, ciano #00D4FF, sem tema claro nenhum), `sei360.css` (claro
+   (sempre escuro, ciano #3FA9DD, sem tema claro nenhum), `sei360.css` (claro
    por padrão, azul #0d6ea8 — família de cor diferente) e `lateral.css` (sua
    própria terceira variação de azul-marinho e ciano, #0f172a/#22d3ee). O
    comentário no topo de lateral.css já admitia isso por escrito: "o painel e
@@ -70,18 +70,18 @@
   :root:not([data-tema="claro"]){
     --bg-app:#0A0E27; --bg-surface:#141A3A; --bg-surface-raised:#1B2347;
     --bg-hover:#202A52; --bg-active:#26315D;
-    --border-subtle:rgba(0,212,255,.14); --border-strong:rgba(0,212,255,.28);
-    --border-focus:#00D4FF;
+    --border-subtle:rgba(63,169,221,.14); --border-strong:rgba(63,169,221,.28);
+    --border-focus:#3FA9DD;
     --text-primary:#E8ECFF; --text-secondary:#8794C0;
     /* #7A87B5, não #5E6A95: o segundo mede ~3,2-3,7:1 sobre estas superfícies
        e reprova WCAG AA (4,5:1) — era o valor real de painel_v2.html até
        09/09/2026. #7A87B5 mede 4,81/5,39/5,53:1 conforme a superfície. */
     --text-muted:#7A87B5; --text-on-accent:#04121C;
-    --accent-primary:#00D4FF; --accent-hover:#5CE1FF; --accent-subtle:rgba(0,212,255,.14);
+    --accent-primary:#3FA9DD; --accent-hover:#5CE1FF; --accent-subtle:rgba(63,169,221,.14);
     --success-fg:#39FF14; --success-bg:rgba(57,255,20,.12);
     --warning-fg:#FFB800; --warning-bg:rgba(255,184,0,.12);
     --danger-fg:#FF5C8A;  --danger-bg:rgba(255,92,138,.12);
-    --info-fg:#00D4FF;    --info-bg:rgba(0,212,255,.12);
+    --info-fg:#3FA9DD;    --info-bg:rgba(63,169,221,.12);
     --shadow-1:0 1px 2px rgba(0,0,0,.3);
     --shadow-2:0 22px 46px -24px rgba(0,0,0,.6),0 2px 8px rgba(0,0,0,.35);
   }
@@ -89,15 +89,15 @@
 :root[data-tema="escuro"]{
   --bg-app:#0A0E27; --bg-surface:#141A3A; --bg-surface-raised:#1B2347;
   --bg-hover:#202A52; --bg-active:#26315D;
-  --border-subtle:rgba(0,212,255,.14); --border-strong:rgba(0,212,255,.28);
-  --border-focus:#00D4FF;
+  --border-subtle:rgba(63,169,221,.14); --border-strong:rgba(63,169,221,.28);
+  --border-focus:#3FA9DD;
   --text-primary:#E8ECFF; --text-secondary:#8794C0;
   --text-muted:#7A87B5; --text-on-accent:#04121C;
-  --accent-primary:#00D4FF; --accent-hover:#5CE1FF; --accent-subtle:rgba(0,212,255,.14);
+  --accent-primary:#3FA9DD; --accent-hover:#5CE1FF; --accent-subtle:rgba(63,169,221,.14);
   --success-fg:#39FF14; --success-bg:rgba(57,255,20,.12);
   --warning-fg:#FFB800; --warning-bg:rgba(255,184,0,.12);
   --danger-fg:#FF5C8A;  --danger-bg:rgba(255,92,138,.12);
-  --info-fg:#00D4FF;    --info-bg:rgba(0,212,255,.12);
+  --info-fg:#3FA9DD;    --info-bg:rgba(63,169,221,.12);
   --shadow-1:0 1px 2px rgba(0,0,0,.3);
   --shadow-2:0 22px 46px -24px rgba(0,0,0,.6),0 2px 8px rgba(0,0,0,.35);
 }

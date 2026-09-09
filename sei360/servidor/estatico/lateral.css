@@ -35,8 +35,8 @@
 :root{
   --lat-w: 256px;
   /* --lat-fundo/--lat-ciano ERAM #0f172a/#22d3ee — uma TERCEIRA variação de
-     azul-marinho e ciano, nem a de tokens.css (#0A0E27/#00D4FF) nem a de
-     painel_v2.html antes da migração (#0A0E27/#00D4FF também, mas por um
+     azul-marinho e ciano, nem a de tokens.css (#0A0E27/#3FA9DD) nem a de
+     painel_v2.html antes da migração (#0A0E27/#3FA9DD também, mas por um
      caminho de arquivo diferente). Três arquivos, três decisões de cor
      próximas demais para parecer erro, longe demais para se fundir — o
      achado central da auditoria de 09/09/2026.
@@ -45,7 +45,7 @@
      pode seguir --bg-app, que clareia no tema claro. O que se elimina aqui é
      a terceira VARIAÇÃO da cor escura, não a propriedade de nunca clarear. */
   --lat-fundo: #0A0E27;
-  --lat-ciano: #00D4FF;
+  --lat-ciano: #3FA9DD;
   --lat-linha: rgba(51,65,85,.6);
   --lat-texto: #94a3b8;   /* 6,96:1 sobre o fundo — rótulo em repouso */
   /* O subtítulo estava em #475569: 2,36:1, quase metade do mínimo AA de 4,5:1
@@ -99,7 +99,7 @@ body{ margin-left: var(--lat-w); }
 .lat-marca-icone{
   flex: 0 0 auto; width: 44px; height: 32px; display: inline-flex;
   color: var(--lat-ciano);
-  filter: drop-shadow(0 0 7px rgba(34,211,238,.35));
+  filter: drop-shadow(0 0 7px rgba(63,169,221,.35));
 }
 .lat-marca-icone svg{ width: 100%; height: 100%; display: block }
 /* O "IA" da íris é VAZADO: ele toma a cor do fundo da moldura, não uma cor
@@ -149,7 +149,7 @@ body{ margin-left: var(--lat-w); }
 }
 .lat-i.on svg{ color: var(--lat-ciano) }
 .lat-i.on .lat-i-txt b{ color: #fff }
-.lat-i.on .lat-i-txt i{ color: rgba(34,211,238,.8) }
+.lat-i.on .lat-i-txt i{ color: rgba(63,169,221,.8) }
 .lat-i-marca{ margin-left: auto; flex: 0 0 auto; width: 5px; height: 20px;
   border-radius: 99px; background: var(--lat-ciano) }
 :root[data-lateral="recolhido"] .lat-i-marca{ display: none }
