@@ -166,7 +166,16 @@ FAIXA = """
     compartilhada — configure a sua</a>{% endif %}
   {% if coleta.candidatos %}<span class="coleta-un alerta">
     <i class="pt pt-vermelho"></i>{{ coleta.candidatos }} snapshot(s) retido(s) para conferência</span>{% endif %}
-  {% if nao_configurado %}<a class="coleta-un alerta" href="/configuracao"
+  {# `not coleta.unidades` ANTES de `nao_configurado`, e nao so ele: os dois
+     nao sao a mesma pergunta. `nao_configurado` olha o assistente (sistema,
+     acesso, mesas, horarios); ZERO UNIDADE olha o resultado. Conta que
+     terminou o assistente e mesmo assim nao tem vinculo nenhum caia num vao:
+     a faixa dizia "nenhuma unidade vinculada a esta conta" e nao oferecia
+     saida nenhuma — justamente na tela onde a pessoa mais precisa dela.
+     Vista em producao com a conta de administracao, 09/09/2026. #}
+  {% if not coleta.unidades %}<a class="coleta-un alerta" href="/configuracao"
+    style="text-decoration:none">⚙ configure a sua coleta</a>
+  {% elif nao_configurado %}<a class="coleta-un alerta" href="/configuracao"
     style="text-decoration:none">⚙ configure a sua coleta</a>{% endif %}
 </div>
 """

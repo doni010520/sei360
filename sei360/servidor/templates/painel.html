@@ -744,7 +744,10 @@ html[data-tema="claro"] .pt-vazio{background:#c8ccd2}
     compartilhada — configure a sua</a>{% endraw %}{% endif %}{% raw %}
   {% endraw %}{% if coleta.candidatos %}{% raw %}<span class="coleta-un alerta">
     <i class="pt pt-vermelho"></i>{% endraw %}{{ coleta.candidatos }}{% raw %} snapshot(s) retido(s) para conferência</span>{% endraw %}{% endif %}{% raw %}
-  {% endraw %}{% if nao_configurado %}{% raw %}<a class="coleta-un alerta" href="/configuracao"
+  
+  {% endraw %}{% if not coleta.unidades %}{% raw %}<a class="coleta-un alerta" href="/configuracao"
+    style="text-decoration:none">⚙ configure a sua coleta</a>
+  {% endraw %}{% elif nao_configurado %}{% raw %}<a class="coleta-un alerta" href="/configuracao"
     style="text-decoration:none">⚙ configure a sua coleta</a>{% endraw %}{% endif %}{% raw %}
 </div>
 
