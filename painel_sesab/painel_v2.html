@@ -677,7 +677,7 @@ html[data-tema="claro"] .grupo-cab{background:#e6eef7}
   <span>Permanência</span><span>Processo · resumo · marcadores</span><span>Anotação e registros</span><span>Mesas e trâmite</span><span>Próxima etapa</span>
 </div>
 <div class="lista" id="lista"></div>
-<div class="vazio" id="vazio" style="display:none"><p>Nenhum processo corresponde aos filtros</p><button class="bt2" onclick="limpar()">Limpar filtros</button></div>
+<div class="vazio" id="vazio" style="display:none"><p id="vazioTxt">Nenhum processo corresponde aos filtros</p><button class="bt2" id="vazioBt" onclick="limpar()">Limpar filtros</button></div>
 </main>
 </div>
 
@@ -1231,7 +1231,19 @@ let render=function render(){
   $('nCampos').innerHTML=nCam?'<b>'+nCam+' ativo'+(nCam>1?'s':'')+'</b>':'';
   $('railN').textContent=(nTri+nCam+(F.acao?1:0)+(F.q?1:0))||'';
 
+  /* DOIS vazios diferentes. Falar em FILTRO nos dois mente para quem nunca
+     filtrou: conta recem-criada abre com 0 na base e lia "Nenhum processo
+     corresponde aos filtros", com um botao "Limpar filtros" que nao limpa nada
+     — nao ha filtro nenhum posto. O caminho real dela ("configure a sua
+     coleta") esta na faixa logo acima, entao aqui o bloco so precisa parar de
+     acusar um filtro inexistente e sair da frente. */
+  const semBase=!DADOS.length;
   $('vazio').style.display=r.length?'none':'block';
+  if(!r.length){
+    $('vazioTxt').textContent=semBase?'Nenhum processo nesta coleta'
+                                     :'Nenhum processo corresponde aos filtros';
+    $('vazioBt').style.display=semBase?'none':'';
+  }
   $('cols').style.display=r.length?'':'none';
 
   /* Render incremental: 1138 linhas com ficha completa travam a digitação na

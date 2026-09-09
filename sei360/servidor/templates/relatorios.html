@@ -23,7 +23,7 @@
     <span style="font-family:var(--rotulo);font-size:9.5px;letter-spacing:.18em;
                  text-transform:uppercase;color:var(--ink-3)">Dado de</span>
     {% for c in coleta.unidades %}
-      <span><i class="pt {{ c.cor }}" style="display:inline-block;width:7px;height:7px;
+      <span><i class="pt pt-{{ c.cor }}" style="display:inline-block;width:7px;height:7px;
         border-radius:50%;margin-right:5px"></i>{{ c.curta }} <b>{{ c.processos }}</b>
         <span style="color:var(--ink-3)">{{ c.texto }}</span></span>
     {% else %}

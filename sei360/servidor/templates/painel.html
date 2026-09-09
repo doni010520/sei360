@@ -562,16 +562,26 @@ html[data-tema="claro"] .grupo-cab{background:#e6eef7}
    que ensina a não ler o carimbo. */
 .coleta-un b.inst{font-size:9px;letter-spacing:.1em;padding:1px 5px;border-radius:4px;
   border:1px solid var(--line);opacity:.75;font-weight:600}
+/* `pt-vazio`, e NÃO `pt vazio` em duas classes. O painel já usa `.vazio` para
+   OUTRA coisa: o bloco de "nenhum processo encontrado" da lista, que tem
+   `padding:54px 20px` (painel_v2.html). Com `box-sizing:border-box`, esse
+   padding vencia o `width:7px;height:7px` daqui — o ponto de 7px virava uma
+   caixa de 42x109px e, com `border-radius:50%`, uma ELIPSE cinza gigante no
+   meio da faixa "Sua coleta". Aparecia exatamente para quem ainda não tem
+   unidade vinculada: a primeira tela de toda conta nova.
+   É a mesma armadilha de `.lateral` x `.moldura` que lateral.css documenta —
+   dois componentes diferentes não podem ter o mesmo nome. O ESTADO continua
+   se chamando "vazio" no Python (`c.cor`); o que ganha prefixo é a classe. */
+.pt{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
 /* Cores de estado com brilho suficiente para o fundo ESCURO do painel, que é o
    padrão dele. As anteriores (#2f6b41, #8a6d1f) foram escolhidas para papel
    branco e ficavam quase invisíveis sobre #0A0E27. */
-.pt{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
-.pt.verde{background:#37b56d}.pt.amarelo{background:#d4a72c}
-.pt.vermelho{background:#e5624a}.pt.vazio{background:#5b6478}
-html[data-tema="claro"] .pt.verde{background:#2f6b41}
-html[data-tema="claro"] .pt.amarelo{background:#8a6d1f}
-html[data-tema="claro"] .pt.vermelho{background:#a3391f}
-html[data-tema="claro"] .pt.vazio{background:#c8ccd2}
+.pt-verde{background:#37b56d}.pt-amarelo{background:#d4a72c}
+.pt-vermelho{background:#e5624a}.pt-vazio{background:#5b6478}
+html[data-tema="claro"] .pt-verde{background:#2f6b41}
+html[data-tema="claro"] .pt-amarelo{background:#8a6d1f}
+html[data-tema="claro"] .pt-vermelho{background:#a3391f}
+html[data-tema="claro"] .pt-vazio{background:#c8ccd2}
 </style></head><body>
 <aside class="moldura">
   <a class="lat-marca" href="/" title="SEI360 — carteira de processos da SESAB">
@@ -722,18 +732,18 @@ html[data-tema="claro"] .pt.vazio{background:#c8ccd2}
   {% endraw %}{% for c in coleta.unidades %}{% raw %}
     <span class="coleta-un {% endraw %}{{ '' if c.minha else 'emprestada' }}{% raw %}"
       title="{% endraw %}{{ c.instancia }}{% raw %} · {% endraw %}{{ c.unidade }}{% raw %} — {% endraw %}{{ c.texto }}{{ '' if c.minha else ' · coleta COMPARTILHADA: este número não veio do seu login no SEI' }}{% raw %}">
-      <i class="pt {% endraw %}{{ c.cor }}{% raw %}"></i>{% endraw %}{% if coleta.multi_instancia %}{% raw %}<b class="inst">{% endraw %}{{ c.rotulo }}{% raw %}</b>{% endraw %}{% endif %}{{ c.curta }}{% raw %}
+      <i class="pt pt-{% endraw %}{{ c.cor }}{% raw %}"></i>{% endraw %}{% if coleta.multi_instancia %}{% raw %}<b class="inst">{% endraw %}{{ c.rotulo }}{% raw %}</b>{% endraw %}{% endif %}{{ c.curta }}{% raw %}
       <b class="num">{% endraw %}{{ c.processos }}{% raw %}</b>
       <em>{% endraw %}{{ c.texto }}{% if not c.minha %}{% raw %} · compartilhada{% endraw %}{% endif %}{% raw %}</em></span>
   {% endraw %}{% else %}{% raw %}
-    <span class="coleta-un"><i class="pt vazio"></i>nenhuma unidade vinculada a esta conta</span>
+    <span class="coleta-un"><i class="pt pt-vazio"></i>nenhuma unidade vinculada a esta conta</span>
   {% endraw %}{% endfor %}{% raw %}
   
   {% endraw %}{% if coleta.compartilhadas %}{% raw %}<a class="coleta-un alerta" href="/configuracao"
     style="text-decoration:none">⚙ {% endraw %}{{ coleta.compartilhadas }}{% raw %} unidade(s) ainda com coleta
     compartilhada — configure a sua</a>{% endraw %}{% endif %}{% raw %}
   {% endraw %}{% if coleta.candidatos %}{% raw %}<span class="coleta-un alerta">
-    <i class="pt vermelho"></i>{% endraw %}{{ coleta.candidatos }}{% raw %} snapshot(s) retido(s) para conferência</span>{% endraw %}{% endif %}{% raw %}
+    <i class="pt pt-vermelho"></i>{% endraw %}{{ coleta.candidatos }}{% raw %} snapshot(s) retido(s) para conferência</span>{% endraw %}{% endif %}{% raw %}
   {% endraw %}{% if nao_configurado %}{% raw %}<a class="coleta-un alerta" href="/configuracao"
     style="text-decoration:none">⚙ configure a sua coleta</a>{% endraw %}{% endif %}{% raw %}
 </div>
@@ -833,7 +843,7 @@ html[data-tema="claro"] .pt.vazio{background:#c8ccd2}
   <span>Permanência</span><span>Processo · resumo · marcadores</span><span>Anotação e registros</span><span>Mesas e trâmite</span><span>Próxima etapa</span>
 </div>
 <div class="lista" id="lista"></div>
-<div class="vazio" id="vazio" style="display:none"><p>Nenhum processo corresponde aos filtros</p><button class="bt2" onclick="limpar()">Limpar filtros</button></div>
+<div class="vazio" id="vazio" style="display:none"><p id="vazioTxt">Nenhum processo corresponde aos filtros</p><button class="bt2" id="vazioBt" onclick="limpar()">Limpar filtros</button></div>
 </main>
 </div>
 
@@ -1396,7 +1406,19 @@ let render=function render(){
   $('nCampos').innerHTML=nCam?'<b>'+nCam+' ativo'+(nCam>1?'s':'')+'</b>':'';
   $('railN').textContent=(nTri+nCam+(F.acao?1:0)+(F.q?1:0))||'';
 
+  /* DOIS vazios diferentes. Falar em FILTRO nos dois mente para quem nunca
+     filtrou: conta recem-criada abre com 0 na base e lia "Nenhum processo
+     corresponde aos filtros", com um botao "Limpar filtros" que nao limpa nada
+     — nao ha filtro nenhum posto. O caminho real dela ("configure a sua
+     coleta") esta na faixa logo acima, entao aqui o bloco so precisa parar de
+     acusar um filtro inexistente e sair da frente. */
+  const semBase=!DADOS.length;
   $('vazio').style.display=r.length?'none':'block';
+  if(!r.length){
+    $('vazioTxt').textContent=semBase?'Nenhum processo nesta coleta'
+                                     :'Nenhum processo corresponde aos filtros';
+    $('vazioBt').style.display=semBase?'none':'';
+  }
   $('cols').style.display=r.length?'':'none';
 
   /* Render incremental: 1138 linhas com ficha completa travam a digitação na

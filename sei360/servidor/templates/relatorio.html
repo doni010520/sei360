@@ -21,7 +21,7 @@
     <span style="font-family:var(--rotulo);font-size:9.5px;letter-spacing:.18em;
                  text-transform:uppercase;color:var(--ink-3)">Dado de</span>
     {% for p in r.procedencia %}
-      <span><i class="pt {{ p.cor }}" style="display:inline-block;width:7px;height:7px;
+      <span><i class="pt pt-{{ p.cor }}" style="display:inline-block;width:7px;height:7px;
         border-radius:50%;margin-right:5px"></i>{{ p.unidade.split('/')[-1] }}
         <span style="color:var(--ink-3)">{{ p.texto }}</span></span>
     {% endfor %}

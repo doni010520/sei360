@@ -144,11 +144,11 @@ CABECA = (
 UNIDADES_COLETA = """  {% for c in coleta.unidades %}
     <span class="coleta-un {{ '' if c.minha else 'emprestada' }}"
       title="{{ c.instancia }} · {{ c.unidade }} — {{ c.texto }}{{ '' if c.minha else ' · coleta COMPARTILHADA: este número não veio do seu login no SEI' }}">
-      <i class="pt {{ c.cor }}"></i>{% if coleta.multi_instancia %}<b class="inst">{{ c.rotulo }}</b>{% endif %}{{ c.curta }}
+      <i class="pt pt-{{ c.cor }}"></i>{% if coleta.multi_instancia %}<b class="inst">{{ c.rotulo }}</b>{% endif %}{{ c.curta }}
       <b class="num">{{ c.processos }}</b>
       <em>{{ c.texto }}{% if not c.minha %} · compartilhada{% endif %}</em></span>
   {% else %}
-    <span class="coleta-un"><i class="pt vazio"></i>nenhuma unidade vinculada a esta conta</span>
+    <span class="coleta-un"><i class="pt pt-vazio"></i>nenhuma unidade vinculada a esta conta</span>
   {% endfor %}"""
 
 # Idade do snapshot POR UNIDADE. O painel solto mostra uma idade só, do arquivo
@@ -165,7 +165,7 @@ FAIXA = """
     style="text-decoration:none">⚙ {{ coleta.compartilhadas }} unidade(s) ainda com coleta
     compartilhada — configure a sua</a>{% endif %}
   {% if coleta.candidatos %}<span class="coleta-un alerta">
-    <i class="pt vermelho"></i>{{ coleta.candidatos }} snapshot(s) retido(s) para conferência</span>{% endif %}
+    <i class="pt pt-vermelho"></i>{{ coleta.candidatos }} snapshot(s) retido(s) para conferência</span>{% endif %}
   {% if nao_configurado %}<a class="coleta-un alerta" href="/configuracao"
     style="text-decoration:none">⚙ configure a sua coleta</a>{% endif %}
 </div>
@@ -204,7 +204,7 @@ FAIXA_SOLTA = """
     {% if coleta.compartilhadas %}<span class="coleta-un alerta">{{ coleta.compartilhadas }}
       unidade(s) com coleta compartilhada — o número não veio do login desta conta</span>{% endif %}
     {% if coleta.candidatos %}<span class="coleta-un alerta">
-      <i class="pt vermelho"></i>{{ coleta.candidatos }} snapshot(s) retido(s) para conferência</span>{% endif %}
+      <i class="pt pt-vermelho"></i>{{ coleta.candidatos }} snapshot(s) retido(s) para conferência</span>{% endif %}
   </div>
   <div class="proc-aviso">Este arquivo <b>não se atualiza</b>: ele é o retrato da carteira
     no momento acima e continuará dizendo o mesmo daqui a um mês. Os dias contados nas
@@ -272,16 +272,26 @@ ESTILO = """
    que ensina a não ler o carimbo. */
 .coleta-un b.inst{font-size:9px;letter-spacing:.1em;padding:1px 5px;border-radius:4px;
   border:1px solid var(--line);opacity:.75;font-weight:600}
+/* `pt-vazio`, e NÃO `pt vazio` em duas classes. O painel já usa `.vazio` para
+   OUTRA coisa: o bloco de "nenhum processo encontrado" da lista, que tem
+   `padding:54px 20px` (painel_v2.html). Com `box-sizing:border-box`, esse
+   padding vencia o `width:7px;height:7px` daqui — o ponto de 7px virava uma
+   caixa de 42x109px e, com `border-radius:50%`, uma ELIPSE cinza gigante no
+   meio da faixa "Sua coleta". Aparecia exatamente para quem ainda não tem
+   unidade vinculada: a primeira tela de toda conta nova.
+   É a mesma armadilha de `.lateral` x `.moldura` que lateral.css documenta —
+   dois componentes diferentes não podem ter o mesmo nome. O ESTADO continua
+   se chamando "vazio" no Python (`c.cor`); o que ganha prefixo é a classe. */
+.pt{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
 /* Cores de estado com brilho suficiente para o fundo ESCURO do painel, que é o
    padrão dele. As anteriores (#2f6b41, #8a6d1f) foram escolhidas para papel
    branco e ficavam quase invisíveis sobre #0A0E27. */
-.pt{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
-.pt.verde{background:#37b56d}.pt.amarelo{background:#d4a72c}
-.pt.vermelho{background:#e5624a}.pt.vazio{background:#5b6478}
-html[data-tema="claro"] .pt.verde{background:#2f6b41}
-html[data-tema="claro"] .pt.amarelo{background:#8a6d1f}
-html[data-tema="claro"] .pt.vermelho{background:#a3391f}
-html[data-tema="claro"] .pt.vazio{background:#c8ccd2}
+.pt-verde{background:#37b56d}.pt-amarelo{background:#d4a72c}
+.pt-vermelho{background:#e5624a}.pt-vazio{background:#5b6478}
+html[data-tema="claro"] .pt-verde{background:#2f6b41}
+html[data-tema="claro"] .pt-amarelo{background:#8a6d1f}
+html[data-tema="claro"] .pt-vermelho{background:#a3391f}
+html[data-tema="claro"] .pt-vazio{background:#c8ccd2}
 </style>
 """
 
