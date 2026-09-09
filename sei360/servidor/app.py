@@ -100,6 +100,26 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 # O template guarda a lista de unidades do agente como JSON. Sem este filtro a
 # tela imprimiria o texto cru '["A","B"]' na caixa de edicao.
 app.jinja_env.filters["fromjson"] = lambda s: json.loads(s or "[]")
+
+
+def _iniciais(nome, email):
+    """Iniciais do avatar de 26px na lateral (`.lat-av`) — da PESSOA, não do
+    login. Até 09/09/2026 vinham sempre de `email[:2]`, o mesmo defeito do
+    rótulo ao lado (ver `_nav.html`): a conta tem `usuarios.nome` desde a
+    criação, mas a marcação nunca olhava para ele.
+
+    Nome com duas palavras ou mais usa a primeira letra da primeira e da
+    última ('Laisa Menezes' -> 'LM'). Nome de uma palavra só, ou conta sem
+    nome (bootstrap, contas antigas), cai no comportamento de antes."""
+    partes = (nome or "").split()
+    if len(partes) >= 2:
+        return (partes[0][0] + partes[-1][0]).upper()
+    if partes and len(partes[0]) >= 2:
+        return partes[0][:2].upper()
+    return (email or "??")[:2].upper()
+
+
+app.jinja_env.filters["iniciais"] = _iniciais
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024      # coleta chega a ~2,5 MB
 COOKIE = "sei360_sess"
 COOKIE_CSRF = "sei360_csrf"

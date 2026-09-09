@@ -106,6 +106,21 @@ checar("login com a senha nova entra no sistema",
        r.status_code == 200 and r.get_json().get("destino") == "/", str(r.get_json()))
 r = c.get("/admin")
 checar("/admin abre", r.status_code == 200, str(r.status_code))
+# A moldura lateral (`_nav.html`) mostrava o LOGIN acima do botão "Sair" —
+# `admin@sei360.local` virava "admin" — mesmo com `usuarios.nome` preenchido
+# desde a criação da conta (`semear.py` grava "Administração SEI360" para o
+# bootstrap). Esta conta é o caso perfeito para pegar a regressão: nome e
+# e-mail são visivelmente diferentes.
+_corpo_admin = r.data.decode("utf-8", "replace")
+# O par <b>nome</b><i>papel</i> é o `.lat-quem-txt` inteiro (ver `_nav.html`) —
+# comparar só isso, e não "admin" avulso, importa: a MESMA palavra "admin"
+# aparece de novo na tela, sem relação nenhuma, no rótulo do papel na política
+# de segundo fator ("Segundo fator para <b>admin</b>").
+checar("a lateral mostra o NOME da conta, não o login",
+       "<b>Administração SEI360</b><i>admin</i>" in _corpo_admin
+       and "<b>admin</b><i>admin</i>" not in _corpo_admin)
+checar("e as iniciais do avatar vêm do nome (AS), não do e-mail (AD)",
+       'lat-av">AS<' in _corpo_admin)
 
 # ---------------------------------------------------------------- 4. o impasse
 print("\n4. o impasse do escopo (agente novo x nenhuma unidade conhecida)")

@@ -596,9 +596,10 @@ html[data-tema="claro"] .pt.vazio{background:#c8ccd2}
   </nav>
 
   <div class="lat-pe">
+    
     <div class="lat-quem" title="{% endraw %}{{ u.email }}{% raw %}">
-      <span class="lat-av">{% endraw %}{{ u.email[:2]|upper }}{% raw %}</span>
-      <span class="lat-quem-txt"><b>{% endraw %}{{ u.email.split('@')[0] }}{% raw %}</b><i>{% endraw %}{{ u.papel }}{% raw %}</i></span>
+      <span class="lat-av">{% endraw %}{{ u.nome|iniciais(u.email) }}{% raw %}</span>
+      <span class="lat-quem-txt"><b>{% endraw %}{{ u.nome or u.email.split('@')[0] }}{% raw %}</b><i>{% endraw %}{{ u.papel }}{% raw %}</i></span>
     </div>
     
     <form method="post" action="/sair" style="margin:0">

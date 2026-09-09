@@ -33,9 +33,14 @@
   </nav>
 
   <div class="lat-pe">
+    {# Mostrava o LOGIN (a parte antes do @), não o nome — mesmo com
+       `usuarios.nome` preenchido desde a criação da conta. `u.nome or ...`
+       é o mesmo idioma que `montar_painel.py` já usa na faixa de procedência
+       do painel exportado; cai no e-mail só quando a conta não tem nome
+       (bootstrap, contas antigas). #}
     <div class="lat-quem" title="{{ u.email }}">
-      <span class="lat-av">{{ u.email[:2]|upper }}</span>
-      <span class="lat-quem-txt"><b>{{ u.email.split('@')[0] }}</b><i>{{ u.papel }}</i></span>
+      <span class="lat-av">{{ u.nome|iniciais(u.email) }}</span>
+      <span class="lat-quem-txt"><b>{{ u.nome or u.email.split('@')[0] }}</b><i>{{ u.papel }}</i></span>
     </div>
     {# "Sair" sozinho já foi lido como "sair desta tela". Dizer de ONDE se sai
        remove a dúvida no único lugar onde ela custa caro: a estação compartilhada. #}
