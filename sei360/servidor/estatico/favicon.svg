@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Favicon do SEI360: versão simplificada da marca (o "olho" do logo
+       em login.html), mesma forma e mesmas cores (fundo #0A0E27, ciano
+       #00D4FF). Sem o anel tracejado, os quatro traços cardeais e o
+       texto "IA" — ilegíveis em 16 a 32px, virariam ruído. -->
+  <rect width="64" height="64" rx="14" fill="#0A0E27"/>
+  <path d="M8 32 Q32 17 56 32 Q32 47 8 32 Z" fill="none" stroke="#00D4FF"
+        stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="32" cy="32" r="11" fill="#00D4FF" opacity=".18"/>
+  <circle cx="32" cy="32" r="8" fill="#00D4FF"/>
+  <circle cx="35.2" cy="28.6" r="1.6" fill="#FFFFFF" opacity=".85"/>
+</svg>

@@ -50,7 +50,25 @@ saiu — ela não envelhece sozinha, ela só fica velha e diz que está.
 import base64
 from pathlib import Path
 
-ORIGEM = Path(r"C:\Claude\sei_sistema\painel_sesab\painel_v2.html")
+
+def _achar_origem():
+    """Onde está `painel_v2.html`. Caminho relativo, não absoluto fixo — um
+    absoluto (`C:\\Claude\\sei_sistema\\...`) já sobreviveu à separação deste
+    repositório da árvore antiga: o script continuava lendo a fonte de LÁ, e
+    uma edição aqui nunca aparecia no gerado, sem erro nenhum avisando disso
+    (achado ao adicionar o favicon, 09/09/2026). `painel_sesab/` é irmã de
+    `sei360/`, duas pastas acima deste arquivo.
+    """
+    aqui = Path(__file__).resolve().parent
+    candidatos = (aqui.parent.parent / "painel_sesab" / "painel_v2.html",
+                 Path(r"C:\Claude\sei_sistema\painel_sesab\painel_v2.html"))
+    for c in candidatos:
+        if c.exists():
+            return c
+    return candidatos[0]
+
+
+ORIGEM = _achar_origem()
 DESTINO = Path(__file__).resolve().parent / "templates" / "painel.html"
 DESTINO_SOLTO = Path(__file__).resolve().parent / "templates" / "painel_solto.html"
 VENDOR = Path(__file__).resolve().parent / "estatico" / "vendor"
