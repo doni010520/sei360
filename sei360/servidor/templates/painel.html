@@ -19,7 +19,15 @@
   --bg:#0A0E27; --bg-2:#070B20; --bg-3:#05081A;
   --panel:rgba(9,14,38,.74); --panel-2:rgba(7,11,32,.9);
   --line:rgba(0,212,255,.12); --line-2:rgba(0,212,255,.26); --line-3:rgba(0,212,255,.42);
-  --text:#E8ECFF; --muted:#8794C0; --muted-2:#5E6A95;
+  --text:#E8ECFF; --muted:#8794C0;
+  /* ERA #5E6A95: ~3,2-3,7:1 conforme a superfície, reprova WCAG AA (4,5:1) —
+     e é a cor de .kpi .sub, do rótulo de cada indicador e da fatia % de cada
+     barra do gráfico. sei360.css já tinha medido este MESMO valor, reprovado
+     e trocado por #7A87B5 (4,81/5,39/5,53:1) na própria folha — a correção
+     nunca tinha sido copiada para cá. Achado da auditoria de UI/UX de
+     09/09/2026; ver também tokens.css --text-muted, que agora usa o mesmo
+     valor para o produto inteiro. */
+  --muted-2:#7A87B5;
   --cyan:#00D4FF; --cyan-dim:rgba(0,212,255,.35);
   --neon:#39FF14; --amber:#FFB800; --rose:#FF5C8A;
   --accent:var(--cyan); --alerta:var(--rose); --ok:var(--neon); --espera:var(--amber);

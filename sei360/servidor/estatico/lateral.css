@@ -34,7 +34,18 @@
    Uma deslizada de 300ms não paga um controle que mente. */
 :root{
   --lat-w: 256px;
-  --lat-fundo: #0f172a;
+  /* --lat-fundo/--lat-ciano ERAM #0f172a/#22d3ee — uma TERCEIRA variação de
+     azul-marinho e ciano, nem a de tokens.css (#0A0E27/#00D4FF) nem a de
+     painel_v2.html antes da migração (#0A0E27/#00D4FF também, mas por um
+     caminho de arquivo diferente). Três arquivos, três decisões de cor
+     próximas demais para parecer erro, longe demais para se fundir — o
+     achado central da auditoria de 09/09/2026.
+     Literais, e não var(--bg-app)/var(--accent-primary): a moldura é SEMPRE
+     escura, nos dois temas (ver o comentário no topo do arquivo) — ela não
+     pode seguir --bg-app, que clareia no tema claro. O que se elimina aqui é
+     a terceira VARIAÇÃO da cor escura, não a propriedade de nunca clarear. */
+  --lat-fundo: #0A0E27;
+  --lat-ciano: #00D4FF;
   --lat-linha: rgba(51,65,85,.6);
   --lat-texto: #94a3b8;   /* 6,96:1 sobre o fundo — rótulo em repouso */
   /* O subtítulo estava em #475569: 2,36:1, quase metade do mínimo AA de 4,5:1
@@ -43,7 +54,6 @@
   --lat-fraco: #8496ad;   /* 5,91:1 */
   --lat-icone: #64748b;   /* SÓ traço de ícone: 3,75:1 passa em não-texto, não em texto */
   --lat-texto-2: #94a3b8; /* texto secundário que antes reusava a cor de ícone */
-  --lat-ciano: #22d3ee;
 }
 :root[data-lateral="recolhido"]{ --lat-w: 68px; }
 

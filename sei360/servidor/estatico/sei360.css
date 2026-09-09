@@ -10,18 +10,21 @@
    =========================================================================== */
 :root{
   color-scheme:light;
-  /* Mesmos valores do painel (medidos nele, em execução). O painel chama de
-     --bg/--panel/--text/--cyan; aqui os nomes locais continuam, para as regras
-     desta folha não precisarem ser reescritas uma a uma. */
-  --paper:#eef2f8; --card:#fff; --sunk:#e9eff7;
-  --ink:#101a2b; --ink-2:#45526c; --ink-3:#5c6880;
-  --rule:rgba(16,62,105,.14); --rule-2:rgba(16,62,105,.24);
-  --accent:#0d6ea8; --accent-2:#1183c4; --accent-soft:rgba(13,110,168,.10);
-  --alerta:#b3304f; --alerta-soft:rgba(179,48,79,.10);
-  --ok:#1d7a33; --ok-soft:rgba(29,122,51,.10);
-  --espera:#8a6209; --espera-soft:rgba(138,98,9,.10);
-  --sombra-1:0 1px 2px rgba(16,62,105,.06);
-  --sombra-2:0 18px 40px -26px rgba(16,62,105,.35),0 2px 6px rgba(16,62,105,.06);
+  /* Desde 09/09/2026 os VALORES vêm de tokens.css (carregada antes desta
+     folha) — uma fonte só para as três folhas do produto (esta, lateral.css
+     e o `<style>` de painel_v2.html), no lugar de três paletas paralelas.
+     Os nomes locais continuam, para as ~180 regras abaixo não precisarem
+     ser reescritas uma a uma: cada uma delas já lê var(--paper) etc., e
+     `var()` é referência viva — muda sozinha quando o tema muda, sem
+     redeclarar nada aqui por tema. */
+  --paper:var(--bg-app); --card:var(--bg-surface); --sunk:var(--bg-surface-raised);
+  --ink:var(--text-primary); --ink-2:var(--text-secondary); --ink-3:var(--text-muted);
+  --rule:var(--border-subtle); --rule-2:var(--border-strong);
+  --accent:var(--accent-primary); --accent-2:var(--accent-hover); --accent-soft:var(--accent-subtle);
+  --alerta:var(--danger-fg); --alerta-soft:var(--danger-bg);
+  --ok:var(--success-fg); --ok-soft:var(--success-bg);
+  --espera:var(--warning-fg); --espera-soft:var(--warning-bg);
+  --sombra-1:var(--shadow-1); --sombra-2:var(--shadow-2);
   --display:'Space Grotesk',system-ui,sans-serif;
   --rotulo:Inter,system-ui,sans-serif;
   --ui:Inter,system-ui,sans-serif;
@@ -30,52 +33,11 @@
      azul do painel, vira ruído. */
   --r:8px; --r2:10px; --grao:0;
 }
-:root[data-tema="escuro"]{
-  color-scheme:dark;
-  /* ELEVAÇÃO, não translucidez. `rgba(9,14,38,.74)` foi copiado do painel, onde
-     funciona porque o fundo de lá é um gradiente com brilhos radiais que a
-     translucidez deixa passar. Aqui o fundo é chapado e a mesma cor compõe
-     exatamente o fundo: medido, dava 1,00 de razão — tabela, cartão e gráfico
-     sem superfície, existindo só pelo fio de 1px.
-     Agora: `--sunk` abaixo do papel, `--card` acima dele. */
-  --paper:#0A0E27; --card:#141A3A; --sunk:#070B20;
-  --ink:#E8ECFF; --ink-2:#8794C0;
-  /* #5E6A95 dava 3,21:1 sobre o cartão, 3,59 sobre o papel e 3,68 sobre o
-     rebaixo — reprova AA (4,5:1) nas três, e é a cor da fatia % de cada
-     barra do gráfico, do rótulo de cada indicador e de TODO <label>.
-     #7A87B5: 4,81 / 5,39 / 5,53, mantendo a hierarquia abaixo de --ink-2. */
-  --ink-3:#7A87B5;
-  --rule:rgba(0,212,255,.12); --rule-2:rgba(0,212,255,.26);
-  --accent:#00D4FF; --accent-2:#5CE1FF; --accent-soft:rgba(0,212,255,.12);
-  --alerta:#FF5C8A; --alerta-soft:rgba(255,92,138,.12);
-  --ok:#39FF14; --ok-soft:rgba(57,255,20,.10);
-  --espera:#FFB800; --espera-soft:rgba(255,184,0,.12);
-  --sombra-2:0 22px 46px -24px rgba(0,0,0,.7),0 2px 8px rgba(0,0,0,.35);
-  --grao:0;
-}
-@media(prefers-color-scheme:dark){:root:not([data-tema="claro"]){
-  color-scheme:dark;
-  /* ELEVAÇÃO, não translucidez. `rgba(9,14,38,.74)` foi copiado do painel, onde
-     funciona porque o fundo de lá é um gradiente com brilhos radiais que a
-     translucidez deixa passar. Aqui o fundo é chapado e a mesma cor compõe
-     exatamente o fundo: medido, dava 1,00 de razão — tabela, cartão e gráfico
-     sem superfície, existindo só pelo fio de 1px.
-     Agora: `--sunk` abaixo do papel, `--card` acima dele. */
-  --paper:#0A0E27; --card:#141A3A; --sunk:#070B20;
-  --ink:#E8ECFF; --ink-2:#8794C0;
-  /* #5E6A95 dava 3,21:1 sobre o cartão, 3,59 sobre o papel e 3,68 sobre o
-     rebaixo — reprova AA (4,5:1) nas três, e é a cor da fatia % de cada
-     barra do gráfico, do rótulo de cada indicador e de TODO <label>.
-     #7A87B5: 4,81 / 5,39 / 5,53, mantendo a hierarquia abaixo de --ink-2. */
-  --ink-3:#7A87B5;
-  --rule:rgba(0,212,255,.12); --rule-2:rgba(0,212,255,.26);
-  --accent:#00D4FF; --accent-2:#5CE1FF; --accent-soft:rgba(0,212,255,.12);
-  --alerta:#FF5C8A; --alerta-soft:rgba(255,92,138,.12);
-  --ok:#39FF14; --ok-soft:rgba(57,255,20,.10);
-  --espera:#FFB800; --espera-soft:rgba(255,184,0,.12);
-  --sombra-2:0 22px 46px -24px rgba(0,0,0,.7),0 2px 8px rgba(0,0,0,.35);
-  --grao:0;
-}}
+/* Só `color-scheme` muda aqui — é propriedade nativa do navegador (afeta
+   scrollbar, checkbox), não variável, e por isso não vem de tokens.css. Toda
+   COR já respondeu ao tema um parágrafo acima, via var(). */
+:root[data-tema="escuro"]{ color-scheme:dark; }
+@media(prefers-color-scheme:dark){:root:not([data-tema="claro"]){ color-scheme:dark; }}
 *{box-sizing:border-box}
 html,body{background:var(--paper)}
 body{margin:0;color:var(--ink);font-family:var(--ui);font-size:14px;line-height:1.55;
@@ -175,7 +137,12 @@ button.primario:disabled{opacity:.55;cursor:progress}
 .bt:hover{border-color:var(--accent);color:var(--accent)}
 .bt.forte{background:var(--ink);color:var(--paper);border-color:var(--ink)}
 .bt.risco{border-color:var(--alerta);color:var(--alerta)}
-.folha{max-width:1240px;margin:0 auto;padding:26px 22px 70px}
+/* 1240px era plausível em notebook (1366px), mas parava ~1300px de sobra
+   parada num monitor de 2560px enquanto a lista de usuários e agentes
+   continuava paginando de 25 em 25 — achado da auditoria de 09/09/2026. O
+   painel já usa 1760px (`.wrap`, painel_v2.html); as telas de serviço passam
+   a usar o mesmo teto, em vez de um segundo número escolhido à parte. */
+.folha{max-width:1760px;margin:0 auto;padding:26px 22px 70px}
 h2.sec{font-family:var(--rotulo);font-variation-settings:"wght" 600,"wdth" 87;font-weight:400;
   font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);
   margin:30px 0 12px;display:flex;align-items:center;gap:10px}
