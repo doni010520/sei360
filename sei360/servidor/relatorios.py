@@ -117,7 +117,11 @@ def faixa_de(n):
 # problema deixa de existir; se um relatório futuro precisar do resumo, o JOIN
 # volta COM `instancia` e com nome.
 COLUNAS = [
-    "id_sei", "snapshot_id", "protocolo", "tipo_processo", "atribuido_nome",
+    # `especificacao` e o TITULO que a pessoa reconhece — "PACTUACAO LINHA DE
+    # CUIDADO HTLV", nao "019.2403.2024.0013423-96". Ficou fora por anos e o
+    # efeito so apareceu quando a planilha passou a listar processo a processo:
+    # uma coluna de numeros de 25 digitos que ninguem consegue ler.
+    "id_sei", "snapshot_id", "protocolo", "especificacao", "tipo_processo", "atribuido_nome",
     "atribuido_login", "marco_unidade", "visualizado", "doc_incluido",
     "marcador", "assuntos", "origem", "gerador_unidade", "nivel_acesso",
     "mesas_divergem", "documentos", "movimentos", "ultimo_movimento", "medido_em",
@@ -1315,6 +1319,7 @@ def _num_pct(cel):
 # que circula por e-mail é ruído que a pessoa tem de decifrar.
 DETALHE_FIXO = [
     ("protocolo",      "Processo"),
+    ("especificacao",  "Especificação"),
     ("tipo_processo",  "Tipo"),
     ("_unidades",      "Unidade(s) da minha carteira"),
     ("_mesas",         "Aberto em (árvore do SEI)"),
