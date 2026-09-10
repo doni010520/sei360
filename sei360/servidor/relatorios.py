@@ -117,11 +117,15 @@ def faixa_de(n):
 # problema deixa de existir; se um relatório futuro precisar do resumo, o JOIN
 # volta COM `instancia` e com nome.
 COLUNAS = [
-    # `especificacao` e o TITULO que a pessoa reconhece — "PACTUACAO LINHA DE
-    # CUIDADO HTLV", nao "019.2403.2024.0013423-96". Ficou fora por anos e o
-    # efeito so apareceu quando a planilha passou a listar processo a processo:
-    # uma coluna de numeros de 25 digitos que ninguem consegue ler.
-    "id_sei", "snapshot_id", "protocolo", "especificacao", "tipo_processo", "atribuido_nome",
+    # `especificacao` NAO entra aqui, e a ausencia e deliberada: ela vive em
+    # `processo_texto`, a tabela que o esquema separou por ser "onde estao os
+    # campos que podem citar paciente". Trazer o titulo para o SELECT dos
+    # relatorios significa levar texto livre para uma PLANILHA QUE CIRCULA POR
+    # E-MAIL — e o proprio `para_xlsx` existe alertando sobre isso. E decisao de
+    # quem responde pelo dado, nao de implementacao. Tentado em 10/09/2026 como
+    # se fosse coluna de `processo`: derrubou toda tela de relatorio com
+    # "no such column: p.especificacao".
+    "id_sei", "snapshot_id", "protocolo", "tipo_processo", "atribuido_nome",
     "atribuido_login", "marco_unidade", "visualizado", "doc_incluido",
     "marcador", "assuntos", "origem", "gerador_unidade", "nivel_acesso",
     "mesas_divergem", "documentos", "movimentos", "ultimo_movimento", "medido_em",
@@ -1319,7 +1323,6 @@ def _num_pct(cel):
 # que circula por e-mail é ruído que a pessoa tem de decifrar.
 DETALHE_FIXO = [
     ("protocolo",      "Processo"),
-    ("especificacao",  "Especificação"),
     ("tipo_processo",  "Tipo"),
     ("_unidades",      "Unidade(s) da minha carteira"),
     ("_mesas",         "Aberto em (árvore do SEI)"),

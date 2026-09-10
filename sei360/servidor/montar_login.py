@@ -57,19 +57,23 @@ NUMEROS = [
     ('<div class="stat"><div class="v" id="sExt">128.4k</div><div class="l">extrações / dia</div></div>\n'
      '        <div class="stat"><div class="v neon" id="sConn">2.347</div><div class="l">conexões novas</div></div>\n'
      '        <div class="stat"><div class="v" id="sAcc">98,7%</div><div class="l">acurácia média</div></div>',
+     # DOIS cartoes, nao tres: o de "ultima coleta" saiu junto com o resto
+     # da operacao (ver o bloco abaixo). `testes.py` cobra a ausencia dele.
      '<div class="stat"><div class="v" id="sExt">{{ n_processos }}</div>'
      '<div class="l">processos na base</div></div>\n'
      '        <div class="stat"><div class="v neon" id="sConn">{{ n_unidades }}</div>'
-     '<div class="l">unidades cobertas</div></div>\n'
-     '        <div class="stat"><div class="v" id="sAcc" style="font-size:.62em;line-height:1.25">'
-     '{{ ultima_coleta }}</div><div class="l">última coleta</div></div>'),
+     '<div class="l">unidades cobertas</div></div>'),
 
     ('<div class="st"><div class="l">Sessões ativas</div><div class="v" id="sessAct">3.218</div></div>\n'
      '        <div class="st"><div class="l">Status do sistema</div><div class="v neon">● operacional</div></div>',
-     '<div class="st"><div class="l">Sessões ativas</div><div class="v" id="sessAct">{{ sessoes_ativas }}</div></div>\n'
-     '        <div class="st"><div class="l">Estado da coleta</div>'
-     '<div class="v {{ \'neon\' if coleta.pior == \'verde\' else \'\' }}" '
-     'style="font-size:.5em;line-height:1.3" title="{{ resumo_coleta }}">{{ selo_coleta }}</div></div>'),
+     # SAI INTEIRO, e a ausencia e a decisao. Quem esta na porta ainda nao
+     # entrou: "Sessoes ativas" conta quanta gente do orgao esta trabalhando
+     # agora, e "Estado da coleta" diz de fora se o sistema esta atrasado.
+     # Os dois viraram teste em `testes.py` ("a porta NAO conta ... para quem
+     # esta fora"), e `entrar()` deixou de passar as variaveis. O gerador
+     # ficou para tras: regenerar a tela devolvia 500 `'coleta' is undefined`
+     # na porta do sistema. Medido em 10/09/2026.
+     ''),
 
     ('<span class="build">v 3.6 · 2026.05.23</span>',
      '<span class="build">v {{ versao }} · {{ hoje }}</span>'),
@@ -307,7 +311,14 @@ def montar():
     # que nunca existe, porque o bloco raw comeca la no topo do arquivo. O
     # resultado passava em todas as conferencias e chegava ao navegador sem o
     # script de login: a tela abria bonita e o formulario nao autenticava.
-    for marca, conteudo in (("</head>", ESTILO.strip()
+    # O ICONE DA ABA entra aqui, e com caminho LITERAL. Escrito a mao no
+    # `login.html` gerado, ele sobrevivia so ate a proxima regeneracao (foi o
+    # que aconteceu); e escrito como url_for sairia literal no HTML, porque
+    # tudo que este gerador nao injetou vai para dentro de raw — o navegador
+    # pedia o proprio texto do template como URL e levava 404 na tela de
+    # acesso, a primeira que qualquer pessoa ve. Visto no log em 10/09/2026.
+    ICONE = '<link rel="icon" type="image/svg+xml" href="/estatico/favicon.svg">'
+    for marca, conteudo in (("</head>", ICONE + chr(10) + ESTILO.strip()
                              + "\n<script>window.SEI360_REAIS = {{ reais|tojson }};</script>"),
                             ("</body>", SCRIPT.strip())):
         if t.count(marca) != 1:
@@ -330,7 +341,33 @@ def montar():
     return saida
 
 
+ATRASADO = """
+ESTE GERADOR ESTA DEFASADO DO `templates/login.html` EM USO. Nao rode sem
+reconciliar primeiro — medido em 10/09/2026, regenerando e comparando:
+
+  1. as mensagens de "senha definida" e "codigo esgotado" ({% if trocada %} /
+     {% if esgotado %}, mais o estilo .ok-acesso) NAO existem aqui;
+  2. o {% if recuperacao_ativa %} que troca "Esqueci a minha senha" por "fale
+     com a administracao" NAO existe aqui;
+  3. os rotulos 'COLETA' e 'ATUALIZADO' do SVG voltam a aparecer, e `testes.py`
+     cobra a ausencia dos dois na tela de acesso;
+  4. o cartao "Estado da coleta" volta a usar `coleta.pior`, `resumo_coleta` e
+     `selo_coleta`, que `entrar()` nao passa mais — o efeito e 500
+     `'coleta' is undefined` NA PORTA DO SISTEMA.
+
+Regenerar hoje troca a tela que funciona por uma que nao abre. O caminho certo
+e trazer 1 e 2 para ca (e o icone da aba, ja injetado acima), rodar `testes.py`
+e so entao regenerar. Ate lá, editar `templates/login.html` direto e o menor
+dos males — e este aviso existe para que a escolha seja consciente.
+
+Para regenerar de proposito, sabendo do acima:  python montar_login.py --forcar
+"""
+
+
 if __name__ == "__main__":
+    import sys as _sys
+    if "--forcar" not in _sys.argv:
+        raise SystemExit(ATRASADO)
     s = montar()
     print(f"template gerado: {DESTINO}  ({len(s)/1024:.0f} KB)")
     print("dependência externa restante:",
