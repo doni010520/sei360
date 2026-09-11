@@ -721,6 +721,51 @@ checar("e o de espaço também",
        f"{_fesf[_com_espaco]['fonte']} / {_fesf[_com_espaco]['aberto_em']}")
 _cx.commit(); _cx.close()
 
+print("\n5-undecies. empate na medição, e o desempate")
+_cx = conectar()
+# A OUTRA METADE DA ORDEM — a primeira está em 5-septies. Com "a primeira linha
+# vence", empate em `medido_em` (duas coletas no mesmo segundo é plausível)
+# deixaria o quadro INDETERMINADO: a mesma pessoa recarregando a tela veria
+# contagens diferentes sem nada ter mudado no SEI. O desempate por `s.id` é o que
+# faz a resposta ser a mesma toda vez, e o id maior é a coleta mais nova.
+_empate = "2026-09-05T07:45:00-03:00"
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(900,'1313','019.1313.2026.0000013-13',
+               1,1,?,'arvore')""", (_empate,))
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'1313','SESAB/MINHA',NULL)""")
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(903,'1313','019.1313.2026.0000013-13',
+               2,2,?,'arvore')""", (_empate,))
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(903,'1313','SESAB/OUTRA-MINHA',NULL)""")
+_cx.commit()
+ac.adicionar(_cx, 7, "019.1313.2026.0000013-13", "SEI-SESAB")
+_cx.commit()
+checar("o empate é respondido uma vez", ac.reaproveitar(_cx, 7, "SEI-SESAB") == 1)
+_cx.commit()
+
+_desempate = {x["protocolo"]: x
+              for x in ac.listar(_cx, 7)}["019.1313.2026.0000013-13"]
+checar("no empate vence o snapshot de id maior, e vence sempre",
+       _desempate["aberto_em"] == ["SESAB/OUTRA-MINHA"]
+       and (_desempate["documentos"], _desempate["movimentos"]) == (2, 2),
+       f"{_desempate['aberto_em']} / {_desempate['documentos']}")
+_cx.commit(); _cx.close()
+
+print("\n6. a porta no menu")
+import portas                                                    # noqa: E402
+
+_ids = [p["id"] for p in portas.PORTAS]
+checar("existe a porta de acompanhamento", "acompanhamento" in _ids, str(_ids))
+checar("ela vem depois da busca e antes dos relatórios",
+       _ids.index("busca") < _ids.index("acompanhamento") < _ids.index("relatorios"),
+       str(_ids))
+checar("todo papel logado a vê",
+       all("acompanhamento" in [p["id"] for p in portas.visiveis(pap)]
+           for pap in ("servidor", "gestor", "admin")))
+checar("e ela tem ícone próprio", bool(portas._ICONES.get("acompanhamento")))
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)

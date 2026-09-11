@@ -26,6 +26,9 @@ _ICONES = {
               '<rect width="7" height="5" x="3" y="16" rx="1"/>',
     # lupa: o mesmo traço do ícone de busca do painel
     "busca": '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+    # marcador de página — a mesma família de traço dos outros, sem `<svg>` em
+    # volta (quem desenha a moldura é `_nav.html`, com um `<svg>` só).
+    "acompanhamento": '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>',
     "relatorios": '<path d="M3 3v18h18"/><path d="M18 17V9"/>'
                   '<path d="M13 17V5"/><path d="M8 17v-3"/>',
     "alertas": '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 '
@@ -57,6 +60,14 @@ PORTAS = [
     # que chegou até a mesa; a busca é o resto do SEI, com o login de quem pergunta.
     {"id": "busca", "rotulo": "Busca avançada",
      "subtitulo": "Pesquisar no SEI com o seu login", "url": "/busca", "papeis": None},
+    # Terceira pergunta de quem abre o sistema, depois de "o que chegou na minha
+    # mesa?" (painel) e "e o que NÃO chegou?" (busca): "e aquele processo que eu
+    # não quero perder de vista, onde ele foi parar?". A carteira responde
+    # enquanto o processo está na mesa; quando ele sai, o painel fica cego — e é
+    # exatamente aí que alguém mais precisa de resposta.
+    {"id": "acompanhamento", "rotulo": "Acompanhamento",
+     "subtitulo": "Processos que você segue, onde estiverem",
+     "url": "/acompanhamento", "papeis": None},
     {"id": "relatorios", "rotulo": "Relatórios",
      "subtitulo": "Números com procedência", "url": "/relatorios", "papeis": None},
     {"id": "alertas", "rotulo": "Alertas",
