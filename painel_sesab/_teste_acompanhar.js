@@ -4,9 +4,15 @@
    -------------------------
    Que a composicao existe e monta o que o servidor espera: a pesquisa por numero
    devolve o link, `urlHistorico` traz arvore e historico, `derivar` produz o
-   registro e a funcao FILTRA dele apenas os campos que podem subir. Que os cinco
-   campos de custodia — e o `mov_custodia`, que carrega login de quem movimentou —
-   NAO saem daqui. Que o protocolo volta literalmente igual ao que entrou. Que a
+   registro e a funcao FILTRA dele apenas os campos que podem subir. Que a ficha
+   DO PROCESSO sobe inteira e que NENHUM dos vinte termos da ficha DA MESA sai
+   daqui — os catorze `CAMPOS_DA_MESA` do servidor mais os internos de `derivar`,
+   incluindo `mov_custodia`, que carrega login de quem movimentou; e que o login
+   de quem GEROU sobe, porque e campo declarado, enquanto o de quem so movimentou
+   nao. Que a tela Consultar/Alterar ausente da `null` e a tela vazia da `[]`. Que
+   a queda da sexta requisicao nao leva a leitura inteira junto. Que sem
+   `aria-label` a especificacao fica ausente em vez de inventada. Que o protocolo
+   volta literalmente igual ao que entrou. Que a
    lista e lida em SERIE, com a mesma pausa curta do resto do coletor. Que um
    processo que estoura nao derruba os outros, e que ele nao ganha estado
    inventado. Que a queda de sessao para o laco em vez de carimbar 'sem_acesso'
@@ -24,14 +30,24 @@
         quem procura — e essa e a premissa do modulo inteiro;
      3. que a recusa do SEI aparece mesmo como pagina SEM o iframe da arvore (o
         que aqui vira 'sem_acesso') e nao como erro visivel ou tela de login;
-     4. que sao CINCO requisicoes por processo. Aqui isso e MEDIDO contra a
+     4. que sao SEIS requisicoes por processo. Aqui isso e MEDIDO contra a
         fixture (ver o caso abaixo), e o formulario real pode trazer `hdnInicio`
         — e nesse caso `pesquisar` posta a segunda pagina antes de respeitar
-        `paginas_teto: 1`, e sao seis;
+        `paginas_teto: 1`, e sao sete;
      5. que a sessao aguenta N processos em serie a 240 ms, que e a pausa medida
         contra a paginacao da busca, nao contra esta leitura;
      6. que `id_sei` vem preenchido na linha do resultado nas DUAS instalacoes;
-     7. A MAIS IMPORTANTE DA LISTA: que o `GET acao=procedimento_trabalhar` sobre
+     7. que a tela Consultar/Alterar real traga mesmo `selAssuntos` e
+        `selInteressadosProcedimento` — `dadosCadastro` ja rodava contra ela na
+        coleta, entao a medicao existe para a SESAB; para a FESF (SEI 4.0), nao;
+     8. o ID DO CAMPO DE ESPECIFICACAO na tela Consultar/Alterar. E o caminho
+        certo para o SEI 4.0, onde nao ha `aria-label` de onde tira-la, e ninguem
+        aqui nunca leu aquele campo. NAO ADIVINHE O ID: adivinhar id de campo do
+        SEI ja custou quatro erros nesta entrega, e um id errado aqui poe o texto
+        de OUTRO campo num campo que pode citar paciente — pior que campo nulo. O
+        jeito seguro, quando alguem for olhar, e DETECTAR pelo rotulo que o SEI
+        imprime, como `linhas()` detecta a tabela em vez de assumi-la;
+     9. A MAIS IMPORTANTE DA LISTA: que o `GET acao=procedimento_trabalhar` sobre
         processo que NAO esta em nenhuma mesa de quem le seja mesmo so leitura.
         No SEI 5.0.4 abrir um processo pode marca-lo como RECEBIDO na unidade
         ativa, e ai este modulo estaria ALTERANDO o SEI em vez de observa-lo —
@@ -167,23 +183,58 @@ const PROCESSO_SEM_ARVORE = '<div id="__body__"><p>&nbsp;</p></div>';
 /* A arvore. Nao e HTML: e o JavaScript que o SEI escreve, e dele saem as mesas
    (`Nos[0].html`), as acoes (`Nos[0].acoes`), a URL do historico e a contagem de
    nos — que vira `documentos`. Tres nos: raiz + dois documentos. */
+const ACOES = '<a href=\\"controlador.php?acao=procedimento_consultar_historico&id_procedimento=91&infra_hash=hist\\">Consultar Andamento</a>'
+            + '<a href=\\"controlador.php?acao=procedimento_alterar&id_procedimento=91&infra_hash=alt\\">Consultar/Alterar</a>';
 const ARVORE = [
   "Nos[0] = new infraArvoreNo();",
   "Nos[0].html = 'Processo aberto nas unidades: <br /><a class=\"ancoraSigla\">SESAB/SUPERH</a><br /><a class=\"ancoraSigla\">SESAB/DGESS</a> <a class=\"ancoraSigla\">fulano.um</a>';",
-  "Nos[0].acoes = '<a href=\"controlador.php?acao=procedimento_consultar_historico&id_procedimento=91&infra_hash=hist\">Consultar Andamento</a>';",
+  "Nos[0].acoes = '" + ACOES.replace(/\\"/g, '"') + "';",
   "Nos[1] = new infraArvoreNo();",
   "Nos[2] = new infraArvoreNo();",
 ].join('\n');
 
+/* A arvore SEM a acao Consultar/Alterar. Acontece de verdade — o coletor ja
+   distingue os dois casos na coleta, com `alterar_disponivel` —, e e o que separa
+   "processo sem assunto" de "nao deu para olhar". */
+const ARVORE_SEM_ALTERAR = ARVORE.split('\n')
+  .map(l => l.indexOf('Nos[0].acoes') === -1 ? l
+    : "Nos[0].acoes = '<a href=\"controlador.php?acao=procedimento_consultar_historico&id_procedimento=91&infra_hash=hist\">Consultar Andamento</a>';")
+  .join('\n');
+
 /* A arvore sem a URL do historico: o outro jeito de o SEI dizer "nao para voce". */
 const ARVORE_SEM_HISTORICO = "Nos[0] = new infraArvoreNo();\nNos[0].html = 'x';";
 
-/* O historico. A terceira coluna e o LOGIN de quem movimentou — e e por isso que
-   `mov_custodia` nao pode subir para o servidor. */
+/* A tela Consultar/Alterar. E um GET numa tela de formulario — NADA e submetido.
+   Dela saem `assuntos` e `interessados`, e so eles: `dadosCadastro` mede que
+   observacoes, prioridade e grau de sigilo vieram vazios em 100% da amostra. */
+const CADASTRO = `<div id="__body__">
+  <select id="selAssuntos" name="selAssuntos" multiple>
+    <option value="1">065.03 - Contratação de serviços</option>
+    <option value="2">029.11 - Aquisição de insumos</option>
+  </select>
+  <select id="selInteressadosProcedimento" name="selInteressadosProcedimento" multiple>
+    <option value="9">FESF-SUS</option>
+  </select>
+</div>`;
+
+/* A mesma tela, com os dois selects VAZIOS: processo que existe e nao tem assunto
+   cadastrado. `[]` aqui, e nao null — a diferenca que a ficha mostra. */
+const CADASTRO_VAZIO = `<div id="__body__">
+  <select id="selAssuntos" name="selAssuntos" multiple></select>
+  <select id="selInteressadosProcedimento" name="selInteressadosProcedimento" multiple></select>
+</div>`;
+
+/* O historico. A terceira coluna e o LOGIN de quem movimentou. O de QUEM GEROU o
+   processo sobe (`gerador_usuario` e campo declarado da ficha); o de quem apenas
+   movimentou, nao — e e por isso que `mov_custodia` nao pode subir junto. Por
+   isso os dois papeis tem logins DIFERENTES nesta fixture. */
 const HISTORICO = `<div id="__body__">
 <table id="tblHistorico">
   <tr><td>10/09/2026 14:22</td><td>SESAB/DGESS</td><td>fulano.um@saude.ba.gov.br</td><td>Processo recebido na unidade</td></tr>
-  <tr><td>09/09/2026 08:10</td><td>SESAB/SUPERH</td><td>fulano.um@saude.ba.gov.br</td><td>Processo remetido pela unidade SESAB/SUPERH</td></tr>
+  <tr><td>10/09/2026 11:00</td><td>SESAB/DGESS</td><td>fulano.um@saude.ba.gov.br</td><td>Envio de correspondência eletrônica</td></tr>
+  <tr><td>09/09/2026 16:40</td><td>SESAB/SUPERH</td><td>ciclano.tres@saude.ba.gov.br</td><td>Assinatura externa do documento 0012345</td></tr>
+  <tr><td>09/09/2026 08:10</td><td>SESAB/SUPERH</td><td>ciclano.tres@saude.ba.gov.br</td><td>Processo remetido pela unidade SESAB/SUPERH</td></tr>
+  <tr><td>05/08/2026 09:00</td><td>SESAB/SUPERH</td><td>ciclano.tres@saude.ba.gov.br</td><td>Processo 019.9999.2026.0000099-99 anexado ao processo 019.5120.2026.0161681-50</td></tr>
   <tr><td>01/08/2026 10:00</td><td>SESAB/SUPERH</td><td>beltrana.dois@saude.ba.gov.br</td><td>Processo público gerado, Nenhuma</td></tr>
 </table></div>`;
 
@@ -201,6 +252,9 @@ function rede(opc = {}) {
     }
     if (/acao=procedimento_consultar_historico/.test(url)) {
       return 'historico' in opc ? opc.historico : HISTORICO;
+    }
+    if (/acao=procedimento_alterar/.test(url)) {
+      return 'cadastro' in opc ? opc.cadastro : CADASTRO;
     }
     return null;
   };
@@ -231,7 +285,7 @@ async function lerUm(resolvedor, protocolo = PROTOCOLO, opc = {}) {
 /* ================================================================ os casos == */
 (async () => {
 
-console.log('O CAMINHO BOM: CINCO REQUISICOES E QUATRO CAMPOS');
+console.log('O CAMINHO BOM: SEIS REQUISICOES E A FICHA DO PROCESSO');
 {
   const { r, amb } = await lerUm(redeComResultado([RESULTADO(PROTOCOLO, '91')]));
   checar('o estado e "lido"', r.estado === 'lido', JSON.stringify(r));
@@ -242,44 +296,153 @@ console.log('O CAMINHO BOM: CINCO REQUISICOES E QUATRO CAMPOS');
   checar('o ultimo movimento e o mais recente',
          (r.ultimo_movimento || {}).dh === '10/09/2026 14:22', JSON.stringify(r.ultimo_movimento));
   checar('documentos = nos da arvore menos a raiz', r.documentos === 2, String(r.documentos));
-  checar('movimentos = linhas do historico', r.movimentos === 3, String(r.movimentos));
+  checar('movimentos = linhas do historico', r.movimentos === 6, String(r.movimentos));
   checar('o id_sei vem da linha do resultado', r.id_sei === '91', String(r.id_sei));
-  // O ORCAMENTO, MEDIDO E NAO ESTIMADO. A conta antiga dizia tres e esquecia o
-  // par da pesquisa: a tela de Pesquisa e reaberta a cada protocolo, porque
-  // `abrirPesquisa` sai do MENU vivo — reusar o formulario da vez anterior e
-  // exatamente o risco de `infra_hash` morto. Este numero e publicado em
-  // `acompanhamento.py` (TETO) e nos dois planos; se ele mudar aqui, tem de
-  // mudar la.
-  checar('sao CINCO requisicoes por processo', amb.pedidos.length === 5,
+  // O ORCAMENTO, MEDIDO E NAO ESTIMADO. Eram cinco; a tela Consultar/Alterar —
+  // de onde saem `assuntos` e `interessados` — faz a sexta. A tela de Pesquisa e
+  // reaberta a cada protocolo porque `abrirPesquisa` sai do MENU vivo, e reusar o
+  // formulario da vez anterior e exatamente o risco de `infra_hash` morto. Este
+  // numero e publicado em `acompanhamento.py` (TETO), no cabecalho de
+  // `acompanhar` e nos dois planos; se mudar aqui, tem de mudar la.
+  checar('sao SEIS requisicoes por processo', amb.pedidos.length === 6,
          `${amb.pedidos.length}: ${JSON.stringify(amb.pedidos)}`);
-  checar('a arvore e o historico foram lidos',
+  checar('a arvore, o historico e o cadastro foram lidos',
          amb.pedidos.some(u => /arvore_visualizar/.test(u))
-         && amb.pedidos.some(u => /consultar_historico/.test(u)),
+         && amb.pedidos.some(u => /consultar_historico/.test(u))
+         && amb.pedidos.some(u => /procedimento_alterar/.test(u)),
          JSON.stringify(amb.pedidos));
   checar('e a tela de Pesquisa e reaberta, nunca reusada',
          amb.pedidos.filter(u => /acao=protocolo_pesquisar/.test(u)).length === 2,
          JSON.stringify(amb.pedidos));
 }
 
-console.log('\nOS CINCO CAMPOS DE CUSTODIA NAO SOBEM — E NEM O LOGIN DE QUEM MOVIMENTOU');
+console.log('\nA FICHA DO PROCESSO — a que vale dentro E fora da mesa');
 {
   const { r } = await lerUm(redeComResultado([RESULTADO(PROTOCOLO, '91')]));
-  const CAMPOS_QUE_SOBEM = ['protocolo', 'estado', 'id_sei', 'aberto_em',
-                            'aberto_em_fonte', 'ultimo_movimento', 'documentos',
-                            'movimentos'];
+  checar('tipo_processo vem da linha do resultado, sem requisicao nova',
+         r.tipo_processo === 'Contratação Direta', String(r.tipo_processo));
+  checar('autuacao e a data do movimento de geracao',
+         r.autuacao === '01/08/2026 10:00', String(r.autuacao));
+  checar('gerador_unidade e gerador_usuario saem do mesmo movimento',
+         r.gerador_unidade === 'SESAB/SUPERH'
+         && r.gerador_usuario === 'beltrana.dois@saude.ba.gov.br',
+         `${r.gerador_unidade} / ${r.gerador_usuario}`);
+  checar('nivel_acesso e hipotese_legal saem do texto da geracao',
+         r.nivel_acesso === 'Público' && r.hipotese_legal === 'Nenhuma',
+         `${r.nivel_acesso} / ${r.hipotese_legal}`);
+  checar('emails_enviados conta as correspondencias eletronicas',
+         r.emails_enviados === 1, String(r.emails_enviados));
+  checar('assinatura_externa conta as assinaturas externas',
+         r.assinatura_externa === 1, String(r.assinatura_externa));
+  checar('anexados traz o numero do processo anexado',
+         JSON.stringify(r.anexados) === JSON.stringify(['019.9999.2026.0000099-99']),
+         JSON.stringify(r.anexados));
+  checar('assuntos vem da tela Consultar/Alterar',
+         (r.assuntos || []).length === 2
+         && /Contratação de serviços/.test(r.assuntos[0]), JSON.stringify(r.assuntos));
+  checar('interessados tambem', JSON.stringify(r.interessados) === JSON.stringify(['FESF-SUS']),
+         JSON.stringify(r.interessados));
+  // A ESPECIFICACAO SAI DO `aria-label` DA LINHA DO RESULTADO, que e onde o SEI 5
+  // publica "tipo / especificacao" — a mesma leitura que `linhas()` ja faz para
+  // pegar o tipo. Nao foi adivinhada da arvore: campo que pode citar paciente
+  // preenchido com texto de procedencia desconhecida e pior que campo nulo.
+  checar('especificacao sai do mesmo aria-label de onde ja saia o tipo',
+         r.especificacao === 'compra de insumos', String(r.especificacao));
+}
+
+console.log('\nA FICHA DA MESA NAO SOBE — NEM UM CAMPO, NEM UM TERMO');
+{
+  const { r } = await lerUm(redeComResultado([RESULTADO(PROTOCOLO, '91')]));
+  const CAMPOS_QUE_SOBEM = [
+    'protocolo', 'estado', 'id_sei', 'aberto_em', 'aberto_em_fonte',
+    'ultimo_movimento', 'documentos', 'movimentos',
+    'tipo_processo', 'especificacao', 'autuacao', 'gerador_unidade',
+    'gerador_usuario', 'nivel_acesso', 'hipotese_legal', 'assuntos',
+    'interessados', 'anexados', 'emails_enviados', 'assinatura_externa'];
   checar('a lista de campos e EXATA, nao um espalhamento de derivar()',
-         JSON.stringify(Object.keys(r).sort()) === JSON.stringify(CAMPOS_QUE_SOBEM.slice().sort()),
-         JSON.stringify(Object.keys(r)));
-  // `derivar` calcula estes cinco para a mesa em que a estacao esta parada, que
-  // NAO e a mesa deste processo. Manda-los seria mandar o dado de outra mesa com
-  // o nome deste processo.
-  for (const campo of ['marco_unidade', 'recebimento', 'recebimento_por', 'envio',
-                       'unidade_envio', 'derivada_para', 'mesa_derivada']) {
+         JSON.stringify(Object.keys(r).sort())
+         === JSON.stringify(CAMPOS_QUE_SOBEM.slice().sort()),
+         JSON.stringify(Object.keys(r).filter(k => !CAMPOS_QUE_SOBEM.includes(k))));
+  /* OS VINTE TERMOS PROIBIDOS. Os catorze `CAMPOS_DA_MESA` do servidor, mais os
+     internos que `derivar()` devolve e que so fazem sentido dentro de uma mesa.
+     Todos saem da LINHA da tabela de Controle de Processos daquela mesa — que
+     para processo fora das mesas da conta NAO EXISTE —, ou de
+     `camposDaMesa(mov, UNIDADE)`, derivado para a mesa em que a estacao esta
+     parada. Qualquer um deles aqui seria o dado de outra mesa com o nome deste
+     processo. */
+  for (const campo of ['marcador', 'marcador_cor', 'atribuido_nome', 'atribuido_login',
+                       'visualizado', 'marco_unidade', 'recebimento', 'recebimento_por',
+                       'envio', 'unidade_envio', 'mesa_indeterminada', 'anotacao',
+                       'anotacao_autor', 'anotacao_data', 'derivada_para',
+                       'mesa_derivada', 'mov_custodia', 'sobrestado', 'urgente',
+                       'truncado']) {
     checar(`  ${campo} fica na estacao`, !(campo in r));
   }
-  checar('  mov_custodia tambem — e ele carrega nome e e-mail', !('mov_custodia' in r));
-  checar('nenhum login de quem movimentou atravessa o fio',
-         !JSON.stringify(r).includes('@saude.ba.gov.br'), JSON.stringify(r).slice(0, 200));
+  // O LOGIN DE QUEM GEROU sobe, porque `gerador_usuario` e campo declarado da
+  // ficha. O de quem apenas MOVIMENTOU, nao — e e essa a diferenca que
+  // `mov_custodia` apagaria se subisse junto.
+  checar('o login de quem GEROU sobe (e campo declarado)',
+         JSON.stringify(r).includes('beltrana.dois'), JSON.stringify(r).slice(0, 200));
+  for (const quem of ['fulano.um', 'ciclano.tres']) {
+    checar(`  o login de quem so movimentou (${quem}) nao atravessa o fio`,
+           !JSON.stringify(r).includes(quem), JSON.stringify(r).slice(0, 240));
+  }
+}
+
+console.log('\nA TELA CONSULTAR/ALTERAR PODE NAO EXISTIR — E ISSO NAO E CAMPO VAZIO');
+{
+  // O coletor ja distingue os dois na coleta, com `alterar_disponivel`. Aqui a
+  // distincao cabe no proprio valor: `null` e "nao deu para olhar", `[]` e "a
+  // tela existia e nao havia assunto nenhum". Sao coisas diferentes na ficha.
+  const semTela = await lerUm(redeComResultado([RESULTADO(PROTOCOLO, '91')],
+                                               { arvore: ARVORE_SEM_ALTERAR }));
+  checar('sem a tela, assuntos e interessados ficam NULOS (nao observado)',
+         semTela.r.assuntos === null && semTela.r.interessados === null,
+         JSON.stringify([semTela.r.assuntos, semTela.r.interessados]));
+  checar('e o resto da ficha continua vindo', semTela.r.estado === 'lido'
+         && semTela.r.gerador_unidade === 'SESAB/SUPERH', JSON.stringify(semTela.r));
+  checar('sem a tela sao CINCO requisicoes, nao seis', semTela.amb.pedidos.length === 5,
+         JSON.stringify(semTela.amb.pedidos));
+
+  const telaVazia = await lerUm(redeComResultado([RESULTADO(PROTOCOLO, '91')],
+                                                 { cadastro: CADASTRO_VAZIO }));
+  checar('com a tela vazia, ficam LISTAS VAZIAS (observado, e nao havia)',
+         JSON.stringify(telaVazia.r.assuntos) === '[]'
+         && JSON.stringify(telaVazia.r.interessados) === '[]',
+         JSON.stringify([telaVazia.r.assuntos, telaVazia.r.interessados]));
+}
+
+console.log('\nO CADASTRO QUE FALHA NAO LEVA A LEITURA INTEIRA JUNTO');
+{
+  // A arvore e o historico ja vieram: o processo FOI lido. Descartar tudo porque
+  // a sexta requisicao caiu jogaria fora cinco requisicoes de trabalho e deixaria
+  // o item pendente — para, no ciclo seguinte, provavelmente falhar de novo no
+  // mesmo lugar. Relata-se o que se leu, e os dois campos ficam "nao observado".
+  const { r } = await lerUm(redeComResultado([RESULTADO(PROTOCOLO, '91')],
+                                             { cadastro: null }));
+  checar('a leitura sobrevive a queda do cadastro', r.estado === 'lido',
+         JSON.stringify(r));
+  checar('e os dois campos dele ficam nulos, nao inventados',
+         r.assuntos === null && r.interessados === null,
+         JSON.stringify([r.assuntos, r.interessados]));
+  checar('o resto da ficha esta inteiro', r.documentos === 2 && r.movimentos === 6
+         && r.tipo_processo === 'Contratação Direta', JSON.stringify(r));
+}
+
+console.log('\nSEI 4.0: SEM aria-label, A ESPECIFICACAO FICA AUSENTE — NAO INVENTADA');
+{
+  // O 4.0 nao entrega tipo e especificacao no `aria-label` (esta medido no
+  // cabecalho de `linhas()`), e ali o tipo se recupera da celula. A especificacao
+  // nao tem de onde sair, e o certo e ficar nula: o item se identifica pela nota
+  // que a propria pessoa escreveu.
+  const SEM_ARIA = RESULTADO(PROTOCOLO, '91').replace(/ aria-label="[^"]*"/, '');
+  const { r } = await lerUm(redeComResultado([SEM_ARIA]));
+  checar('sem aria-label, especificacao fica nula', !r.especificacao,
+         String(r.especificacao));
+  checar('o tipo ainda vem, da celula', r.tipo_processo === 'Contratação Direta',
+         String(r.tipo_processo));
+  checar('e a leitura continua completa no resto', r.estado === 'lido'
+         && r.movimentos === 6, JSON.stringify(r));
 }
 
 console.log('\nO PROTOCOLO VOLTA LITERALMENTE IGUAL AO QUE ENTROU');
@@ -439,20 +602,31 @@ console.log('\nO MOTIVO DA FALHA NAO LEVA infra_hash PELA REDE');
          env.falhas[0].motivo);
 }
 
-console.log('\nO LINK SO EXISTE PARA QUEM PEDIU — E NUNCA E PERSISTIDO');
+console.log('\nOS RESERVADOS SO EXISTEM PARA QUEM PEDIU — E NAO ENTRAM NA BUSCA');
 {
-  // `linhas()` esconde o href de proposito: ele carrega `infra_hash` de sessao, e
-  // hash morto nao devolve erro — DERRUBA a sessao de quem esta trabalhando.
-  // `com_link` e a excecao declarada, para quem usa o link na mesma passagem.
+  /* `linhas()` esconde DUAS coisas de proposito, e por razoes diferentes que dao
+     no mesmo lugar:
+       * o href carrega `infra_hash` de sessao, e hash morto nao devolve erro —
+         DERRUBA a sessao de quem esta trabalhando;
+       * a especificacao e texto que um servidor escreveu e pode citar paciente, e
+         `busca.py` a exclui do envelope da busca com motivo escrito.
+     Nenhuma das duas pode entrar no envelope que a busca guarda. `com_reservados`
+     e a excecao declarada, para quem usa as duas na mesma passagem do navegador
+     e nao guarda nenhuma. */
   const { caixa } = ambiente(rede());
   const doc = documento(RESULTADO(PROTOCOLO, '91'));
   const sem = caixa.SEIBusca.linhas(doc);
   const com = caixa.SEIBusca.linhas(doc, true);
   checar('sem a flag, a linha nao tem link', !('link' in sem[0]), JSON.stringify(sem[0]));
-  checar('com a flag, tem', /id_procedimento=91/.test(com[0].link || ''),
+  checar('sem a flag, a linha nao tem especificacao',
+         !('especificacao' in sem[0]), JSON.stringify(sem[0]));
+  checar('com a flag, tem link', /id_procedimento=91/.test(com[0].link || ''),
+         JSON.stringify(com[0]));
+  checar('com a flag, tem especificacao', com[0].especificacao === 'compra de insumos',
          JSON.stringify(com[0]));
   checar('e o resto da linha e o mesmo', sem[0].protocolo === com[0].protocolo
-         && sem[0].id_sei === com[0].id_sei, JSON.stringify([sem[0], com[0]]));
+         && sem[0].id_sei === com[0].id_sei && sem[0].tipo_processo === com[0].tipo_processo,
+         JSON.stringify([sem[0], com[0]]));
 }
 
 console.log(`\n${ok} verificacoes, ${mau} falha(s)`);

@@ -205,12 +205,14 @@ quem nunca filtrou) e ele não se repete aqui.
 ## 7. Limites
 
 **Teto de 100 processos por pessoa.** Com o reaproveitamento da carteira (5-bis), só
-o que está fora das mesas custa requisição: **5 por processo** (medido em 11/09/2026 —
+o que está fora das mesas custa requisição: **6 por processo** (medido em 11/09/2026 —
 GET da tela de Pesquisa, POST da pesquisa, GET do processo, GET da árvore, GET do
-andamento; a conta anterior dizia 3 e esquecia o par da pesquisa, que é refeito a cada
-protocolo porque reusar formulário velho é o risco de `infra_hash` morto), ou **~500**
-no pior caso de uma lista cheia inteiramente fora da carteira — contra as ~5.900 que a
-coleta de 1.182 processos já faz, ou ~8,5% a mais. O teto
+andamento, GET da tela Consultar/Alterar; a conta original dizia 3 e esquecia o par da
+pesquisa, que é refeito a cada protocolo porque reusar formulário velho é o risco de
+`infra_hash` morto, e a sexta é a da ficha — cai para 5 quando o processo não tem a
+ação Consultar/Alterar), ou **~600** no pior caso de uma lista cheia inteiramente fora
+da carteira — contra as ~5.900 que a coleta de 1.182 processos já faz, ou ~10% a mais,
+uma vez por dia por pessoa. O teto
 existe para a lista não virar uma segunda coleta sem ninguém ter decidido isso. Ao
 estourar, a tela recusa com o número atual — não descarta em silêncio.
 

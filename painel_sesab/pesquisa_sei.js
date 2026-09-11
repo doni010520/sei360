@@ -209,16 +209,28 @@
   /* As linhas do resultado. O SEI 5 entrega tipo e especificação no `aria-label`
      do link; o 4.0 não — daí a leitura por célula como alternativa.
 
-     `comLink` é a ÚNICA porta pela qual o href sai daqui, e é fechada por
-     omissão. Ela existe para `SEIAuto.acompanhar()`, que abre o processo na mesma
-     passagem do navegador e joga o link fora em seguida: o envelope que ele manda
-     ao servidor tem lista de campos explícita, e `link` não está nela. Quem liga
-     isto assume o contrato do comentário abaixo — usar AGORA e não guardar.
+     `comReservados` é a ÚNICA porta pela qual DOIS campos saem daqui, e é fechada
+     por omissão. Eles têm razões diferentes que dão no mesmo lugar — nenhum dos
+     dois pode entrar no envelope que a busca guarda:
+
+       * `link` — carrega `infra_hash` de sessão, e hash morto não dá erro:
+         derruba a sessão de quem está trabalhando;
+       * `especificacao` — é o sufixo do mesmo `aria-label` de onde já sai o tipo,
+         e é texto que um servidor escreveu, que pode citar paciente. `busca.py`
+         a exclui do envelope da busca com motivo escrito, e essa exclusão
+         continua valendo: é outra superfície, com outro alcance.
+
+     A porta existe para `SEIAuto.acompanhar()`, que usa os dois na mesma passagem
+     do navegador: o link morre no fim da função, e a especificação sobe porque o
+     usuário autorizou explicitamente para ESTE módulo em 11/09/2026 (seção 11.2
+     do plano). Quem liga isto assume o contrato: usar AGORA, e só onde há
+     autorização.
 
      O agente da estação não tem como ligá-la numa busca: `buscar()`, em
      `sei360_agente.py`, repassa uma lista FIXA de seis chaves do pedido, e
-     `com_link` não é uma delas. Servidor comprometido não pede href. */
-  function linhas(doc, comLink) {
+     `com_reservados` não é uma delas. Servidor comprometido não pede nem o href
+     nem o texto livre. */
+  function linhas(doc, comReservados) {
     const fora = [];
     const tabelas = Array.from(doc.querySelectorAll('table'))
       .filter(t => t.querySelector('a[href*="procedimento_trabalhar"], a[href*="protocolo_visualizar"], a[href*="id_procedimento"]'));
@@ -235,7 +247,7 @@
       const linha = {
         // O HREF NÃO SAI DAQUI POR PADRÃO. Ele carrega infra_hash de sessão, e
         // hash morto não dá erro: derruba a sessão de quem está trabalhando. Só
-        // `comLink` o entrega, e só para uso imediato — nunca para guardar.
+        // `comReservados` o entrega, e só para uso imediato — nunca para guardar.
         id_sei: idm ? idm[1] : null,
         protocolo: N(a.textContent),
         tipo_processo: k > 0 ? aria.slice(0, k).trim() : (cel[1] || null),
@@ -243,7 +255,17 @@
         usuario_gerador: cel.find(x => /@/.test(x)) || null,
         data_inclusao: (cel.find(x => /^\d{2}\/\d{2}\/\d{4}/.test(x)) || '').slice(0, 10) || null,
       };
-      if (comLink) linha.link = href.replace(/&amp;/g, '&');
+      if (comReservados) {
+        linha.link = href.replace(/&amp;/g, '&');
+        // O MESMO `aria-label` de onde saiu o tipo, do outro lado do ' / '. No
+        // SEI 5 ele traz "tipo / especificação" (medido — é o que o cabeçalho
+        // desta função já dizia); no 4.0 não há aria-label nenhum, e aí o campo
+        // simplesmente NÃO É POSTO. Ausente e vazio são coisas diferentes para
+        // quem recebe, e inventar texto num campo que pode citar paciente é pior
+        // que não ter o campo.
+        const espec = k > 0 ? N(aria.slice(k + 3)) : '';
+        if (espec) linha.especificacao = espec;
+      }
       fora.push(linha);
     });
     return fora;
@@ -293,9 +315,9 @@
 
       for (let pg = 1; pg <= teto; pg++) {
         saida.paginas_lidas = pg;
-        // `com_link` vem do PEDIDO e só é ligado por quem roda no mesmo navegador
-        // — ver o comentário de `linhas()`.
-        const desta = linhas(d, pedido.com_link);
+        // `com_reservados` vem do PEDIDO e só é ligado por quem roda no mesmo
+        // navegador — ver o comentário de `linhas()`.
+        const desta = linhas(d, pedido.com_reservados);
         let novos = 0;
         desta.forEach(x => {
           const chave = x.id_sei || x.protocolo;

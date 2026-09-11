@@ -1840,13 +1840,16 @@ function limparCache() {
    devolve o link, `urlHistorico` traz a arvore e a URL do andamento, `pegar`
    traz o andamento e `derivar` produz o registro inteiro.
 
-   CINCO REQUISICOES POR PROCESSO, medido em 11/09/2026 e nao estimado:
+   SEIS REQUISICOES POR PROCESSO, medido em 11/09/2026 e nao estimado:
    GET da tela de Pesquisa, POST da pesquisa, GET do processo, GET da arvore,
-   GET do andamento. A conta antiga dizia tres e esquecia o par da pesquisa — a
-   tela e reaberta a cada protocolo, e CORRETAMENTE: `abrirPesquisa` sai do MENU
-   vivo a cada vez, e reusar o formulario da vez anterior e exatamente o risco de
-   `infra_hash` morto, que nao devolve erro — derruba a sessao de quem esta
-   trabalhando. E a mesma ordem de grandeza que `custo()` publica para a coleta.
+   GET do andamento, GET da tela Consultar/Alterar. A conta original dizia tres e
+   esquecia o par da pesquisa — a tela e reaberta a cada protocolo, e
+   CORRETAMENTE: `abrirPesquisa` sai do MENU vivo a cada vez, e reusar o
+   formulario da vez anterior e exatamente o risco de `infra_hash` morto, que nao
+   devolve erro — derruba a sessao de quem esta trabalhando. A sexta e a da ficha,
+   e cai para cinco quando o processo nao tem a acao Consultar/Alterar. E pouco
+   acima do que `custo()` publica para a coleta (5 por processo), e o teste conta
+   as requisicoes da fixture para este numero nao envelhecer sozinho.
 
    O RESULTADO E FILTRADO, E A LISTA DE CAMPOS E EXPLICITA. `derivar` tambem
    calcula os cinco campos de custodia (`marco_unidade`, `recebimento`,
@@ -1857,8 +1860,32 @@ function limparCache() {
    de quem movimentou. Por isso a lista aqui e escrita a mao, e nunca um
    espalhamento do objeto: campo novo em `derivar` nao vaza por acidente.
 
+   A FICHA DO PROCESSO SOBE; A DA MESA, NAO — e a segunda metade e o ponto.
+   Valem dentro e fora da mesa: tipo, especificacao, autuacao, quem gerou, nivel
+   de acesso, hipotese legal, assuntos, interessados, anexados, contagens. NAO
+   valem fora dela: marcador, anotacao, responsavel atribuido, "ja visualizado" e
+   os cinco de custodia — todos saem da LINHA da tabela de Controle de Processos
+   daquela mesa (`linha5` por `aria-label`, `linha4` por tooltip), e para processo
+   que nao esta em mesa nenhuma da conta essa linha NAO EXISTE. Nao e decisao de
+   desenho: e o que o SEI expoe. A tela do servidor diz "nao existe fora da mesa"
+   em vez de imprimir campo em branco, e para isso ela precisa que eles cheguem
+   NULOS — o que so acontece se esta funcao nao os mandar.
+
+   DE ONDE VEM CADA UM:
+     * `derivar(doc, arvore)` — autuacao, gerador_unidade, gerador_usuario,
+       nivel_acesso, hipotese_legal, anexados, emails_enviados e
+       assinatura_externa, alem das contagens e do ultimo movimento;
+     * a LINHA DO RESULTADO da busca — tipo_processo e especificacao, os dois do
+       MESMO `aria-label`, sem requisicao nova;
+     * `dadosCadastro(acoes.procedimento_alterar)` — assuntos e interessados. E a
+       SEXTA requisicao, e a unica que a ficha acrescentou a leitura.
+
+   TEXTO LIVRE: `especificacao` e `interessados` podem citar paciente, e sobem por
+   decisao explicita do usuario em 11/09/2026, registrada na secao 11.2 do plano e
+   em SPECS 5-quindecies, com data e autor. O alcance e so deste modulo.
+
    OS ESTADOS, E NENHUM SILENCIOSO
-     'lido'           — leu, e os quatro campos vao junto;
+     'lido'           — leu, e a ficha do processo vai junto;
      'nao_encontrado' — a pesquisa por numero nao devolveu linha;
      'sem_acesso'     — o SEI devolveu a pagina SEM o conteudo que so aparece
                         para quem pode ver o processo. E o que os `throw` de
@@ -1881,16 +1908,17 @@ async function acompanhar(protocolo, campos) {
     // das mesas de quem procura. Com o filtro ligado, a busca voltaria vazia e o
     // modulo inteiro diria "nao encontrado" para tudo que existe.
     campos: campos || {}, paginas_teto: 1,
-    // O href, so aqui e so agora — ver o comentario de `linhas()` em
-    // `pesquisa_sei.js`. Ele morre no fim desta funcao.
-    com_link: true,
+    // O href e a especificacao, so aqui e so agora — ver o comentario de
+    // `linhas()` em `pesquisa_sei.js`. O href morre no fim desta funcao; a
+    // especificacao sobe porque este modulo tem autorizacao propria para ela.
+    com_reservados: true,
   });
   if (env.motivo) return { protocolo, falha: 'busca: ' + env.motivo };
   const item = (env.itens || [])[0];
   if (!item || !item.link) return { protocolo, estado: 'nao_encontrado' };
-  let url, arvore;
+  let url, arvore, acoes;
   try {
-    ({ url, arvore } = await urlHistorico(item.link));
+    ({ url, arvore, acoes } = await urlHistorico(item.link));
   } catch (e) {
     const m = String(e && e.message ? e.message : e);
     // SO estas duas mensagens sao recusa do SEI. Qualquer outra e falha nossa ou
@@ -1906,6 +1934,29 @@ async function acompanhar(protocolo, campos) {
   } catch (e) {
     return { protocolo, falha: String(e && e.message ? e.message : e).slice(0, 80) };
   }
+  /* A SEXTA REQUISICAO, e a unica opcional. `null` e `[]` sao coisas diferentes
+     aqui, e a ficha mostra a diferenca: `[]` e "a tela existia e nao havia
+     assunto nenhum", `null` e "nao deu para olhar". Duas razoes para o segundo,
+     e as duas acontecem:
+
+       * a acao `procedimento_alterar` nao esta na arvore deste processo — e o
+         coletor ja trata isso na coleta, com `alterar_disponivel`;
+       * a requisicao caiu.
+
+     NO SEGUNDO CASO A LEITURA NAO SE PERDE. A arvore e o historico ja vieram: o
+     processo FOI lido, e descartar tudo jogaria fora cinco requisicoes de
+     trabalho para, no ciclo seguinte, provavelmente falhar no mesmo lugar. Nao e
+     em paralelo com nada, como a coleta faz: aqui o laco inteiro e serial de
+     proposito, e uma rajada de duas contra processo de outra unidade e
+     exatamente o que derruba a sessao de trabalho de quem esta usando o SEI. */
+  let cadastro = null;
+  if (acoes && acoes.procedimento_alterar) {
+    try {
+      cadastro = await dadosCadastro(acoes.procedimento_alterar);
+    } catch (e) {
+      cadastro = null;
+    }
+  }
   return {
     // O PROTOCOLO QUE ENTROU, nunca o que o SEI imprime. O servidor casa a
     // resposta por TEXTO (`receber`, em `acompanhamento.py`), porque foi ele quem
@@ -1916,6 +1967,21 @@ async function acompanhar(protocolo, campos) {
     aberto_em_fonte: d.mesas_fonte || 'andamento',
     ultimo_movimento: d.ultimo_movimento || null,
     documentos: d.documentos, movimentos: d.movimentos,
+    // --- a ficha DO PROCESSO. Cada campo com a fonte dita acima; nenhum da mesa.
+    tipo_processo: item.tipo_processo || null,
+    // `|| null` e nao `|| ''`: ausente e vazio sao coisas diferentes, e no 4.0
+    // este campo e ausente de verdade — nao ha `aria-label` de onde tira-lo.
+    especificacao: item.especificacao || null,
+    autuacao: d.autuacao || null,
+    gerador_unidade: d.gerador_unidade || null,
+    gerador_usuario: d.gerador_usuario || null,
+    nivel_acesso: d.nivel_acesso || null,
+    hipotese_legal: d.hipotese_legal || null,
+    anexados: d.anexados || null,
+    emails_enviados: d.emails_enviados,
+    assinatura_externa: d.assinatura_externa,
+    assuntos: cadastro ? cadastro.assuntos : null,
+    interessados: cadastro ? cadastro.interessados : null,
   };
 }
 
