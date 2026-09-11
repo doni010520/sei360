@@ -137,7 +137,13 @@
       <input type="hidden" name="csrf" class="csrf">
       <input type="hidden" name="protocolo" value="{{ x.protocolo }}">
       <input type="hidden" name="instancia" value="{{ x.instancia }}">
-      <button class="bt" type="submit">Parar de acompanhar</button>
+      {# A ÚNICA PERDA IRREVERSÍVEL DESTA TELA, e até aqui ela era silenciosa. O
+         histórico de leituras sai junto por FK em cascata (foi decisão do
+         desenho: leitura sem item na lista é dado pessoal sem uso), e recolar o
+         número devolve o item — nunca a série. Quem clica precisa saber disso
+         ANTES, não depois. #}
+      <button class="bt" type="submit"
+              title="Tira o processo da sua lista e apaga o histórico de leituras dele; recolar o número traz o item de volta, mas não o histórico.">Parar de acompanhar</button>
     </form>
   </div>
   {% else %}

@@ -78,6 +78,17 @@ DIAS = {
     # reserva de leitura: vive 20 minutos por desenho. Uma semana já é folga
     # enorme para o caso de a execução que a criou nunca ter sido apagada.
     "poco_reserva": 7,
+    # A SÉRIE DE LEITURAS do acompanhamento: 180 dias. Ela É o valor do módulo —
+    # é a única série temporal do produto, e todo o resto aqui é retrato de um
+    # instante — e não carrega texto livre além do `ultimo_movimento`, que
+    # `processo` já guarda. 180 é o prazo do `log_acesso`: é o tempo em que
+    # alguém ainda pergunta "quando foi que este processo saiu da minha unidade".
+    #
+    # A LISTA (`acompanhado`) NÃO EXPIRA, e não está aqui de propósito: ela é
+    # escolha da pessoa, não subproduto de coleta. Apagá-la por idade seria
+    # decidir por ela que já não interessa seguir aquele processo — e um processo
+    # parado há um ano é exatamente o que alguém quer continuar seguindo.
+    "acompanhado_leitura": 180,
 }
 
 
@@ -265,6 +276,24 @@ def expurgar(simular=False, usuario_id=None):
             plano.append((tabela, n, f"sem leitura há mais de {prazo} dias"))
             if not simular:
                 cx.execute(f"DELETE FROM {tabela} WHERE {coluna} < ?", (_corte(prazo),))
+
+    # 5-acompanhamento. A SÉRIE, e só ela. `acompanhado_leitura` é FILHA de
+    # `acompanhado` (FK composta com ON DELETE CASCADE), e cascade corre de PAI
+    # para FILHO: apagar leitura velha não leva a lista junto, por construção. É
+    # o inverso do passo 1, em que apagar `snapshot` leva `processo` — lá a
+    # tabela grande é a filha, aqui é a filha que envelhece e a mãe que fica.
+    #
+    # Por isso o DELETE é direto na tabela filha e NÃO há varredura de órfão
+    # correspondente: órfão aqui seria leitura sem item na lista, e a FK é quem
+    # impede que ela exista.
+    n_acomp = cx.execute("SELECT COUNT(*) FROM acompanhado_leitura WHERE lido_em < ?",
+                         (_corte(DIAS["acompanhado_leitura"]),)).fetchone()[0]
+    if n_acomp:
+        plano.append(("acompanhado_leitura", n_acomp,
+                      f"lidas há mais de {DIAS['acompanhado_leitura']} dias"))
+        if not simular:
+            cx.execute("DELETE FROM acompanhado_leitura WHERE lido_em < ?",
+                       (_corte(DIAS["acompanhado_leitura"]),))
 
     # 5b. Alerta que ninguém reconheceu. Fica muito mais tempo que o reconhecido,
     # mas não fica para sempre.
