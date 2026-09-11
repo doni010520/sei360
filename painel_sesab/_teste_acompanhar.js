@@ -30,7 +30,15 @@
         `paginas_teto: 1`, e sao seis;
      5. que a sessao aguenta N processos em serie a 240 ms, que e a pausa medida
         contra a paginacao da busca, nao contra esta leitura;
-     6. que `id_sei` vem preenchido na linha do resultado nas DUAS instalacoes.
+     6. que `id_sei` vem preenchido na linha do resultado nas DUAS instalacoes;
+     7. A MAIS IMPORTANTE DA LISTA: que o `GET acao=procedimento_trabalhar` sobre
+        processo que NAO esta em nenhuma mesa de quem le seja mesmo so leitura.
+        No SEI 5.0.4 abrir um processo pode marca-lo como RECEBIDO na unidade
+        ativa, e ai este modulo estaria ALTERANDO o SEI em vez de observa-lo —
+        movimentando processo alheio em nome de quem acompanha, sem ninguem ter
+        pedido. Nenhuma fixture responde isso: so a rodada de campo, conferindo o
+        andamento do processo ANTES e DEPOIS da primeira leitura. Enquanto nao
+        for conferido, e o risco aberto do modulo.
 
    node _teste_acompanhar.js
 */
@@ -78,6 +86,9 @@ function ambiente(resolver, opc = {}) {
       // O SEI nao responde "sessao caiu": ele REDIRECIONA para o login, e e a URL
       // final da resposta que denuncia isso. E assim que `pegar()` descobre.
       if (r === LOGIN) return { url: '/sei/login.php', arrayBuffer: async () => '' };
+      // Excecao com mensagem escolhida pelo caso — e como se exercita o que a
+      // estacao faz com o TEXTO de um erro antes de manda-lo pela rede.
+      if (r && r.erro) throw new Error(r.erro);
       return { url, arrayBuffer: async () => r };
     },
   };
@@ -408,6 +419,24 @@ console.log('\nO TETO DE TEMPO DEVOLVE O QUE JA FOI LIDO');
   checar('mas devolveu o que leu', (env.leituras || []).length >= 1,
          String((env.leituras || []).length));
   checar('e disse que foi o teto', /teto/i.test(env.motivo || ''), env.motivo);
+}
+
+console.log('\nO MOTIVO DA FALHA NAO LEVA infra_hash PELA REDE');
+{
+  // `falhas[].motivo` e mensagem de excecao truncada, e excecao de `fetch` pode
+  // carregar a URL que falhou — que leva `infra_hash` de sessao. O servidor nao
+  // persiste este campo hoje, mas "hoje nao persiste" nao e lugar para guardar
+  // segredo de sessao.
+  const amb = ambiente(redeComResultado([RESULTADO(PROTOCOLO, '91')],
+    { historico: { erro: 'caiu em /sei/x?infra_hash=SEGREDO123&id=9' } }));
+  const env = await amb.caixa.SEIAuto.acompanharLista(
+    { instancia: 'SEI-SESAB', protocolos: [PROTOCOLO], campos: CAMPOS });
+  const texto = JSON.stringify(env);
+  checar('a falha e relatada', (env.falhas || []).length === 1, texto.slice(0, 160));
+  checar('o hash de sessao NAO atravessa o fio', !texto.includes('SEGREDO123'),
+         texto.slice(0, 200));
+  checar('mas o resto do motivo continua legivel', /caiu em/.test(env.falhas[0].motivo),
+         env.falhas[0].motivo);
 }
 
 console.log('\nO LINK SO EXISTE PARA QUEM PEDIU — E NUNCA E PERSISTIDO');

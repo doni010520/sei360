@@ -1940,12 +1940,18 @@ async function acompanharLista(pedido) {
   const teto = (pedido && pedido.teto_ms) || 9 * 60 * 1000;
   const saida = { instancia: (pedido && pedido.instancia) || null,
                   leituras: [], falhas: [], motivo: null, pedidos: protocolos.length };
+  /* O MOTIVO DA FALHA ATRAVESSA A REDE, e por isso passa por aqui antes.
+     Ele e mensagem de excecao truncada, e excecao de `fetch` pode carregar a URL
+     que falhou — que leva `infra_hash` de sessao. O servidor nao persiste este
+     campo hoje, mas "hoje nao persiste" nao e lugar para guardar segredo de
+     sessao: o que nao precisa sair, nao sai. */
+  const semHash = m => String(m || '').replace(/infra_hash=[^&\s'"]*/gi, 'infra_hash=…');
   const t0 = Date.now();
   for (let i = 0; i < protocolos.length; i++) {
     if (i) await dorme(240);
     const r = await acompanhar(protocolos[i], campos);
     if (r.falha) {
-      saida.falhas.push({ protocolo: r.protocolo, motivo: r.falha });
+      saida.falhas.push({ protocolo: r.protocolo, motivo: semHash(r.falha) });
       // SESSAO CAIDA PARA TUDO. Insistir so multiplica requisicao invalida contra
       // o SEI, e — pior — todo processo seguinte falharia do mesmo jeito, o que
       // encheria `falhas` de ruido escondendo qual foi a causa.

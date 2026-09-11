@@ -174,7 +174,15 @@ function documento(html) {
          Pesquisa, e nao existem em `querySelectorAll`: `tab.rows` e TODO `tr`
          descendente (o SEI envolve as linhas em `<tbody>`), e `tr.cells` sao as
          celulas FILHAS daquela linha — nunca as de uma tabela aninhada, que
-         apareceriam como colunas extras da linha de fora. */
+         apareceriam como colunas extras da linha de fora.
+
+         `rows` ATRAVESSA TABELA ANINHADA, ao contrario de `cells`. No DOM de
+         verdade `table.rows` para na tabela de fora; aqui ele desce. Nao e
+         regressao — este arquivo sempre se comportou assim, e a fixture do SEI
+         nao tem tabela dentro de tabela. Fica registrado porque o alcance mudou:
+         este DOM agora guarda DUAS suites (`_teste_parser40.js` e
+         `_teste_acompanhar.js`), e quem acrescentar uma fixture com tabela
+         aninhada vai ver linhas a mais sem entender de onde vieram. */
       get rows() {
         if (!['table', 'tbody', 'thead'].includes(no.tag)) return undefined;
         return descendentes(no, []).filter(f => f.tag === 'tr').map(el);

@@ -124,6 +124,13 @@ BUSCAR = "--buscar" in sys.argv
 # nao publica, nao escreve em _coletas — e, como a busca, nao compartilha estado
 # com a coleta.
 ACOMPANHAR = "--acompanhar" in sys.argv
+if ACOMPANHAR and BUSCAR:
+    # Os dois leem UMA linha de stdin e esperam um pedido de forma diferente, e o
+    # bloco de --acompanhar vem primeiro no arquivo: passar as duas escolheria
+    # acompanhar EM SILENCIO e a busca de alguem sumiria sem erro. Ninguem faz
+    # isso hoje; a recusa e barata e a falha silenciosa nao e.
+    print("--acompanhar e --buscar sao modos diferentes; escolha um")
+    sys.exit(4)
 # O MOTOR DA BUSCA VAI JUNTO nos dois modos: a leitura de um processo por numero
 # COMECA por uma pesquisa, e e dela que sai o link do processo.
 JS_BUSCA = BASE / "pesquisa_sei.js"
@@ -531,12 +538,20 @@ try:
             carregar_motor_da_busca()
             _protos = PEDIDO_ACOMP.get("protocolos") or []
             log(f"acompanhando {len(_protos)} processo(s) por numero…")
-            # OS CAMPOS DA PESQUISA SAEM DO PERFIL, como na busca. Sem eles
-            # `montar()` não acha o campo do número, a pesquisa volta cheia (ou
-            # vazia) e a estação relataria "não encontrado" sobre TODO processo —
-            # afirmando sobre os processos uma coisa que é verdade sobre a
-            # instalação. É a mesma trava que a rota do servidor já aplica com
-            # `disponivel_busca`.
+            # OS CAMPOS DA PESQUISA SAEM DO PERFIL. Sem eles `montar()` não acha
+            # o campo do número, a pesquisa volta cheia (ou vazia) e a estação
+            # relataria "não encontrado" sobre TODO processo — afirmando sobre os
+            # processos uma coisa que é verdade sobre a instalação. É a mesma
+            # trava que a rota do servidor já aplica com `disponivel_busca`.
+            #
+            # REGISTRADO, E DE PROPÓSITO NÃO MUDADO: aqui os campos vêm do perfil
+            # que chegou em `stdin` (`PERFIL_SEI["campos_busca"]`), e no
+            # `--buscar` eles vêm do PEDIDO, montado pelo servidor em
+            # `busca.py:406` a partir do mesmo `perfil_sei`. São a mesma fonte
+            # por dois caminhos. O dia em que divergirem — e o candidato é o
+            # perfil local ficar para trás do servidor — a busca acha o campo e o
+            # acompanhamento não, e a diferença aparece como "não encontrado" em
+            # tudo. Unificar é mudança do contrato da rota, e não cabia aqui.
             env = pg.evaluate("(p) => SEIAuto.acompanharLista(p)", {
                 "instancia": PEDIDO_ACOMP.get("instancia") or PERFIL_JS.get("instancia"),
                 "protocolos": _protos,
