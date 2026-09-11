@@ -274,12 +274,19 @@ checar("processo de mesa ALHEIA não é reaproveitado",
        f"{_alheio['estado']} / {_alheio['fonte']}")
 _cx.commit(); _cx.close()
 
-print("\n5-bis. duas mesas minhas, e a carteira que não diz nada")
+print("\n5-bis. duas mesas minhas, um quadro só")
 _cx = conectar()
-# O MESMO processo em DUAS mesas da MESMA conta — situação corrente, não exótica:
-# é o caso dos processos compartilhados que `relatorios.carregar` já documenta. As
-# duas coletas são de dias diferentes, e é a régua de cada linha que decide qual
-# contagem vale.
+# `processo_mesa` é a ÁRVORE INTEIRA por linha, não o ângulo da mesa que coletou:
+# `ingestao.py` a preenche de `d["mesas"]`, que em `automacao_sei.js` é
+# `mesas, // onde esta aberto hoje` — a linha "Processo aberto nas unidades: ..."
+# que o SEI publica no topo da árvore. Logo, a linha MAIS FRESCA já tem o quadro
+# completo, e somar as linhas não acrescenta unidade: importa bolor.
+#
+# Aqui a coleta de 28/08 vê o processo em duas unidades; a de 27/08 ainda o via
+# numa terceira, de onde ele já saiu. Somar ressuscitaria essa terceira sob a
+# contagem e a régua de 28/08 — retrato que nunca existiu — e, pior, calaria o
+# `saiu_de` enquanto o snapshot velho vivesse: nove dias úteis, no caso medido em
+# 10/09/2026. O evento mais valioso do módulo nunca sairia.
 _cx.execute("""INSERT INTO snapshot(id,unidade,coletado_em,estado,dono_usuario_id,
                instancia) VALUES(903,'SESAB/OUTRA-MINHA','2026-08-28T07:45:00-03:00',
                'corrente',7,'SEI-SESAB')""")
@@ -288,16 +295,17 @@ _cx.execute("INSERT INTO usuario_unidade(usuario_id,unidade,concedida_em) "
 _cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
                medido_em,mesas_fonte) VALUES(903,'444','019.4444.2026.0000004-44',
                5,6,'2026-08-28T07:45:00-03:00','arvore')""")
-_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
-               VALUES(903,'444','SESAB/OUTRA-MINHA',NULL)""")
+for _mesa in ("SESAB/MINHA", "SESAB/OUTRA-MINHA"):
+    _cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+                   VALUES(903,'444',?,NULL)""", (_mesa,))
 _cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
                medido_em,mesas_fonte) VALUES(900,'444','019.4444.2026.0000004-44',
                4,5,'2026-08-27T07:45:00-03:00','arvore')""")
-_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
-               VALUES(900,'444','SESAB/MINHA',NULL)""")
+for _mesa in ("SESAB/MINHA", "SESAB/OUTRA-MINHA", "SESAB/JA-SAIU"):
+    _cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+                   VALUES(900,'444',?,NULL)""", (_mesa,))
 # E um processo da minha carteira cuja coleta não listou mesa NENHUMA: acontece
-# quando a linha "Processo aberto nas unidades" da árvore não parseou. A leitura
-# existe; a lista de unidades é que está vazia.
+# quando a linha da árvore não parseou. A leitura existe; a lista é que é vazia.
 _cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
                medido_em,mesas_fonte) VALUES(900,'555','019.5555.2026.0000005-55',
                1,2,'2026-08-27T07:45:00-03:00','andamento')""")
@@ -317,10 +325,10 @@ _quantas = _cx.execute(
 # Duas leituras da mesma passada fariam a segunda medir o delta contra a
 # primeira, recém-inserida: a tela anunciaria movimentação de um processo parado.
 checar("processo em duas mesas minhas grava UMA leitura", _quantas == 1, str(_quantas))
-checar("e as duas mesas aparecem somadas em aberto_em",
+checar("o quadro é o da linha escolhida, SEM a unidade de onde o processo saiu",
        _duas["aberto_em"] == ["SESAB/MINHA", "SESAB/OUTRA-MINHA"],
        str(_duas["aberto_em"]))
-checar("as contagens saem da medição mais fresca",
+checar("e contagem e régua vêm da MESMA linha que deu as mesas",
        (_duas["documentos"], _duas["movimentos"]) == (5, 6)
        and (_duas["medido_em"] or "").startswith("2026-08-28"),
        f"{_duas['documentos']}/{_duas['movimentos']} em {_duas['medido_em']}")
@@ -454,6 +462,88 @@ checar("e nenhuma das duas fica esperando leitura",
        all(_itens[f]["fonte"] == "carteira" and _itens[f]["estado"] == "lido"
            for f in (_pontuado, ac.digitos(_pontuado))),
        str({f: _itens[f]["estado"] for f in (_pontuado, ac.digitos(_pontuado))}))
+_cx.commit(); _cx.close()
+
+print("\n5-sexies. a linha escolhida é a que tem mesa, e a fonte é a DELA")
+_cx = conectar()
+# Dia em que a árvore não parseou: a coleta mais fresca gravou o processo sem uma
+# única linha em `processo_mesa`. A linha de 27/08 tem mesa, vinda da máquina de
+# estados do andamento. O quadro é a linha que TEM mesa, INTEIRA — mesa,
+# contagem, régua e fonte.
+#
+# Preferir 'arvore' sobre 'andamento' ENTRE LINHAS diferentes juntaria a mesa de
+# uma com a contagem da outra, que é exatamente o defeito que "um momento, um
+# quadro" conserta. Se a linha escolhida veio do andamento — que a medição de
+# 10/09/2026 mostrou errar em 100% dos 1.278 casos observáveis —, a fonte é
+# 'andamento' e a tela marca "não confirmado pela árvore". É para isso que o
+# campo existe.
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(903,'888','019.8888.2026.0000008-88',
+               9,9,'2026-08-28T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(900,'888','019.8888.2026.0000008-88',
+               7,8,'2026-08-27T07:45:00-03:00','andamento')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'888','SESAB/MINHA',NULL)""")
+_cx.commit()
+ac.adicionar(_cx, 7, "019.8888.2026.0000008-88", "SEI-SESAB")
+_cx.commit()
+checar("a linha sem mesa não cala a que tem",
+       ac.reaproveitar(_cx, 7, "SEI-SESAB") == 1)
+_cx.commit()
+
+_escolhida = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.8888.2026.0000008-88"]
+checar("a mesa vem da linha que a tinha", _escolhida["aberto_em"] == ["SESAB/MINHA"],
+       str(_escolhida["aberto_em"]))
+checar("a fonte é a da linha escolhida, sem preferir a árvore de outra",
+       _escolhida["aberto_em_fonte"] == "andamento",
+       str(_escolhida["aberto_em_fonte"]))
+checar("e contagem e régua são as DELA, não as da linha mais fresca sem mesa",
+       (_escolhida["documentos"], _escolhida["movimentos"]) == (7, 8)
+       and (_escolhida["medido_em"] or "").startswith("2026-08-27"),
+       f"{_escolhida['documentos']}/{_escolhida['movimentos']} em {_escolhida['medido_em']}")
+_cx.commit(); _cx.close()
+
+print("\n5-septies. a régua é a da LINHA, não a do snapshot")
+_cx = conectar()
+# O REGIME NORMAL, não a exceção: 92,6% dos processos de uma coleta são servidos
+# do poço, então a lista é de hoje e o detalhe é de dias atrás. Aqui a coleta de
+# 12/09 traz detalhe medido em 20/08, e a coleta de 27/08 traz detalhe medido em
+# 10/09 — a ordem dos snapshots e a ordem das MEDIÇÕES discordam.
+#
+# Quem responde é a medição mais fresca (10/09), porque é ela que diz onde o
+# processo está. Ordenar por `snapshot.coletado_em` pegaria o detalhe de 20/08 sob
+# uma lista nova, que é o defeito que `medido_em` existe para não deixar
+# acontecer (ver `banco.py`, coluna `medido_em`).
+_cx.execute("""INSERT INTO snapshot(id,unidade,coletado_em,estado,dono_usuario_id,
+               instancia) VALUES(904,'SESAB/TERCEIRA','2026-09-12T07:45:00-03:00',
+               'corrente',7,'SEI-SESAB')""")
+_cx.execute("INSERT INTO usuario_unidade(usuario_id,unidade,concedida_em) "
+            "VALUES(7,'SESAB/TERCEIRA',?)", (agora(),))
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(904,'999','019.9999.2026.0000009-99',
+               1,1,'2026-08-20T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(904,'999','SESAB/TERCEIRA',NULL)""")
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(900,'999','019.9999.2026.0000009-99',
+               3,3,'2026-09-10T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'999','SESAB/MINHA',NULL)""")
+_cx.commit()
+ac.adicionar(_cx, 7, "019.9999.2026.0000009-99", "SEI-SESAB")
+_cx.commit()
+checar("o processo com duas medições é respondido uma vez",
+       ac.reaproveitar(_cx, 7, "SEI-SESAB") == 1)
+_cx.commit()
+
+_regua = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.9999.2026.0000009-99"]
+checar("responde a MEDIÇÃO mais fresca, não o snapshot mais fresco",
+       _regua["aberto_em"] == ["SESAB/MINHA"]
+       and (_regua["documentos"], _regua["movimentos"]) == (3, 3),
+       f"{_regua['aberto_em']} / {_regua['documentos']}")
+checar("e o carimbo é a data da medição, não a da coleta",
+       (_regua["medido_em"] or "").startswith("2026-09-10"), str(_regua["medido_em"]))
 _cx.commit(); _cx.close()
 
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")

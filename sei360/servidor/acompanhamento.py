@@ -267,7 +267,11 @@ def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte,
 
 
 def reaproveitar(cx, usuario_id, instancia):
-    """Responde da CARTEIRA o que a carteira já sabe. Devolve quantos respondeu.
+    """Responde da CARTEIRA o que a carteira já sabe.
+
+    Devolve quantos ITENS DA LISTA respondeu — que é o mesmo que processos,
+    exceto quando a lista guarda o mesmo número em duas formas (ver
+    `por_digitos`, no fim desta função).
 
     A economia é a do poço, aplicada dentro de uma conta só — e aqui é integral,
     porque os quatro campos de que o módulo vive já estão guardados: as unidades
@@ -337,80 +341,87 @@ def reaproveitar(cx, usuario_id, instancia):
           -- `_SQL_DIGITOS` é o espelho de `digitos()`, e o comentário dele diz
           -- por que não há índice nisso.
           AND {_SQL_DIGITOS} IN ({marc_p})
-        -- DA MEDIÇÃO MAIS FRESCA PARA A MAIS VELHA, porque o mesmo processo pode
-        -- vir de duas mesas desta conta, com uma coleta de cada dia. A régua é
-        -- `medido_em or coletado_em`, a MESMA com que o painel e
-        -- `relatorios.carregar` medem cada linha; ordenar pela hora do snapshot
-        -- daria a linha de detalhe velho de uma coleta de lista nova.
+        -- DA MEDIÇÃO MAIS FRESCA PARA A MAIS VELHA. O mesmo processo aparece em
+        -- toda coleta de unidade onde ele está aberto, e é a MEDIÇÃO — não a hora
+        -- da coleta — que diz qual dessas linhas descreve o processo hoje: 92,6%
+        -- dos processos de uma coleta são servidos do poço, então lista nova com
+        -- detalhe de dias atrás é o REGIME NORMAL, e é por isso que `medido_em`
+        -- existe (ver a coluna em `banco.py`).
+        --
+        -- A régua de MEDIR é a mesma do painel e de `relatorios.carregar`
+        -- (`medido_em or coletado_em`). O que difere é a ORDEM DE ESCOLHA entre
+        -- linhas: lá é `s.coletado_em`, aqui é a medição, e a diferença é
+        -- deliberada. Lá a ordem decide qual linha sobrevive à dedup entre as
+        -- unidades de uma carteira coletada na mesma passada; aqui ela decide
+        -- qual MEDIÇÃO responde por um processo que pode ter detalhe de 20/08
+        -- sob coleta de 12/09.
         ORDER BY COALESCE(p.medido_em, s.coletado_em) DESC, s.id DESC""",
         ids + list(por_digitos)).fetchall()
-    # UMA LEITURA POR PROTOCOLO, ainda que o processo esteja em DUAS mesas desta
-    # conta — situação corrente, a mesma que `relatorios.carregar` trata na dedup.
-    # Uma leitura por linha gravaria duas na mesma passada, e a segunda mediria o
-    # delta contra a primeira, recém-inserida: a tela anunciaria "saiu de A,
-    # entrou em B" para um processo que não se moveu, e `feitos` contaria dois
-    # processos onde havia um.
+    # UM MOMENTO, UM QUADRO. Tudo sai da MESMA linha — contagem, régua, mesas e
+    # fonte. A escolhida é a mais fresca que TENHA lista de mesas; se nenhuma
+    # tiver, a mais fresca, com `aberto_em` vazio.
     #
-    # Contagem, movimento e régua saem da linha mais fresca; as mesas se SOMAM,
-    # porque cada coleta vê o processo do ângulo da mesa dela. A união é o que
-    # fica estável entre passadas — lista que oscila conforme qual coleta chegou
-    # primeiro é exatamente o falso "mudou" que `delta` existe para não inventar.
-    juntos = {}
-    for r in linhas:
+    # `processo_mesa` é a ÁRVORE INTEIRA por linha, NÃO o ângulo da mesa que
+    # coletou: `ingestao.py` a preenche de `d["mesas"]`, que em
+    # `automacao_sei.js` é `mesas, // onde esta aberto hoje` — a linha "Processo
+    # aberto nas unidades: ..." do topo da árvore, com a máquina de estados do
+    # andamento como reserva. `relatorios.py` já dizia isso por escrito.
+    #
+    # A versão anterior SOMAVA as mesas de todas as linhas, e fazia três danos:
+    #
+    #   1. importava bolor — mesa de 27/08 sob contagem e régua de 12/09,
+    #      carimbada 'arvore' para unidade que a árvore fresca já não lista:
+    #      retrato que não existiu em momento nenhum;
+    #   2. calava o `saiu_de` ESTRUTURALMENTE — união só cresce, então enquanto o
+    #      snapshot velho vivesse (nove dias úteis, no caso medido em 10/09/2026)
+    #      o evento mais valioso do módulo nunca sairia: a tela diria "+2
+    #      documentos" para um processo que saiu da unidade da pessoa;
+    #   3. misturava lista medida errada com lista medida certa — a árvore bateu
+    #      com a mesa em 1.278 de 1.278 casos observáveis, o andamento em 0.
+    #
+    # E NÃO se prefere 'arvore' sobre 'andamento' entre linhas diferentes: isso
+    # juntaria a mesa de uma linha com a contagem de outra, que é o mesmo defeito
+    # com outra roupa. Linha escolhida vinda do andamento => fonte 'andamento', e
+    # a tela marca "não confirmado pela árvore" — é para isso que o campo existe.
+    escolhida = {}
+    for r in linhas:                     # já vêm da medição mais fresca
         # A CHAVE É O DÍGITO, não o texto: é ele que liga a linha da carteira
         # (pontuada, como o SEI imprime) ao item da lista (como a pessoa colou).
         chave = digitos(r["protocolo"])
-        d = juntos.get(chave)
-        if d is None:
-            d = juntos[chave] = {
-                "mesas": set(), "fontes": set(),
-                "ultimo_movimento": json.loads(r["ultimo_movimento"] or "null"),
-                "documentos": r["documentos"], "movimentos": r["movimentos"],
-                "medido_em": r["medido_em"] or r["coletado_em"],
-                "fonte_fresca": r["mesas_fonte"] or "andamento",
-                "id_sei": r["id_sei"],
-            }
-        mesas = set((r["mesas"] or "").split(chr(31))) - {""}
-        if mesas:
-            d["mesas"] |= mesas
-            # A fonte acompanha quem CONTRIBUIU com mesa: linha que não trouxe
-            # unidade nenhuma não tem procedência a declarar sobre a lista.
-            d["fontes"].add(r["mesas_fonte"] or "andamento")
+        mesas = sorted(set((r["mesas"] or "").split(chr(31))) - {""})
+        atual = escolhida.get(chave)
+        # Fica com a primeira vista, que é a mais fresca; só troca quando ela não
+        # trouxe mesa nenhuma e esta trouxe.
+        if atual is None or (not atual[1] and mesas):
+            escolhida[chave] = (r, mesas)
     feitos = 0
-    for chave, d in juntos.items():
-        # `mesas_fonte` vem da coleta e pode valer 'andamento', que a medição de
-        # 10/09/2026 mostrou errar em 100% dos 1.278 casos observáveis. Não se
-        # relê por isso — seria uma requisição por dia para trocar dado velho por
-        # dado novo do mesmo campo —, mas a tela marca como não confirmado pela
-        # árvore, e para isso a fonte tem de chegar lá.
-        #
-        # Na união de duas mesas vale a fonte MAIS FRACA: dizer 'arvore' sobre uma
-        # lista em que metade das unidades veio do andamento é afirmar
-        # confirmação que não houve. É o princípio de `mesa_indeterminada`, que
-        # significa "não sei" e nunca "sem divergência".
-        if d["fontes"]:
-            fonte_mesas = "arvore" if d["fontes"] == {"arvore"} else "andamento"
-        else:
-            fonte_mesas = d["fonte_fresca"]
+    for chave, (r, mesas) in escolhida.items():
         dados = {
-            # LISTA, nunca None — e vazia quando a coleta não listou mesa alguma,
-            # que acontece de verdade: `processo_mesa` nasce da linha "Processo
-            # aberto nas unidades" da árvore, e coleta cuja árvore não parseou
-            # grava o processo sem uma única linha de mesa. `listar()` devolve
-            # None tanto para JSON null quanto para item que nunca foi lido, então
-            # `[]` é o único valor que a tela consegue distinguir de "aguardando
-            # primeira leitura" — e vazio aqui significa "a coleta não disse",
-            # nunca "não está aberto em lugar nenhum".
-            "aberto_em": sorted(d["mesas"]),
-            "aberto_em_fonte": fonte_mesas,
-            "ultimo_movimento": d["ultimo_movimento"],
-            "documentos": d["documentos"], "movimentos": d["movimentos"],
+            # LISTA, nunca None — e vazia quando a linha escolhida não listou
+            # mesa alguma, que acontece de verdade: `processo_mesa` nasce da
+            # linha "Processo aberto nas unidades" da árvore, e coleta cuja
+            # árvore não parseou grava o processo sem uma única linha de mesa.
+            # `listar()` devolve None tanto para JSON null quanto para item que
+            # nunca foi lido, então `[]` é o único valor que a tela consegue
+            # distinguir de "aguardando primeira leitura" — e vazio aqui
+            # significa "a coleta não disse", nunca "não está aberto em lugar
+            # nenhum".
+            "aberto_em": mesas,
+            # `mesas_fonte` vem da coleta e pode valer 'andamento', que a medição
+            # de 10/09/2026 mostrou errar em 100% dos 1.278 casos observáveis.
+            # Não se relê por isso — seria uma requisição por dia para trocar
+            # dado velho por dado novo do mesmo campo —, mas a tela marca como
+            # não confirmado pela árvore, e para isso a fonte tem de chegar lá.
+            "aberto_em_fonte": r["mesas_fonte"] or "andamento",
+            "ultimo_movimento": json.loads(r["ultimo_movimento"] or "null"),
+            "documentos": r["documentos"], "movimentos": r["movimentos"],
         }
         # O PROTOCOLO DA LISTA, nunca o da carteira. A chave de `acompanhado` é a
         # forma que a pessoa colou; gravar a leitura sob a forma pontuada da
         # carteira faria a FK composta recusar — e com razão, porque não existe
         # leitura sem a linha da lista. São VÁRIAS formas só quando a lista já
-        # tinha as duas (ver `por_digitos`); no caso normal, uma.
+        # tinha as duas (ver `por_digitos`); no caso normal, uma — e é por isso
+        # que `feitos` conta ITEM DA LISTA respondido, não processo distinto.
         for protocolo in por_digitos.get(chave, ()):
             gravar_leitura(cx, usuario_id, instancia, protocolo, dados,
                            fonte="carteira",
@@ -420,7 +431,7 @@ def reaproveitar(cx, usuario_id, instancia):
                            # mentir na procedência. `coletado_em` é a reserva
                            # porque `medido_em` é nulo em linha de coleta
                            # anterior à régua.
-                           medido_em=d["medido_em"],
-                           id_sei=d["id_sei"])
+                           medido_em=r["medido_em"] or r["coletado_em"],
+                           id_sei=r["id_sei"])
             feitos += 1
     return feitos
