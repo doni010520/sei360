@@ -1172,9 +1172,9 @@ checar("e a carteira continua trazendo o que é dela",
        any(x.get("protocolo") == "019.1111.2026.0000001-11" for x in _cart))
 
 # Checagem 13 do desenho: processo que SAI da mesa não é mais respondido pela
-# carteira — fica esperando quem vá ao SEI. Com `ac.pendentes` (tarefa 8) isto
-# se diz numa linha; até lá, o fato se prova pelo que existe: a carteira devolve
-# zero e o item continua 'novo'.
+# carteira — fica esperando quem vá ao SEI. A carteira devolve zero, o item
+# continua 'novo', e `pendentes` o entrega à estação: é a passagem de um caminho
+# para o outro, e é o caso que motivou o módulo inteiro.
 _cx.execute("UPDATE snapshot SET estado='expirado' WHERE id=900")
 _cx.execute("""UPDATE acompanhado SET lido_em=NULL, estado='novo'
                WHERE protocolo='019.1111.2026.0000001-11'""")
@@ -1185,8 +1185,481 @@ _item_fora = {x["protocolo"]: x
               for x in ac.listar(_cx, 7)}["019.1111.2026.0000001-11"]
 checar("e fica esperando a leitura de quem for ao SEI",
        _item_fora["estado"] == "novo", str(_item_fora["estado"]))
+checar("e é a estação quem passa a ter de lê-lo",
+       "019.1111.2026.0000001-11" in ac.pendentes(_cx, 7, "SEI-SESAB"))
 _cx.execute("UPDATE snapshot SET estado='corrente' WHERE id=900")
+# A coleta volta, e com ela a resposta de graça: o item sai da conta da estação
+# sem ninguém mandar. É a economia central do desenho, dita de dentro de
+# `pendentes` — que chama `reaproveitar` antes de listar justamente para isto.
+_cx.execute("""UPDATE acompanhado SET lido_em=NULL, estado='novo'
+               WHERE protocolo='019.1111.2026.0000001-11'""")
+_cx.commit()
+checar("com a coleta de volta, a carteira o tira da conta da estação",
+       "019.1111.2026.0000001-11" not in ac.pendentes(_cx, 7, "SEI-SESAB"))
 _cx.commit(); _cx.close()
+
+print("\n8. o que a estação pega")
+import hashlib as _hash                                          # noqa: E402
+import json as _json                                             # noqa: E402
+
+# A NOTA É TEXTO DE GENTE, e pode citar nome. Ela fica na tela de quem escreveu;
+# a estação só precisa do número para procurar no SEI. Este item é o que prova
+# que ela não viaja.
+_cx = conectar()
+_cx.execute("""UPDATE acompanhado SET nota='cobrar a Laisa sobre o pagamento'
+               WHERE usuario_id=7 AND protocolo='019.2222.2026.0000002-22'""")
+_cx.execute("DELETE FROM agentes")
+_TOKEN_AG = "token-da-estacao-7"
+_cx.execute("""INSERT INTO agentes(id,nome_estacao,dono_usuario_id,ativo,
+               token_sha256,unidades_esperadas,ultimo_contato_em,criado_em)
+               VALUES(70,'ESTACAO-7',7,1,?,'["SESAB/MINHA"]',?,?)""",
+            (_hash.sha256(_TOKEN_AG.encode()).digest(), agora(), agora()))
+# A SEGUNDA ESTAÇÃO, da outra conta: é ela que prova que o dono sai do TOKEN.
+_TOKEN_AG8 = "token-da-estacao-8"
+_cx.execute("""INSERT INTO agentes(id,nome_estacao,dono_usuario_id,ativo,
+               token_sha256,unidades_esperadas,ultimo_contato_em,criado_em)
+               VALUES(80,'ESTACAO-8',8,1,?,'[]',?,?)""",
+            (_hash.sha256(_TOKEN_AG8.encode()).digest(), agora(), agora()))
+# E a estação SEM DONO: sem dono não há credencial do SEI de quem abrir, e é o
+# mesmo motivo pelo qual `/api/agente/tarefa` recusa entregar coleta.
+_cx.execute("""INSERT INTO agentes(id,nome_estacao,dono_usuario_id,ativo,
+               token_sha256,unidades_esperadas,ultimo_contato_em,criado_em)
+               VALUES(81,'ESTACAO-ORFA',NULL,1,?,'[]',?,?)""",
+            (_hash.sha256(b"token-orfao").digest(), agora(), agora()))
+_cx.commit(); _cx.close()
+
+_cx = conectar()
+# UM NÚMERO DA FESF QUE A CARTEIRA NÃO RESPONDE: os outros itens da FESF desta
+# suíte estão todos na coleta da FESF, e por isso saem da conta da estação de
+# graça — que é o desenho funcionando. Para provar o recorte POR INSTALAÇÃO é
+# preciso um que sobre.
+ac.adicionar(_cx, 7, "019.3030.2026.0000030-30", "SEI-FESF")
+_cx.commit()
+_pend = ac.pendentes(_cx, 7, "SEI-SESAB")
+_pend_fesf = ac.pendentes(_cx, 7, "SEI-FESF")
+_cx.commit()
+checar("o de mesa alheia está pendente de leitura no SEI",
+       "019.2222.2026.0000002-22" in _pend, str(_pend))
+checar("o da minha carteira NÃO está — já foi respondido de graça",
+       "019.1111.2026.0000001-11" not in _pend, str(_pend))
+# `pendentes` é POR instalação: mandar a estação procurar na SESAB um número que
+# a pessoa colou na lista da FESF é procurar no SEI errado — o item nunca casaria,
+# e viraria 'nao_encontrado' para sempre.
+checar("a lista da outra instalação não entra nesta",
+       "019.3030.2026.0000030-30" not in _pend, str(_pend))
+checar("e a da FESF traz o dela",
+       "019.3030.2026.0000030-30" in _pend_fesf, str(_pend_fesf))
+# SÓ O NÚMERO. A estação recebe o que precisa para procurar, e nada do que a
+# pessoa escreveu.
+checar("o que sai são números, não fichas", all(isinstance(p, str) for p in _pend),
+       str(_pend)[:120])
+_cx.commit(); _cx.close()
+
+
+def _do_agente(caminho, corpo_obj=None, metodo="POST", tok=None):
+    """Requisição como a estação faz: Bearer MAIS HMAC do corpo exato enviado.
+
+    O corpo é serializado UMA vez e os mesmos bytes são assinados e enviados —
+    assinar um `json.dumps` diferente do que vai no fio passa no teste e falha em
+    produção, que é o defeito que `seguranca.assinar` existe para pegar.
+    """
+    corpo = (_json.dumps(corpo_obj, ensure_ascii=False).encode()
+             if corpo_obj is not None else b"")
+    ts = agora()
+    tok = tok or _TOKEN_AG
+    cab = {"Authorization": f"Bearer {tok}", "X-SEI360-Ts": ts,
+           "X-SEI360-Assinatura": _seg.assinar(tok, ts, corpo),
+           "Content-Type": "application/json"}
+    if metodo == "GET":
+        return _c.get(caminho, headers=cab)
+    return _c.post(caminho, data=corpo, headers=cab)
+
+
+_r = _do_agente("/api/agente/acompanhamento", metodo="GET")
+checar("a estação autenticada recebe a tarefa", _r.status_code == 200,
+       str(_r.status_code))
+_tarefa = _r.get_json() or {}
+checar("com o aviso de que há o que ler", _tarefa.get("ler") is True, str(_tarefa)[:200])
+checar("e com a instalação em que procurar",
+       _tarefa.get("instancia") == "SEI-SESAB", str(_tarefa.get("instancia")))
+checar("o processo de fora da carteira está na tarefa",
+       "019.2222.2026.0000002-22" in (_tarefa.get("protocolos") or []),
+       str(_tarefa.get("protocolos"))[:200])
+# O PERFIL VIAJA COM A TAREFA, como já viaja com a busca e com a coleta: sem ele
+# a estação cai em URL escrita nela e entra na instalação errada.
+checar("o perfil da instalação vai junto",
+       bool((_tarefa.get("perfil") or {}).get("login_url")),
+       str(_tarefa.get("perfil"))[:120])
+# O ENVELOPE É FECHADO, e é isto que a tarefa 9 vai consumir. Campo a mais aqui é
+# campo que a estação passa a poder usar — e a nota é texto de gente.
+checar("e o envelope não manda nada além do necessário",
+       set(_tarefa) == {"ler", "instancia", "protocolos", "perfil"}, str(sorted(_tarefa)))
+checar("a nota da pessoa NÃO viaja para a estação",
+       "Laisa" not in _r.data.decode("utf-8", "replace"),
+       "o texto que a pessoa escreveu saiu do servidor")
+
+_r = _c.get("/api/agente/acompanhamento")
+checar("sem token não há tarefa nenhuma", _r.status_code == 401, str(_r.status_code))
+_r = _do_agente("/api/agente/acompanhamento", metodo="GET", tok="token-inventado")
+checar("e com token que não é de agente nenhum também", _r.status_code == 401,
+       str(_r.status_code))
+_r = _do_agente("/api/agente/acompanhamento", metodo="GET", tok="token-orfao")
+checar("estação sem dono não recebe tarefa, e ouve por quê",
+       _r.status_code == 200 and (_r.get_json() or {}).get("ler") is False
+       and "dono" in ((_r.get_json() or {}).get("motivo") or ""),
+       str(_r.get_json())[:160])
+
+print("\n8-bis. o que a estação relata")
+_cx = conectar()
+_leitura = {"protocolo": "019.2222.2026.0000002-22", "id_sei": "222",
+            "aberto_em": ["SESAB/ALHEIA"], "aberto_em_fonte": "arvore",
+            "ultimo_movimento": {"dh": "01/09/2026 10:00", "un": "SESAB/ALHEIA",
+                                 "de": "Processo recebido na unidade"},
+            "documentos": 3, "movimentos": 4}
+_grav, _ign = ac.receber(_cx, 7, "SEI-SESAB",
+                         {"instancia": "SEI-SESAB", "leituras": [_leitura]})
+_cx.commit()
+checar("a leitura da estação é aceita", (_grav, _ign) == (1, 0), f"{_grav}/{_ign}")
+_it = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.2222.2026.0000002-22"]
+checar("com fonte 'sei'", _it["fonte"] == "sei", str(_it["fonte"]))
+checar("e estado lido", _it["estado"] == "lido", str(_it["estado"]))
+checar("com as unidades que a estação leu",
+       _it["aberto_em"] == ["SESAB/ALHEIA"], str(_it["aberto_em"]))
+# A MEDIÇÃO É AGORA, e aqui isso é verdade: quem lê no SEI mede no instante da
+# leitura. É o oposto do dado da carteira, que pode ser de nove dias antes.
+checar("a medição é a de agora, porque a leitura no SEI mede agora",
+       (_it["medido_em"] or "")[:10] == agora()[:10], str(_it["medido_em"]))
+checar("e a procedência diz que foi lido no SEI",
+       ac.texto_da_procedencia(_it).startswith("lido no SEI"),
+       ac.texto_da_procedencia(_it))
+checar("a primeira leitura no SEI também se declara primeira",
+       _it["comparacao"] == "primeira" and _it["mudou"] is None, str(_it["comparacao"]))
+# UMA LEITURA POR DIA vale para o caminho caro também: sem isto a estação releria
+# o mesmo processo a cada ciclo do agente, três requisições ao SEI por vez.
+checar("lido hoje sai da conta da estação",
+       "019.2222.2026.0000002-22" not in ac.pendentes(_cx, 7, "SEI-SESAB"))
+_cx.commit(); _cx.close()
+
+print("\n8-ter. recusa do SEI não é ficha vazia")
+_cx = conectar()
+_antes = _cx.execute("SELECT COUNT(*) FROM acompanhado_leitura WHERE usuario_id=7 "
+                     "AND protocolo='019.2222.2026.0000002-22'").fetchone()[0]
+_grav, _ign = ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": "019.2222.2026.0000002-22", "estado": "sem_acesso"}]})
+_cx.commit()
+checar("a recusa é relatada e aceita", (_grav, _ign) == (1, 0), f"{_grav}/{_ign}")
+_it = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.2222.2026.0000002-22"]
+checar("recusa do SEI vira estado próprio, não ficha vazia",
+       _it["estado"] == "sem_acesso", str(_it["estado"]))
+# RECUSA NÃO É OBSERVAÇÃO. Gravar uma linha vazia na série diria "em 11/09 este
+# processo não estava aberto em lugar nenhum e tinha zero documento" — e, pior,
+# a linha vazia passaria a ser a ÚLTIMA leitura, apagando da tela o que se sabia.
+_depois = _cx.execute("SELECT COUNT(*) FROM acompanhado_leitura WHERE usuario_id=7 "
+                      "AND protocolo='019.2222.2026.0000002-22'").fetchone()[0]
+checar("e não entra como observação na série temporal", _depois == _antes,
+       f"{_antes} -> {_depois}")
+checar("a última leitura de verdade continua na tela",
+       _it["aberto_em"] == ["SESAB/ALHEIA"] and _it["documentos"] == 3,
+       f"{_it['aberto_em']} / {_it['documentos']}")
+checar("e a procedência cala, porque nada foi lido",
+       ac.texto_da_procedencia(_it) == "", ac.texto_da_procedencia(_it))
+_cx.commit(); _cx.close()
+
+print("\n8-quater. a estação é relator não confiável")
+_cx = conectar()
+ac.adicionar(_cx, 7, "019.2020.2026.0000020-20\n019.2121.2026.0000021-21", "SEI-SESAB")
+_cx.commit()
+
+
+def _ninguem_escreveu(protocolo):
+    """O item continua como estava: nem leitura, nem estado mexido."""
+    x = {i["protocolo"]: i for i in ac.listar(_cx, 7)}.get(protocolo) or {}
+    return x.get("estado") == "novo" and x.get("fonte") is None
+
+
+# CORPO QUE NÃO É ENVELOPE. `request.get_json` devolve o que veio: lista, texto,
+# número. `envelope.get` sobre isso é AttributeError, e AttributeError numa rota
+# é 500 — a estação não sabe o que fazer com 500 e volta a tentar para sempre.
+for _lixo in ([], "texto", 7, None, {"leituras": "nao e lista"},
+              {"leituras": {"protocolo": "019.2020.2026.0000020-20"}}):
+    _grav, _ign = ac.receber(_cx, 7, "SEI-SESAB", _lixo)
+    checar(f"corpo sem forma de envelope não grava nada ({type(_lixo).__name__})",
+           (_grav, _ign) == (0, 0), f"{_lixo!r} -> {_grav}/{_ign}")
+
+# LINHA QUE NÃO É LEITURA, e número que não é número. Cada uma volta CONTADA: a
+# estação que relata dez e vê 'gravadas: 0' precisa saber se a lista chegou vazia
+# ou se tudo foi recusado — é o mesmo motivo de `adicionar` devolver os recusados.
+_grav, _ign = ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    "019.2020.2026.0000020-20", None, 7, {}, {"protocolo": None},
+    {"protocolo": 19202020}, {"protocolo": "processo da Laisa"},
+    {"protocolo": "019.2020.2026.0000020-20."}]})
+_cx.commit()
+checar("linha que não é leitura é recusada, uma a uma",
+       (_grav, _ign) == (0, 8), f"{_grav}/{_ign}")
+checar("e nada foi escrito por esse caminho",
+       _ninguem_escreveu("019.2020.2026.0000020-20"))
+
+# PROTOCOLO QUE NÃO ESTÁ NA LISTA não entra por relato de estação: quem decide o
+# que se acompanha é a pessoa, na tela dela.
+_grav, _ign = ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": "019.7070.2026.0000070-70", "aberto_em": ["SESAB/MINHA"],
+     "documentos": 1, "movimentos": 1}]})
+_cx.commit()
+checar("número fora da lista não vira item novo", (_grav, _ign) == (0, 1),
+       f"{_grav}/{_ign}")
+checar("e nem leitura solta no histórico", _cx.execute(
+    "SELECT COUNT(*) FROM acompanhado_leitura WHERE protocolo=?",
+    ("019.7070.2026.0000070-70",)).fetchone()[0] == 0)
+
+# ESTADO INVENTADO NÃO VIRA 'lido'. Traduzi-lo para o caso bom carimbaria "lido no
+# SEI" sobre uma ficha vazia que a estação nunca disse ter lido — e a tela passaria
+# a afirmar que o processo não está aberto em lugar nenhum.
+_grav, _ign = ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": "019.2020.2026.0000020-20", "estado": "erro_de_rede"},
+    {"protocolo": "019.2020.2026.0000020-20", "estado": {"x": 1}}]})
+_cx.commit()
+checar("estado que o servidor não conhece é recusado, não traduzido",
+       (_grav, _ign) == (0, 2), f"{_grav}/{_ign}")
+checar("e o item continua esperando leitura",
+       _ninguem_escreveu("019.2020.2026.0000020-20"))
+
+# O MESMO PROTOCOLO DUAS VEZES no mesmo envelope. A segunda compararia contra a
+# primeira, recém-inserida no mesmo instante: duas linhas na única série temporal
+# do produto, e delta medido entre a leitura e ela mesma.
+_grav, _ign = ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": "019.2020.2026.0000020-20", "aberto_em": ["SESAB/UMA"],
+     "documentos": 2, "movimentos": 2},
+    {"protocolo": "019.2020.2026.0000020-20", "aberto_em": ["SESAB/OUTRA"],
+     "documentos": 9, "movimentos": 9}]})
+_cx.commit()
+checar("protocolo repetido no envelope conta uma vez", (_grav, _ign) == (1, 1),
+       f"{_grav}/{_ign}")
+checar("e grava UMA linha na série", _cx.execute(
+    "SELECT COUNT(*) FROM acompanhado_leitura WHERE usuario_id=7 AND protocolo=?",
+    ("019.2020.2026.0000020-20",)).fetchone()[0] == 1)
+_repetido = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.2020.2026.0000020-20"]
+checar("sem delta inventado entre a leitura e ela mesma",
+       _repetido["mudou"] is None and _repetido["comparacao"] == "primeira",
+       f"{_repetido['mudou']} / {_repetido['comparacao']}")
+
+# CAMPO COM O TIPO ERRADO. `aberto_em` como TEXTO é o pior deles: `set("SESAB/X")`
+# é um conjunto de LETRAS, e a tela anunciaria o processo entrando em sete
+# unidades chamadas 'S', 'E', 'A', 'B'... Contagem em texto não estoura na hora —
+# estoura na leitura seguinte, quando o delta subtrai texto de número.
+#
+# Campo que não veio em forma de campo é campo NÃO OBSERVADO, e ausência não é
+# conjunto vazio: é a mesma doutrina de `delta()`, que se recusa a anunciar
+# mudança onde não houve observação.
+_grav, _ign = ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": "019.2121.2026.0000021-21", "aberto_em": "SESAB/MINHA",
+     "aberto_em_fonte": {"x": 1}, "ultimo_movimento": "01/09/2026",
+     "documentos": "3", "movimentos": True, "id_sei": ["222"]}]})
+_cx.commit()
+checar("leitura com campos deformados é aceita sem estourar", (_grav, _ign) == (1, 0),
+       f"{_grav}/{_ign}")
+_torto = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.2121.2026.0000021-21"]
+checar("texto no lugar da lista de unidades não vira unidade nenhuma",
+       _torto["aberto_em"] is None, str(_torto["aberto_em"]))
+checar("nem contagem em texto vira contagem",
+       (_torto["documentos"], _torto["movimentos"]) == (None, None),
+       f"{_torto['documentos']} / {_torto['movimentos']}")
+checar("nem movimento em texto vira movimento",
+       _torto["ultimo_movimento"] is None, str(_torto["ultimo_movimento"]))
+checar("e o id_sei deformado não é gravado", _torto["id_sei"] is None,
+       str(_torto["id_sei"]))
+checar("mas a leitura conta como lida, que foi o que a estação disse",
+       _torto["estado"] == "lido" and _torto["fonte"] == "sei",
+       f"{_torto['estado']} / {_torto['fonte']}")
+
+# UNIDADE QUE NÃO É TEXTO dentro da lista: `sorted` sobre tipos misturados estoura
+# no delta seguinte, e a tela renderiza `u.split('/')` sobre um dicionário.
+_cx.execute("UPDATE acompanhado SET lido_em=? WHERE usuario_id=7 AND protocolo=?",
+            (_ONTEM, "019.2121.2026.0000021-21"))
+_cx.commit()
+_grav, _ign = ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": "019.2121.2026.0000021-21", "aberto_em": ["SESAB/MINHA", {"u": 1}],
+     "documentos": 1, "movimentos": 1}]})
+_cx.commit()
+_misto = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.2121.2026.0000021-21"]
+checar("lista de unidades com coisa que não é unidade não é lista de unidades",
+       (_grav, _ign) == (1, 0) and _misto["aberto_em"] is None,
+       f"{_grav}/{_ign} / {_misto['aberto_em']}")
+checar("e as contagens boas do mesmo envelope continuam valendo",
+       (_misto["documentos"], _misto["movimentos"]) == (1, 1),
+       f"{_misto['documentos']} / {_misto['movimentos']}")
+
+# ENVELOPE VAZIO é o caso NORMAL: a estação rodou, não achou nada para ler, e diz
+# isso. Não pode ser erro nem escrever nada.
+_grav, _ign = ac.receber(_cx, 7, "SEI-SESAB", {"instancia": "SEI-SESAB",
+                                               "leituras": []})
+checar("envelope sem leitura nenhuma é resposta legítima", (_grav, _ign) == (0, 0),
+       f"{_grav}/{_ign}")
+_cx.commit(); _cx.close()
+
+print("\n8-quinquies. a instalação não vem do envelope")
+_cx = conectar()
+# O NÚMERO QUE EXISTE NAS DUAS LISTAS. A pessoa segue `019.3333...` na SESAB e na
+# FESF, e são DUAS linhas, com histórico próprio. Se o envelope pudesse dizer a
+# instalação, a leitura feita na FESF entraria na linha da SESAB — o carimbo
+# falso que `acompanhado.instancia` nasceu sem DEFAULT para evitar.
+_cx.execute("""UPDATE acompanhado SET lido_em=NULL, estado='novo'
+               WHERE usuario_id=7 AND protocolo='019.3333.2026.0000003-33'""")
+_cx.commit()
+_antes_fesf = [x for x in ac.listar(_cx, 7) if x["instancia"] == "SEI-FESF"
+               and x["protocolo"] == "019.3333.2026.0000003-33"][0]
+try:
+    ac.receber(_cx, 7, "SEI-SESAB", {"instancia": "SEI-FESF", "leituras": [
+        {"protocolo": "019.3333.2026.0000003-33", "aberto_em": ["FESF/GABINETE"],
+         "documentos": 7, "movimentos": 8}]})
+    checar("envelope que fala de outra instalação é recusado inteiro", False,
+           "aceitou a instalação do corpo")
+except ValueError:
+    checar("envelope que fala de outra instalação é recusado inteiro", True)
+_cx.rollback()
+_depois_fesf = [x for x in ac.listar(_cx, 7) if x["instancia"] == "SEI-FESF"
+                and x["protocolo"] == "019.3333.2026.0000003-33"][0]
+checar("e nenhuma das duas linhas foi tocada",
+       _depois_fesf["leitura_em"] == _antes_fesf["leitura_em"]
+       and not any(x["fonte"] == "sei" for x in ac.listar(_cx, 7)
+                   if x["protocolo"] == "019.3333.2026.0000003-33"),
+       str(_depois_fesf["leitura_em"]))
+# O CONTRAPESO: sem o campo, a estação é acreditada — a instalação é a que o
+# servidor mandou ler, e o envelope não precisa repeti-la.
+_grav, _ign = ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": "019.3333.2026.0000003-33", "aberto_em": ["SESAB/ALGUMA"],
+     "documentos": 1, "movimentos": 1}]})
+_cx.commit()
+checar("envelope sem instalação é gravado na que o servidor mandou ler",
+       (_grav, _ign) == (1, 0), f"{_grav}/{_ign}")
+_na_sesab = [x for x in ac.listar(_cx, 7) if x["instancia"] == "SEI-SESAB"
+             and x["protocolo"] == "019.3333.2026.0000003-33"][0]
+_na_fesf = [x for x in ac.listar(_cx, 7) if x["instancia"] == "SEI-FESF"
+            and x["protocolo"] == "019.3333.2026.0000003-33"][0]
+checar("a linha da SESAB recebeu a leitura",
+       _na_sesab["fonte"] == "sei" and _na_sesab["aberto_em"] == ["SESAB/ALGUMA"],
+       f"{_na_sesab['fonte']} / {_na_sesab['aberto_em']}")
+checar("e a da FESF continua com o dado dela",
+       _na_fesf["fonte"] == "carteira", str(_na_fesf["fonte"]))
+_cx.commit(); _cx.close()
+
+print("\n8-sexies. a fronteira: o dono sai do TOKEN")
+# O TESTE QUE MAIS IMPORTA DESTA TAREFA. A regra recebe o `usuario_id` e obedece —
+# é a camada de regra, e ela confia no chamador de propósito. A fronteira é a
+# ROTA: se o dono pudesse vir de dentro do corpo, um agente escreveria leitura na
+# lista de qualquer conta, e o dono do token deixaria de significar alguma coisa.
+#
+# `019.8888...` está na lista da conta 8 e NÃO na da 7 (a conta 7 perdeu a dela na
+# cena da tela). A estação da conta 7 relata leitura dele, dizendo no corpo que é
+# da conta 8 — de todas as formas que um corpo tem de dizer isso.
+_r = _do_agente("/api/agente/acompanhamento", {
+    "instancia": "SEI-SESAB", "usuario_id": 8, "dono_usuario_id": 8, "usuario": 8,
+    "leituras": [{"protocolo": "019.8888.2026.0000008-88",
+                  "aberto_em": ["SESAB/INVENTADA"], "documentos": 99,
+                  "movimentos": 99}]})
+checar("a estação da outra conta não é recusada com erro, mas não grava nada",
+       _r.status_code == 200 and (_r.get_json() or {}).get("gravadas") == 0,
+       f"{_r.status_code} {_r.get_json()}")
+_da_8 = {x["protocolo"]: x for x in ac.listar(conectar(), 8)}["019.8888.2026.0000008-88"]
+checar("a lista da conta 8 ficou intacta",
+       _da_8["estado"] == "novo" and _da_8["fonte"] is None,
+       f"{_da_8['estado']} / {_da_8['fonte']}")
+checar("e nenhuma leitura foi escrita sob a conta 8", conectar().execute(
+    "SELECT COUNT(*) FROM acompanhado_leitura WHERE usuario_id=8").fetchone()[0] == 0)
+checar("nem sob a conta 7, que não segue esse número", not any(
+    x["protocolo"] == "019.8888.2026.0000008-88" for x in ac.listar(conectar(), 7)))
+
+# O ESPELHO: o mesmo corpo mentiroso sobre um número que É da conta 7 grava na
+# conta 7. Sem esta metade, a checagem acima passaria com uma rota que não grava
+# nunca.
+_cx = conectar()
+_cx.execute("""UPDATE acompanhado SET lido_em=NULL, estado='novo'
+               WHERE usuario_id=7 AND protocolo='019.2020.2026.0000020-20'""")
+_cx.commit(); _cx.close()
+_r = _do_agente("/api/agente/acompanhamento", {
+    "usuario_id": 8, "leituras": [{"protocolo": "019.2020.2026.0000020-20",
+                                   "aberto_em": ["SESAB/MINHA"], "documentos": 4,
+                                   "movimentos": 5}]})
+checar("e o dono do token é quem recebe a leitura",
+       _r.status_code == 200 and (_r.get_json() or {}).get("gravadas") == 1,
+       f"{_r.status_code} {_r.get_json()}")
+_do_7 = {x["protocolo"]: x for x in ac.listar(conectar(), 7)}["019.2020.2026.0000020-20"]
+checar("na conta do TOKEN, não na que o corpo disse",
+       _do_7["fonte"] == "sei" and _do_7["documentos"] == 4,
+       f"{_do_7['fonte']} / {_do_7['documentos']}")
+
+print("\n8-septies. as portas do agente")
+_r = _c.post("/api/agente/acompanhamento", json={"leituras": []})
+checar("relatar sem token é recusado", _r.status_code == 401, str(_r.status_code))
+_r = _do_agente("/api/agente/acompanhamento", {"leituras": []}, tok="token-orfao")
+checar("estação sem dono não relata leitura nenhuma", _r.status_code == 400,
+       str(_r.status_code))
+# A ROTA TRANSPORTA, e a recusa de instalação vira estado HTTP — 409, o mesmo que
+# `/api/poco/plano` usa para "fora do escopo deste agente".
+_r = _do_agente("/api/agente/acompanhamento",
+                {"instancia": "SEI-FESF", "leituras": [
+                    {"protocolo": "019.3333.2026.0000003-33", "documentos": 1}]})
+checar("instalação que não é a do dono é recusada pela rota", _r.status_code == 409,
+       f"{_r.status_code} {_r.get_json()}")
+# CORPO QUE NÃO É JSON não pode virar 500: a estação não sabe o que fazer com 500
+# e volta a tentar o mesmo para sempre.
+_ts = agora()
+_r = _c.post("/api/agente/acompanhamento", data=b"isto nao e json",
+             headers={"Authorization": f"Bearer {_TOKEN_AG}", "X-SEI360-Ts": _ts,
+                      "X-SEI360-Assinatura": _seg.assinar(_TOKEN_AG, _ts,
+                                                          b"isto nao e json"),
+                      "Content-Type": "application/json"})
+checar("corpo que não é JSON não derruba a rota",
+       _r.status_code == 200 and (_r.get_json() or {}).get("gravadas") == 0,
+       f"{_r.status_code} {_r.data[:80]}")
+# A ESTAÇÃO PEGA, o servidor não empurra: é o contrato dos outros `/api/agente/*`,
+# e o que permite a estação rodar atrás do firewall do órgão.
+_r = _do_agente("/api/agente/acompanhamento", metodo="GET", tok=_TOKEN_AG8)
+checar("cada estação só enxerga a lista do próprio dono",
+       _r.status_code == 200
+       and "019.2222.2026.0000002-22" not in str((_r.get_json() or {}).get("protocolos")),
+       str(_r.get_json())[:200])
+
+print("\n8-octies. o cartão depois de uma recusa")
+# A COMBINAÇÃO QUE SÓ AGORA EXISTE: item com delta medido na leitura de ontem e
+# recusa do SEI hoje. Até a fase 2 nada escrevia 'sem_acesso', então o cartão
+# nunca tinha as duas coisas ao mesmo tempo — e a etiqueta de mudança vinha na
+# FRENTE do estado de recusa, contra o que o próprio comentário do template diz.
+# O resultado era "saiu de X · +5 documentos" em cima de "Nada foi lido".
+_cx = conectar()
+_cx.execute("""UPDATE acompanhado_leitura SET medido_em=?
+               WHERE usuario_id=7 AND protocolo='019.2020.2026.0000020-20'""",
+            (_ANTEONTEM,))
+_cx.execute("""UPDATE acompanhado SET lido_em=?
+               WHERE usuario_id=7 AND protocolo='019.2020.2026.0000020-20'""",
+            (_ONTEM,))
+_cx.commit()
+ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": "019.2020.2026.0000020-20", "aberto_em": ["SESAB/OUTRA"],
+     "aberto_em_fonte": "arvore", "documentos": 9, "movimentos": 9}]})
+_cx.commit()
+_com_delta = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.2020.2026.0000020-20"]
+checar("a leitura de hoje mediu mudança de verdade",
+       (_com_delta["mudou"] or {}).get("documentos") == 5, str(_com_delta["mudou"]))
+_cx.execute("""UPDATE acompanhado SET lido_em=?
+               WHERE usuario_id=7 AND protocolo='019.2020.2026.0000020-20'""",
+            (_ONTEM,))
+_cx.commit()
+ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": "019.2020.2026.0000020-20", "estado": "sem_acesso"}]})
+_cx.commit(); _cx.close()
+
+_r = _c.get("/acompanhamento")
+_cart_recusa = cartao(_r.data.decode("utf-8", "replace"), "019.2020.2026.0000020-20")
+checar("o cartão diz que o SEI recusou", "sem acesso" in _cart_recusa,
+       _cart_recusa[:200] or "cartão não encontrado")
+checar("e não anuncia mudança de ontem em cima de 'Nada foi lido'",
+       "+5 documentos" not in _cart_recusa, _cart_recusa[:200])
+# O delta NÃO é apagado do histórico — ele foi medido e é verdade sobre a leitura
+# de ontem. O que muda é o que o cartão AFIRMA hoje.
+checar("mas o delta continua gravado na série, porque foi medido",
+       (ac.listar(conectar(), 7) and {x["protocolo"]: x for x in ac.listar(
+           conectar(), 7)}["019.2020.2026.0000020-20"]["mudou"] or {}
+        ).get("documentos") == 5)
 
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:

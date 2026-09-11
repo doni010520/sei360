@@ -3297,6 +3297,82 @@ def agente_busca_resultado(bid):
     return jsonify(estado=estado, motivo=motivo)
 
 
+@app.get("/api/agente/acompanhamento")
+def agente_acompanhamento():
+    """Os processos acompanhados que a carteira não respondeu. Mesmo contrato da
+    busca: a estação PEGA o trabalho, o servidor não empurra.
+
+    O QUE VAI NO ENVELOPE é só o que a estação precisa para procurar no SEI: os
+    números e a instalação (mais o perfil dela, que é como a estação sabe em que
+    endereço entrar). A NOTA da pessoa não vai — é texto de gente, pode citar
+    nome, e a estação não tem o que fazer com ela. Ver `acompanhamento.pendentes`.
+    """
+    import acompanhamento as acmod
+    ag, erro = agente_autenticado()
+    if not ag:
+        return jsonify(erro=erro), 401
+    if not ag["dono_usuario_id"]:
+        return jsonify(ler=False, motivo="agente sem dono não tem credencial do SEI")
+    cx = conectar()
+    # A MESMA DEFINIÇÃO que a tarefa de coleta, o plano do poço e a ingestão usam,
+    # e não uma quarta leitura à mão da mesma coluna: discordar aqui é gravar o
+    # dado de um órgão sob o nome do outro. As duas metades desta conversa — esta
+    # rota e a de baixo — têm de resolver a instalação pela MESMA função, senão a
+    # estação lê numa e o servidor grava noutra.
+    inst = instancia_do_agente(cx, ag)
+    # E A INSTALAÇÃO TEM DE SABER BUSCAR. A leitura da estação começa por uma
+    # pesquisa por número (`SEIBusca.rodar`): numa instalação sem busca ela
+    # devolveria "não encontrado" para TODO processo, e a tela afirmaria sobre os
+    # processos uma coisa que é verdade sobre a instalação. É a trava que
+    # `busca.validar` já aplica, e o mesmo cuidado de `/api/agente/tarefa` com
+    # `disponivel_coleta`.
+    if not perfil_sei.perfil(inst)["disponivel_busca"]:
+        cx.close()
+        return jsonify(ler=False, instancia=inst, motivo=(
+            "a busca por número não roda em "
+            f"{perfil_sei.INSTANCIAS[inst]['nome']}, e é por ela que a leitura "
+            "de processo fora da carteira começa"))
+    lista = acmod.pendentes(cx, ag["dono_usuario_id"], inst)
+    # COMMIT ANTES DE DECIDIR: `pendentes` chama `reaproveitar`, que ESCREVE — o
+    # que a carteira respondeu de graça tem de ficar gravado mesmo quando sobra
+    # zero para a estação. É justamente o caso bom.
+    cx.commit(); cx.close()
+    if not lista:
+        return jsonify(ler=False, motivo="nada acompanhado fora da carteira")
+    return jsonify(ler=True, instancia=inst, protocolos=lista,
+                   perfil=perfil_sei.envelope_do_coletor(inst))
+
+
+@app.post("/api/agente/acompanhamento")
+def agente_acompanhamento_resultado():
+    """O que a estação leu no SEI. `app.py` só transporta; a regra é do módulo."""
+    import acompanhamento as acmod
+    ag, erro = agente_autenticado()
+    if not ag:
+        return jsonify(erro=erro), 401
+    if not ag["dono_usuario_id"]:
+        return jsonify(erro="agente sem dono"), 400
+    cx = conectar()
+    try:
+        # O DONO E A INSTALAÇÃO SAEM DO AGENTE, não do envelope: aceitar o dono de
+        # dentro do corpo deixaria um agente escrever na lista de outra conta, e
+        # aceitar a instalação deixaria a leitura de uma entrar na linha da outra.
+        gravadas, ignoradas = acmod.receber(cx, ag["dono_usuario_id"],
+                                            instancia_do_agente(cx, ag),
+                                            request.get_json(silent=True))
+    except ValueError as ex:
+        # A estação leu numa instalação e o dono passou a ler noutra entre o
+        # pedido e a resposta. 409, como `/api/poco/plano` responde a trabalho
+        # fora do escopo do agente — não é erro DELA, é trabalho que não serve
+        # mais. Nada gravado: a transação morre com a conexão.
+        cx.close()
+        return jsonify(erro=str(ex)), 409
+    cx.commit(); cx.close()
+    # AS DUAS CONTAGENS. Só `gravadas` deixava a estação que relatou dez e viu
+    # zero sem saber se o servidor recusou tudo ou se ela mesma não mandou nada.
+    return jsonify(gravadas=gravadas, ignoradas=ignoradas)
+
+
 @app.get("/acompanhamento")
 @exige_login
 def acompanhamento_tela(recusados=None, sem_espaco=None):

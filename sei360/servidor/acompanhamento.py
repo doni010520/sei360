@@ -567,3 +567,221 @@ def reaproveitar(cx, usuario_id, instancia):
                            id_sei=r["id_sei"])
             feitos += 1
     return feitos
+
+
+# ---------------------------------------------------------------- a estação
+#
+# O CAMINHO CARO, e o único que existe para processo fora das mesas. Daqui para
+# baixo é a conversa com a estação: `pendentes` diz o que falta ler, `receber`
+# grava o que ela leu. A estação PEGA o trabalho — o servidor não empurra —, que
+# é o mesmo contrato de `/api/agente/busca` e o que permite a estação rodar atrás
+# do firewall do órgão.
+#
+# A ESTAÇÃO É RELATOR NÃO CONFIÁVEL, e não por desconfiança dela: ela relata o
+# que LEU numa página do SEI que muda de versão, com iframe que às vezes não
+# carrega e árvore que às vezes não parseia. Envelope truncado, campo ausente e
+# campo com o tipo errado são o regime normal, não o ataque — e nenhum deles pode
+# virar afirmação na tela de quem confia no número.
+
+
+def pendentes(cx, usuario_id, instancia):
+    """O que a estação precisa ler no SEI: os protocolos, e só eles.
+
+    Chama `reaproveitar` primeiro de propósito. Sem isso a estação leria no SEI
+    processo que a coleta já trouxe de graça — e a economia do desenho existiria
+    só no papel: três requisições por processo por dia para reler o que está no
+    banco.
+
+    SÓ O NÚMERO SOBE. A estação vai procurar cada um no SEI, então precisa do
+    número e da instalação (que quem chama já sabe, porque foi ela quem escolheu).
+    Não precisa da NOTA — texto que a pessoa escreveu, que pode citar nome de
+    gente e não tem o que fazer numa estação —, nem do tamanho da lista, nem do
+    estado de cada item. Campo que sobe é campo que a estação passa a poder usar,
+    e este envelope atravessa a rede do órgão.
+
+    O `LIMIT` é ORÇAMENTO DE REQUISIÇÃO, não fronteira: o teto já limita a lista,
+    mas ele é lido uma vez por chamada e sob concorrência passa (medido: 101), e
+    linha inserida fora de `adicionar` não passa por ele. Ver `TETO`, no topo.
+    """
+    reaproveitar(cx, usuario_id, instancia)
+    return [r["protocolo"] for r in cx.execute(
+        # A MESMA GUARDA DE UMA LEITURA POR DIA que `reaproveitar` aplica, e pelo
+        # mesmo motivo: sem ela a estação releria o mesmo processo a cada ciclo do
+        # agente. O 'novo' na frente para a primeira leitura de um item recém
+        # colado não ficar atrás de 99 releituras quando o orçamento apertar.
+        """SELECT protocolo FROM acompanhado
+           WHERE usuario_id=? AND instancia=?
+             AND (lido_em IS NULL OR substr(lido_em,1,10) <> substr(?,1,10))
+           ORDER BY estado='novo' DESC, adicionado_em
+           LIMIT ?""", (usuario_id, instancia, agora(), TETO))]
+
+
+# O que a estação relata quando o SEI recusou ou não achou. Traduzido AQUI, e não
+# na estação: a estação relata o que viu; o significado é do servidor.
+#
+# Estado fora desta lista é RECUSADO, nunca rebaixado para 'lido'. Traduzir o
+# desconhecido para o caso bom carimbaria "lido no SEI" sobre uma ficha vazia que
+# a estação nunca disse ter lido — e a tela passaria a afirmar que o processo não
+# está aberto em lugar nenhum. É a mesma doutrina de `delta()`: não afirmar onde
+# não houve observação.
+_ESTADOS_ACEITOS = ("lido", "sem_acesso", "nao_encontrado")
+
+
+def _texto(v):
+    """Texto não vazio, ou None.
+
+    Dicionário e lista não são texto — e o driver do SQLite LEVANTA ao receber um
+    deles num parâmetro, o que numa rota é 500. A estação não sabe o que fazer com
+    500: ela volta a tentar o mesmo envelope, para sempre.
+    """
+    v = v.strip() if isinstance(v, str) else None
+    return v or None
+
+
+def _contagem(v):
+    """Inteiro de verdade, ou None.
+
+    `"3"` NÃO vira 3. Contagem em texto não estoura na hora: estoura na leitura
+    seguinte, quando `delta()` faz `b - a` entre texto e número — e o rastro
+    aponta para o delta, não para o envelope que o produziu dias antes.
+
+    `bool` fora, apesar de ser `int` em Python: `True` documentos não é uma
+    contagem, é um campo preenchido errado.
+    """
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def _unidades(v):
+    """Lista de unidades, ou None quando não veio em forma de lista de unidades.
+
+    O CAMPO MAIS PERIGOSO DO ENVELOPE. `delta()` faz `set(aberto_em)`, e sobre
+    TEXTO isso é um conjunto de LETRAS: `"SESAB/X"` viraria seis "unidades"
+    chamadas 'S', 'E', 'A', 'B', '/' e 'X', e a tela anunciaria o processo
+    entrando em todas elas. Com elemento que não é texto, o `sorted` do delta
+    seguinte estoura, e a tela renderiza `u.split('/')` sobre um dicionário.
+
+    Lista VAZIA passa e é diferente de None: `[]` é "li e a árvore não listou
+    unidade nenhuma" — o que acontece de verdade quando a árvore não parseia — e
+    None é "não observado". A tela distingue as duas, e é para isso que `delta()`
+    guarda `is not None` em vez de `or []`.
+    """
+    if not isinstance(v, list) or not all(isinstance(u, str) for u in v):
+        return None
+    return v
+
+
+def _quadro_relatado(leitura):
+    """O que a estação diz ter lido, campo a campo e com o tipo conferido.
+
+    LISTA EXPLÍCITA, não espalhamento do objeto — a mesma escolha que a função
+    `acompanhar()` da estação faz do outro lado, e pela razão simétrica: lá para
+    não mandar os cinco campos de custódia derivados da mesa errada, aqui para não
+    gravar o que a estação não tinha por que mandar.
+
+    Campo deformado vira None, e a leitura é gravada com o que sobrou. Recusar a
+    leitura inteira por causa de um campo custaria a observação toda — e ausência,
+    aqui, já tem significado próprio e honesto: não observado.
+    """
+    mov = leitura.get("ultimo_movimento")
+    return {
+        "aberto_em": _unidades(leitura.get("aberto_em")),
+        "aberto_em_fonte": _texto(leitura.get("aberto_em_fonte")),
+        "ultimo_movimento": mov if isinstance(mov, dict) else None,
+        "documentos": _contagem(leitura.get("documentos")),
+        "movimentos": _contagem(leitura.get("movimentos")),
+    }
+
+
+def receber(cx, usuario_id, instancia, envelope):
+    """Leituras vindas da estação -> (gravadas, ignoradas).
+
+    O `usuario_id` vem do DONO DO AGENTE autenticado, nunca do envelope: aceitar
+    o dono de dentro do corpo deixaria um agente escrever na lista de outra conta.
+    Esta função recebe os dois e obedece — a fronteira é a rota, como na tela.
+
+    A `instancia` vem pelo MESMO caminho, e por um motivo próprio: a pessoa pode
+    seguir o mesmo número nas duas instalações, e são duas linhas com histórico
+    próprio. Se o envelope pudesse escolher, a leitura feita na FESF entraria na
+    linha da SESAB — o carimbo falso que `acompanhado.instancia` nasceu sem
+    DEFAULT para evitar, e que `coleta.py`, `configuracao.py` e `ingestao.py` cada
+    um documenta ter cometido uma vez.
+
+    O envelope AINDA PODE dizer a instalação, e aí ela é CONFERIDA, não obedecida:
+    a estação leu onde o `pendentes` mandou, e discordância significa que a
+    configuração da pessoa mudou entre o pedido e a resposta. Aí o envelope inteiro
+    é recusado com `ValueError` — gravar metade dele seria carimbar leitura de uma
+    instalação como sendo da outra, que é exatamente o que a conferência evita.
+
+    AS DUAS CONTAGENS VOLTAM SEPARADAS. Só `gravadas` deixava a estação que
+    relatou dez e viu zero sem saber se a lista chegou vazia ou se tudo foi
+    recusado — é o mesmo motivo de `adicionar` devolver os recusados em vez de
+    descartá-los em silêncio.
+    """
+    if not isinstance(envelope, dict):
+        # Corpo que não é envelope: lista, texto, número, ou nada — `get_json`
+        # devolve o que veio. `envelope.get` sobre isso é AttributeError, e numa
+        # rota AttributeError é 500.
+        envelope = {}
+    dita = envelope.get("instancia")
+    if dita and dita != instancia:
+        raise ValueError(
+            f"a estação relata leitura de {dita} e o dono deste agente lê em "
+            f"{instancia}: envelope recusado para não carimbar uma instalação "
+            "como sendo a outra")
+    leituras = envelope.get("leituras")
+    if not isinstance(leituras, list):
+        leituras = []
+    gravadas, ignoradas, vistos = 0, 0, set()
+    for leitura in leituras:
+        if not isinstance(leitura, dict):
+            ignoradas += 1
+            continue
+        bruto = leitura.get("protocolo")
+        p = normalizar(bruto) if isinstance(bruto, str) else None
+        # O MESMO PROTOCOLO DUAS VEZES no mesmo envelope grava duas linhas na
+        # única série temporal do produto, e a segunda compara contra a primeira,
+        # inserida no mesmo instante: delta medido entre a leitura e ela mesma.
+        if not p or p in vistos:
+            ignoradas += 1
+            continue
+        vistos.add(p)
+        # SÓ O QUE ESTÁ NA LISTA DESTA CONTA, e casado pelo TEXTO do protocolo —
+        # não pelos dígitos, como faz `reaproveitar`. Lá a régua de dígitos existe
+        # porque os dois lados foram escritos por gente diferente (a pessoa colou
+        # de um jeito, o SEI imprime de outro); aqui a estação devolve o protocolo
+        # que NÓS mandamos em `pendentes`, que é a própria chave de `acompanhado`.
+        # Casar por dígitos alargaria o alvo da escrita com base em texto do
+        # cliente, e um relato só passaria a poder escrever em DUAS linhas quando
+        # a lista tem as duas formas do mesmo número. Forma que não bate não
+        # escreve nada — e volta contada, para a divergência não ser silenciosa.
+        seguido = cx.execute("""SELECT 1 FROM acompanhado
+                                WHERE usuario_id=? AND instancia=? AND protocolo=?""",
+                             (usuario_id, instancia, p)).fetchone()
+        if not seguido:
+            ignoradas += 1
+            continue
+        estado = leitura.get("estado") or "lido"
+        if estado not in _ESTADOS_ACEITOS:
+            ignoradas += 1
+            continue
+        if estado != "lido":
+            # RECUSA NÃO É OBSERVAÇÃO, e por isso não entra na série. Uma linha
+            # vazia em `acompanhado_leitura` diria "neste dia o processo não
+            # estava aberto em lugar nenhum e tinha zero documento" — e, pior,
+            # passaria a ser a ÚLTIMA leitura, apagando da tela o que já se sabia.
+            # O estado no item é o que a tela mostra, e `texto_da_procedencia`
+            # cala nele de propósito.
+            cx.execute("""UPDATE acompanhado SET estado=?, lido_em=?
+                          WHERE usuario_id=? AND instancia=? AND protocolo=?""",
+                       (estado, agora(), usuario_id, instancia, p))
+            gravadas += 1
+            continue
+        gravar_leitura(cx, usuario_id, instancia, p, _quadro_relatado(leitura),
+                       fonte="sei",
+                       # AGORA, explicitamente: no caminho do SEI a medição É o
+                       # instante da leitura, ao contrário do dado da carteira,
+                       # que pode ser de nove dias antes. `gravar_leitura` exige o
+                       # campo justamente para este chamador não o esquecer.
+                       medido_em=agora(), id_sei=_texto(leitura.get("id_sei")))
+        gravadas += 1
+    return gravadas, ignoradas

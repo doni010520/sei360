@@ -73,12 +73,20 @@
          observação, medição que não avançou, e comparação sem mudança — e este
          lugar afirmava a terceira para todas: dizia "sem mudança" sobre processo
          que nunca foi comparado com nada. `comparacao` (ver `banco.py`) diz qual
-         foi, e cada uma tem frase própria. A ordem importa: estado de recusa
-         antes de qualquer conversa sobre comparação. #}
-      {% if x.mudou %}<span class="tag al">{{ x.texto_mudou }}</span>
-      {% elif x.estado == 'novo' %}<span class="tag es">aguardando primeira leitura</span>
-      {% elif x.estado == 'sem_acesso' %}<span class="tag al">sem acesso</span>
+         foi, e cada uma tem frase própria.
+
+         A ORDEM IMPORTA, e agora é a que este comentário sempre disse ser:
+         estado de recusa ANTES de qualquer conversa sobre comparação — `mudou`
+         inclusive, que é conversa sobre comparação e estava na frente de todas.
+         Com a leitura no SEI (`acompanhamento.receber`) a combinação virou real:
+         o item tem delta da leitura de ontem e HOJE o SEI recusou o processo a
+         este login. O cartão saía com a etiqueta do que mudou ontem em cima e
+         "Nada foi lido" embaixo — duas afirmações contrárias na mesma linha, que
+         é o mesmo defeito que `texto_da_procedencia` cala em estado de recusa. #}
+      {% if x.estado == 'sem_acesso' %}<span class="tag al">sem acesso</span>
       {% elif x.estado == 'nao_encontrado' %}<span class="tag al">número não encontrado</span>
+      {% elif x.mudou %}<span class="tag al">{{ x.texto_mudou }}</span>
+      {% elif x.estado == 'novo' %}<span class="tag es">aguardando primeira leitura</span>
       {% elif x.comparacao == 'primeira' %}<span class="tag es"
         title="é a primeira observação deste processo: o que mudou só aparece a partir da segunda">nada a comparar ainda</span>
       {% elif x.comparacao == 'sem_avanco' %}<span class="tag es"
