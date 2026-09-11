@@ -1247,6 +1247,73 @@ sessão de 01/09 11:11 sustentaria um login, e cookies de sessão expiram. Ver
 `PLANO_EXECUCAO_2026-09-07.md` §0, item 1, e §3 (S1–S3) para o plano de
 recuperação.
 
+## 5-quindecies. Acompanhamento — seguir processo fora da mesa
+
+Construído em 11/09/2026. Desenho em `PLANO_ACOMPANHAMENTO_2026-09-11.md`, execução
+em `PLANO_IMPL_ACOMPANHAMENTO_2026-09-11.md`.
+
+A carteira é o que chegou até a mesa. Quando o processo sai da mesa, ele desaparece
+do painel — e é justamente aí que alguém mais precisa saber dele. O módulo responde
+**"onde este processo está agora, e o que mudou desde a última vez que olhei?"** para
+processo que não está em mesa nenhuma da pessoa.
+
+Porta própria no menu, lista por conta, lida com o login da própria pessoa.
+
+**O que ele deliberadamente não faz.** Não entra na carteira: processo acompanhado
+não soma indicador do painel, não aparece nos relatórios, não vira snapshot — se
+entrasse, todo número do produto passaria a misturar "o que é meu" com "o que eu
+observo". Não responde "parado há N dias aqui", porque os cinco campos de custódia
+são derivados PARA UMA MESA e fora dela não têm referente; diz "aberto em CIR-IBOT há
+14 dias", que é verdade. Não atravessa pessoa e não passa pelo poço. Não amplia
+acesso: o que o SEI nega ao login, o módulo registra como `sem_acesso` e diz na tela.
+
+**A economia central.** Processo que já está na carteira é respondido pela própria
+coleta, sem uma requisição ao SEI — `processo_mesa` já guarda as unidades da árvore e
+`processo` guarda `ultimo_movimento`, `documentos` e `movimentos`. O recorte sai de
+`snapshots_de`, a MESMA função que o painel usa: um `SELECT` por protocolo acharia a
+linha de qualquer unidade do banco, e o módulo viraria a porta lateral que contorna a
+fronteira que o resto do sistema defende. Só o que está fora da carteira custa
+requisição — 5 por processo, teto de 100 por pessoa, ~500 no pior caso contra as
+~5.900 da coleta diária.
+
+**Quatro decisões que o desenho tomou, e por quê:**
+
+1. **A identidade do processo é a sequência de dígitos**, não o texto. O SEI 4.0 da
+   FESF e o 5.0.4 da SESAB imprimem o mesmo número com pontuação diferente, e quem
+   cola cola o que viu. Comparar texto fazia o número colado sem pontuação nunca casar
+   com a carteira, e a mesma pessoa colando o mesmo processo em duas formas ganhava
+   duas linhas.
+2. **Um momento, um quadro.** A leitura sai de UMA linha de `processo` — a mais fresca
+   que tenha lista de mesas —, nunca de uma mistura. Somar as mesas de coletas de dias
+   diferentes produz retrato que nunca existiu e, pior, **cala o `saiu_de` para
+   sempre**: enquanto o snapshot velho sobreviver, a união é monotônica e o evento
+   mais valioso do módulo nunca sai.
+3. **O delta compara medição, não inserção.** Se a medição nova não for mais nova que
+   a anterior, não há delta — só `mudou = NULL`. Sem essa guarda o processo **volta no
+   tempo** na tela, com movimentação inventada nas duas direções, o que acontece já
+   com a carteira sozinha quando o snapshot fresco expira e sobra o velho.
+4. **Procedência em cada linha.** A tela diz "pela sua coleta de 27/08" ou "lido no SEI
+   em 11/09", e distingue quatro silêncios diferentes: nunca lido, primeira leitura
+   (nada a comparar), dado que não avançou, e comparado sem mudança. Dizer "sem
+   mudança" na primeira observação seria a mesma falsidade que o módulo recusa em
+   todo o resto.
+
+**A régua das unidades abertas é a ÁRVORE.** Medido em 10/09/2026 sobre 15 coletas,
+com a própria lista da mesa como terceira fonte: em 1.278 discordâncias observáveis
+entre a linha "Processo aberto nas unidades" da árvore e a máquina de estados do
+andamento, a árvore bateu com a realidade em 100% dos casos e o andamento em 0%.
+Quando a linha reaproveitada veio do andamento, a tela marca "não confirmado pela
+árvore". Isto NÃO contradiz `project_sei_unidades_abertas` do projeto irmão: lá a
+fonte enganosa é a lista histórica de unidades dos metadados, outra coisa.
+
+**O que fica por provar em campo.** Nada do lado da estação foi exercido contra o SEI
+real — exige sessão autenticada de uma pessoa, com 2FA, na estação dela. A lista está
+no topo de `painel_sesab/_teste_acompanhar.js`. O item que mais importa: **que o
+`GET acao=procedimento_trabalhar` sobre processo fora das mesas seja mesmo só
+leitura.** No SEI 5.0.4 abrir um processo pode marcá-lo como recebido na unidade
+ativa — e aí o módulo estaria ALTERANDO o SEI, movimentando processo alheio em nome
+de quem acompanha. Enquanto não for conferido, é o risco aberto do módulo.
+
 ## 6. Isolamento — decisão pendente
 
 O pedido original foi "cada usuário só acessa os dados do seu usuário". Isso tem duas leituras:

@@ -644,6 +644,45 @@ O agente **sempre puxa**. A estação está atrás de NAT e firewall corporativo
 - **Sem autoatualização do agente.** O `/tarefa` informa `versao_disponivel` e o painel mostra "agente desatualizado"; a troca é comando manual. Autoatualização transformaria o servidor em canal de execução remota de código na única máquina que tem a credencial — exatamente o que este desenho evita.
 - **Teto local, no lado que detém a credencial:** o agente recusa executar mais de `N` vezes por dia e fora da faixa horária configurada **localmente**, independentemente do que o servidor pedir. É o único limite que sobrevive ao comprometimento do servidor.
 
+### 7.1-bis Os três trabalhos do ciclo, e a ordem entre eles
+
+Desde 11/09/2026 o agente tem três trabalhos por batida, nesta ordem:
+
+1. **`GET /api/agente/busca`** — a busca avançada, primeiro porque **alguém está
+   olhando a tela**. Uma coleta de 14 minutos na frente de uma busca de 20 segundos
+   transforma "pesquisar" em "pesquisar amanhã".
+2. **a coleta**, pelo `GET /api/agente/tarefa`.
+3. **`GET /api/agente/acompanhamento`** — os processos acompanhados que estão fora da
+   carteira (§5-quindecies de `SPECS.md`).
+
+O acompanhamento vem **por último, e isso é decisão medida, não arranjo**. Ele
+começou na frente da coleta, pelo mesmo argumento da busca, e a revisão desmontou:
+não existe plantão de acompanhamento (`atender()` só chama `buscar`), a latência já
+é de 0 a 30 min de qualquer jeito, e há trava de uma leitura por dia por item — a
+posição na frente comprava zero. Em troca, expunha a coleta diária a dois modos de
+falha provados: linha de resultado corrompida levantando `JSONDecodeError` não
+capturado (e `stderr` funde no mesmo pipe sem buffer, então uma linha do Chromium no
+meio de um envelope de dezenas de KB basta), e filho pendurado segurando a Trava
+indefinidamente, porque o teto de relógio só é avaliado quando chega uma linha. Nos
+dois casos a coleta do dia não era pedida, e a batida seguinte via o PID vivo e saía.
+
+Hoje o acompanhamento roda depois da coleta, dentro de `try/except`, e a asserção que
+a suíte cobra é essa: **a coleta é pedida mesmo quando o acompanhamento falha.**
+
+Contrato dos dois endpoints novos, mesma autenticação dos demais (Bearer + HMAC):
+
+| | |
+|---|---|
+| `GET /api/agente/acompanhamento` | devolve `{ler, instancia, protocolos[], perfil}` ou `{ler:false, motivo}`. **Não** manda a nota que a pessoa escreveu (texto de gente, pode citar nome), nem o tamanho da lista. |
+| `POST /api/agente/acompanhamento` | recebe `{instancia, leituras[]}`. O **dono e a instalação saem do token**, nunca do envelope: a instância do corpo é apenas conferida, e divergência devolve 409 sem gravar. Estado inventado é recusado, não traduzido. |
+
+**Recuo:** falha técnica não carimba leitura, então o item continua pendente — e sem
+contador isso o reofereceria a cada 30 min. Uma falha sistemática que não derrube a
+sessão custaria 100 processos × 5 requisições × 34 ciclos ≈ 17 mil requisições por
+dia contra o SEI do órgão, três vezes a coleta inteira, sem nada perceber. Por isso
+`acompanhado.tentativas`: três entregas sem resposta no mesmo dia e o item descansa
+até o dia virar, com o motivo dito no log do agente.
+
 ### 7.2 Janelas — números medidos, não estimados
 
 Medição real de 18/08/2026 (`_logs/coleta_20260818.log`):
