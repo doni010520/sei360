@@ -24,9 +24,10 @@
         quem procura — e essa e a premissa do modulo inteiro;
      3. que a recusa do SEI aparece mesmo como pagina SEM o iframe da arvore (o
         que aqui vira 'sem_acesso') e nao como erro visivel ou tela de login;
-     4. que sao TRES requisicoes por processo: o formulario real pode trazer
-        `hdnInicio`, e nesse caso `pesquisar` posta a segunda pagina antes de
-        respeitar `paginas_teto: 1` — quatro requisicoes, nao tres;
+     4. que sao CINCO requisicoes por processo. Aqui isso e MEDIDO contra a
+        fixture (ver o caso abaixo), e o formulario real pode trazer `hdnInicio`
+        — e nesse caso `pesquisar` posta a segunda pagina antes de respeitar
+        `paginas_teto: 1`, e sao seis;
      5. que a sessao aguenta N processos em serie a 240 ms, que e a pausa medida
         contra a paginacao da busca, nao contra esta leitura;
      6. que `id_sei` vem preenchido na linha do resultado nas DUAS instalacoes.
@@ -219,7 +220,7 @@ async function lerUm(resolvedor, protocolo = PROTOCOLO, opc = {}) {
 /* ================================================================ os casos == */
 (async () => {
 
-console.log('O CAMINHO BOM: TRES REQUISICOES E QUATRO CAMPOS');
+console.log('O CAMINHO BOM: CINCO REQUISICOES E QUATRO CAMPOS');
 {
   const { r, amb } = await lerUm(redeComResultado([RESULTADO(PROTOCOLO, '91')]));
   checar('o estado e "lido"', r.estado === 'lido', JSON.stringify(r));
@@ -232,11 +233,20 @@ console.log('O CAMINHO BOM: TRES REQUISICOES E QUATRO CAMPOS');
   checar('documentos = nos da arvore menos a raiz', r.documentos === 2, String(r.documentos));
   checar('movimentos = linhas do historico', r.movimentos === 3, String(r.movimentos));
   checar('o id_sei vem da linha do resultado', r.id_sei === '91', String(r.id_sei));
-  // Uma requisicao para a tela de Pesquisa, uma para o processo, uma para a
-  // arvore, uma para o historico — mais o POST da propria pesquisa.
+  // O ORCAMENTO, MEDIDO E NAO ESTIMADO. A conta antiga dizia tres e esquecia o
+  // par da pesquisa: a tela de Pesquisa e reaberta a cada protocolo, porque
+  // `abrirPesquisa` sai do MENU vivo — reusar o formulario da vez anterior e
+  // exatamente o risco de `infra_hash` morto. Este numero e publicado em
+  // `acompanhamento.py` (TETO) e nos dois planos; se ele mudar aqui, tem de
+  // mudar la.
+  checar('sao CINCO requisicoes por processo', amb.pedidos.length === 5,
+         `${amb.pedidos.length}: ${JSON.stringify(amb.pedidos)}`);
   checar('a arvore e o historico foram lidos',
          amb.pedidos.some(u => /arvore_visualizar/.test(u))
          && amb.pedidos.some(u => /consultar_historico/.test(u)),
+         JSON.stringify(amb.pedidos));
+  checar('e a tela de Pesquisa e reaberta, nunca reusada',
+         amb.pedidos.filter(u => /acao=protocolo_pesquisar/.test(u)).length === 2,
          JSON.stringify(amb.pedidos));
 }
 

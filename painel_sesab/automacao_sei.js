@@ -1838,8 +1838,15 @@ function limparCache() {
 
    E COMPOSICAO, nao leitura nova: a pesquisa por numero (`SEIBusca.pesquisar`)
    devolve o link, `urlHistorico` traz a arvore e a URL do andamento, `pegar`
-   traz o andamento e `derivar` produz o registro inteiro. Tres requisicoes por
-   processo, alem do POST da propria pesquisa.
+   traz o andamento e `derivar` produz o registro inteiro.
+
+   CINCO REQUISICOES POR PROCESSO, medido em 11/09/2026 e nao estimado:
+   GET da tela de Pesquisa, POST da pesquisa, GET do processo, GET da arvore,
+   GET do andamento. A conta antiga dizia tres e esquecia o par da pesquisa — a
+   tela e reaberta a cada protocolo, e CORRETAMENTE: `abrirPesquisa` sai do MENU
+   vivo a cada vez, e reusar o formulario da vez anterior e exatamente o risco de
+   `infra_hash` morto, que nao devolve erro — derruba a sessao de quem esta
+   trabalhando. E a mesma ordem de grandeza que `custo()` publica para a coleta.
 
    O RESULTADO E FILTRADO, E A LISTA DE CAMPOS E EXPLICITA. `derivar` tambem
    calcula os cinco campos de custodia (`marco_unidade`, `recebimento`,

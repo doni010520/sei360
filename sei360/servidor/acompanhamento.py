@@ -21,15 +21,25 @@ import janelas
 from banco import agora
 
 # Teto por pessoa. Com o reaproveitamento da carteira, só o que está fora das
-# mesas custa requisição ao SEI: ~3 por processo, ou ~300 no pior caso de uma
-# lista cheia inteiramente de fora — contra as ~5.900 que a coleta de 1.182
-# processos já faz. O teto existe para a lista não virar uma segunda coleta sem
-# ninguém ter decidido isso.
+# mesas custa requisição ao SEI.
+#
+# SÃO CINCO REQUISIÇÕES POR PROCESSO, medido em 11/09/2026 com 5 protocolos:
+# GET da tela de Pesquisa, POST da pesquisa, GET do processo, GET da árvore, GET
+# do andamento. A conta anterior dizia três e esquecia o par da pesquisa — a tela
+# de Pesquisa é reaberta a cada protocolo, e CORRETAMENTE: reusar o formulário da
+# vez anterior é exatamente o risco de `infra_hash` morto, que não devolve erro,
+# derruba a sessão de quem está trabalhando. É a mesma ordem de grandeza que o
+# `custo()` da coleta já publica (5 por processo).
+#
+# Pior caso: ~500 numa lista cheia inteiramente de fora — contra as ~5.900 que a
+# coleta de 1.182 processos já faz, ou ~8,5% a mais. Continua seguro; o que não
+# continuava era o número. O teto existe para a lista não virar uma segunda
+# coleta sem ninguém ter decidido isso.
 #
 # A contagem é lida uma vez por chamada, e sob concorrência (3 workers x 2
 # threads) duas colagens simultâneas da mesma conta podem passar do teto —
 # medido, chega a 101. Aceito de propósito: este teto é ORÇAMENTO de requisição
-# ao SEI, não fronteira de acesso, e três itens a mais custam nove requisições
+# ao SEI, não fronteira de acesso, e três itens a mais custam quinze requisições
 # uma vez. Serializar a leitura+escrita da contagem para isso seria cerimônia
 # desproporcional numa lista pessoal.
 TETO = 100
