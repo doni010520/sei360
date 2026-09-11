@@ -2291,6 +2291,92 @@ checar("e distingue recuo de falha passageira, com a contagem",
 
 _ag.chamar = _chamar_real
 
+print("\n9-ter-bis. o envelope em pedaços, e o pedaço que se perde")
+# POR QUE EM PEDAÇOS. Medido em 11/09/2026, depois da ficha completa: uma leitura
+# passou de 277 para 825 bytes, e 100 leituras de 27 KB para 81 KB — numa linha só
+# de stdout, com stderr fundido nela e sem buffer. Escrita desse tamanho não é
+# atômica, e foi assim que a linha-marca corrompida virou um crítico.
+#
+# O corte REDUZ O RAIO: uma linha corrompida custa 20 leituras em vez de 100. Não
+# fecha a janela — 16 KB por linha continua acima de qualquer garantia de
+# atomicidade de pipe, e no Windows não há garantia documentada para tamanho
+# nenhum. O que fecha a repetição é o recuo por `tentativas`.
+_coletor_falso(
+    "import json, sys\n"
+    "sys.stdin.readline()\n"
+    "def env(ps, extra=None):\n"
+    "    d = {'instancia': 'SEI-SESAB',\n"
+    "         'leituras': [{'protocolo': p, 'estado': 'lido'} for p in ps]}\n"
+    "    if extra: d.update(extra)\n"
+    "    return 'ACOMP_OK ' + json.dumps(d)\n"
+    "print(env(['019.1111.2026.0000001-11'], {'falhas': [], 'motivo': None}))\n"
+    "print('ACOMP_OK {\\\"instancia\\\": \\\"SEI-SESAB\\\", \\\"leitur')\n"
+    "print(env(['019.3333.2026.0000003-33']))\n")
+_vistos = _ag._rodar_coletor({}, "--modo-falso", "ACOMP_OK ", 30, varios=True)
+checar("os pedaços legíveis chegam, o corrompido não", len(_vistos) == 2,
+       str(_vistos))
+checar("e são os dois que estavam inteiros",
+       [x["leituras"][0]["protocolo"] for x in _vistos]
+       == ["019.1111.2026.0000001-11", "019.3333.2026.0000003-33"], str(_vistos))
+# `varios=False` é o que `buscar()` usa, e o comportamento dele não podia mudar:
+# vale o ÚLTIMO envelope lido, como sempre valeu.
+checar("com varios=False continua valendo um envelope só",
+       (_ag._rodar_coletor({}, "--modo-falso", "ACOMP_OK ", 30) or {})
+       .get("leituras", [{}])[0].get("protocolo") == "019.3333.2026.0000003-33")
+
+# O AGENTE PUBLICA PEDAÇO POR PEDAÇO, e soma. Publicar só o último gravaria 20 de
+# 100 sem erro nenhum.
+_visto["chamadas"] = []
+_ag.chamar = _servidor_falso(_TAREFA)
+with contextlib.redirect_stdout(io.StringIO()) as _log_ped:
+    _ag.acompanhar({"servidor": "http://x", "token": "t"})
+_posts_ped = [c for c in _visto["chamadas"] if c[1] != "GET"]
+checar("os dois pedaços legíveis são publicados", len(_posts_ped) == 2,
+       str(len(_posts_ped)))
+checar("e o log soma as duas gravações, dizendo que foram pedaços",
+       "gravou 2" in _log_ped.getvalue() and "pedaços" in _log_ped.getvalue(),
+       _log_ped.getvalue()[-200:])
+
+# NÃO-200 NUM PEDAÇO PARA O RESTO. O 409 é "a instalação do dono mudou", e vale
+# para todos os pedaços — a instalação declarada é a mesma nos três. Insistir
+# seria N recusas iguais no log.
+_visto["chamadas"] = []
+
+
+def _servidor_que_recusa(cfg, caminho, corpo=None, metodo=None, timeout=120):
+    _visto.setdefault("chamadas", []).append((caminho, metodo, corpo))
+    if metodo == "GET":
+        return 200, _TAREFA
+    return 409, {"erro": "a estação relata leitura de outra instalação"}
+
+
+_ag.chamar = _servidor_que_recusa
+with contextlib.redirect_stdout(io.StringIO()) as _log_409:
+    _ag.acompanhar({"servidor": "http://x", "token": "t"})
+checar("recusa num pedaço para os seguintes",
+       len([c for c in _visto["chamadas"] if c[1] != "GET"]) == 1,
+       str(_visto["chamadas"]))
+checar("e a recusa diz qual pedaço foi", "pedaço 1/2" in _log_409.getvalue(),
+       _log_409.getvalue()[-200:])
+
+# COLETOR MORTO PELO RELÓGIO joga fora o que já veio, de propósito: não há como
+# saber se a última linha estava completa, e `json.loads` aceita um envelope de 20
+# leituras truncado em 3 se o corte cair num lugar legal. Quem para sozinho,
+# dentro do `.js`, devolve envelope inteiro com `motivo` — é esse o caminho para
+# entregar leitura parcial.
+_coletor_falso(
+    "import json, sys, time\n"
+    "sys.stdin.readline()\n"
+    "print('ACOMP_OK ' + json.dumps({'instancia': 'SEI-SESAB', 'leituras': []}))\n"
+    "sys.stdout.flush()\n"
+    "while True:\n"
+    "    print('ainda aqui'); sys.stdout.flush(); time.sleep(0.02)\n")
+with contextlib.redirect_stdout(io.StringIO()):
+    _morto = _ag._rodar_coletor({}, "--modo-falso", "ACOMP_OK ", 1, varios=True)
+checar("morto pelo relógio não entrega pedaço nenhum", _morto == [], str(_morto))
+
+_ag.chamar = _chamar_real
+
 print("\n9-quater. o acompanhamento NÃO pode impedir a coleta do dia")
 # OS DOIS DEFEITOS são a mesma família, e os dois foram herdados de `buscar()` —
 # o que os tornou perigosos foi o acompanhamento ter ficado na FRENTE da coleta,

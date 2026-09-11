@@ -223,8 +223,12 @@ def atender(cfg, minutos=ATENDIMENTO_MIN):
     return 0
 
 
-def _rodar_coletor(pedido, modo, marca, teto):
+def _rodar_coletor(pedido, modo, marca, teto, varios=False):
     """Roda o coletor num modo de UMA tacada e devolve o envelope, ou None.
+
+    `varios=True` devolve a LISTA de envelopes, para quem imprime em pedaços — ver
+    `acompanhar()`. Com `varios=False` (o padrão, e o que `buscar()` usa) vale o
+    ÚLTIMO envelope lido, que é o comportamento que sempre valeu.
 
     ERA O CORPO DE `buscar()`, e saiu de lá quando `acompanhar()` passou a
     precisar do mesmo laço. A alternativa — copiar as trinta linhas — é o defeito
@@ -252,7 +256,7 @@ def _rodar_coletor(pedido, modo, marca, teto):
     proc.stdin.write(json.dumps(pedido) + "\n")
     proc.stdin.flush()
     proc.stdin.close()
-    envelope = None
+    envelopes = []
     inicio = time.time()
     try:
         for linha in proc.stdout:
@@ -270,8 +274,12 @@ def _rodar_coletor(pedido, modo, marca, teto):
                 # Descartar é o certo: envelope pela metade não é envelope, e
                 # `None` já significa "a estação não devolveu resultado", que é a
                 # verdade. Quem chama trata isso, e o item continua pendente.
+                #
+                # DESCARTA A LINHA, NÃO A EXECUÇÃO: o `continue` implícito aqui é
+                # o que faz o envelope em pedaços valer a pena — com uma linha
+                # corrompida, as outras ainda chegam.
                 try:
-                    envelope = json.loads(linha[len(marca):])
+                    envelopes.append(json.loads(linha[len(marca):]))
                 except ValueError:
                     print(f"     (linha {marca.strip()} ilegível — descartada, "
                           f"{len(linha)} bytes)")
@@ -283,9 +291,18 @@ def _rodar_coletor(pedido, modo, marca, teto):
     except (TimeoutError, subprocess.TimeoutExpired):
         # O MESMO exit 5 sintético da coleta: `page.evaluate` não obedece o
         # timeout do Playwright, então quem mata é o relógio de parede.
+        #
+        # JOGA FORA O QUE JÁ VEIO, e de propósito: o coletor morto no meio pode
+        # ter imprimido meia linha, e não há como saber se a última que chegou
+        # está completa — `json.loads` aceita um envelope de 20 leituras truncado
+        # em 3 se o corte cair num lugar legal. Quem para sozinho, dentro do
+        # `.js`, devolve envelope inteiro com `motivo`; é esse o caminho para
+        # entregar leitura parcial, e não este.
         proc.kill()
-        envelope = None
-    return envelope
+        envelopes = []
+    if varios:
+        return envelopes
+    return envelopes[-1] if envelopes else None
 
 
 def buscar(cfg):
@@ -358,8 +375,22 @@ def acompanhar(cfg):
     # 600 s é o MESMO teto da busca, e aqui ele é o de fora: a estação tem teto
     # próprio de 9 min dentro do `.js` justamente para responder antes deste. Se
     # este disparar, o processo é morto e não sobra envelope nenhum.
-    envelope = _rodar_coletor(pedido, "--acompanhar", "ACOMP_OK ", 600)
-    if envelope is None:
+    #
+    # `varios=True`: A ESTAÇÃO IMPRIME EM PEDAÇOS, e por causa do tamanho. Medido
+    # em 11/09/2026, depois da ficha completa: uma leitura passou de 277 para 825
+    # bytes, e 100 leituras de 27 KB para 81 KB — numa linha só de stdout, com
+    # stderr fundido nela (`stderr=STDOUT`) e sem buffer. Escrita desse tamanho
+    # não é atômica, e foi exatamente assim que a linha-marca corrompida virou um
+    # crítico. Em pedaços de 20, uma linha corrompida custa 20 leituras em vez de
+    # 100, e as outras chegam.
+    #
+    # ISSO REDUZ A JANELA, NÃO A FECHA, e não vou dizer que fecha: 16 KB por linha
+    # continua acima de qualquer garantia de atomicidade de pipe, e no Windows não
+    # há garantia documentada para tamanho nenhum. O que o corte compra é raio, e
+    # o que fecha a repetição é o recuo por `tentativas` no servidor. Pedaço menor
+    # compraria cada vez menos (a perda já fica pendente) e multiplicaria POSTs.
+    envelopes = _rodar_coletor(pedido, "--acompanhar", "ACOMP_OK ", 600, varios=True)
+    if not envelopes:
         # ENVELOPE VAZIO NÃO É PUBLICADO. O servidor gravaria zero e nada mais —
         # não há, nesta rota, onde registrar "a estação tentou e falhou" (ao
         # contrário da busca, que tem uma linha própria para carimbar o motivo).
@@ -369,20 +400,33 @@ def acompanhar(cfg):
         print("  a estação não devolveu leitura nenhuma — "
               f"os {len(protocolos)} item(ns) continuam pendentes")
         return True
-    s, r = chamar(cfg, "/api/agente/acompanhamento", envelope, timeout=120)
-    if s != 200:
-        print(f"  servidor recusou ({s}): {r.get('erro')}")
-        return True
-    print(f"  servidor gravou {r.get('gravadas')}, ignorou {r.get('ignoradas')}")
-    if envelope.get("falhas"):
+    gravadas, ignoradas, falhas = 0, 0, []
+    for i, envelope in enumerate(envelopes, 1):
+        s, r = chamar(cfg, "/api/agente/acompanhamento", envelope, timeout=120)
+        if s != 200:
+            # PARA NO PRIMEIRO NÃO-200, em vez de insistir com os outros pedaços.
+            # O 409 é "a instalação do dono mudou entre o pedido e a resposta", e
+            # ele vale para TODOS os pedaços — a instalação declarada é a mesma nos
+            # três. Insistir seria N recusas iguais no log.
+            print(f"  servidor recusou o pedaço {i}/{len(envelopes)} ({s}): "
+                  f"{r.get('erro')}")
+            break
+        gravadas += r.get("gravadas") or 0
+        ignoradas += r.get("ignoradas") or 0
+        falhas += envelope.get("falhas") or []
+    print(f"  servidor gravou {gravadas}, ignorou {ignoradas}"
+          + (f" (em {len(envelopes)} pedaços)" if len(envelopes) > 1 else ""))
+    if falhas:
         # FALHA SEM ESTADO é item que continua pendente. Ela não vira linha no
         # banco de propósito (ver `acompanhar()` em `automacao_sei.js`), então o
         # único lugar onde ela aparece é aqui.
-        print(f"  {len(envelope['falhas'])} processo(s) não puderam ser lidos: "
+        print(f"  {len(falhas)} processo(s) não puderam ser lidos: "
               + "; ".join(f"{f.get('protocolo')}: {f.get('motivo')}"
-                          for f in envelope["falhas"][:5]))
-    if envelope.get("motivo"):
-        print(f"  {envelope['motivo']}")
+                          for f in falhas[:5]))
+    # O `motivo` (sessão caída, teto de tempo) vem no pedaço em que aconteceu.
+    for envelope in envelopes:
+        if envelope.get("motivo"):
+            print(f"  {envelope['motivo']}")
     return True
 
 

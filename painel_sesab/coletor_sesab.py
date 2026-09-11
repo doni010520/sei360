@@ -557,9 +557,31 @@ try:
                 "protocolos": _protos,
                 "campos": PERFIL_SEI.get("campos_busca") or {},
             })
-            # O ENVELOPE VAI PARA STDOUT numa linha, com prefixo — o mesmo
-            # contrato de BUSCA_OK. O log fica no resto das linhas.
-            print("ACOMP_OK " + json.dumps(env, ensure_ascii=False))
+            # O ENVELOPE VAI PARA STDOUT COM PREFIXO — o mesmo contrato de
+            # BUSCA_OK —, mas EM PEDAÇOS, e por causa do tamanho. Medido em
+            # 11/09/2026, depois da ficha completa: uma leitura passou de 277 para
+            # 825 bytes, e 100 leituras de 27 KB para 81 KB. Numa linha só, com
+            # stderr fundido no stdout e sem buffer, escrita desse tamanho não é
+            # atômica — e foi assim que a linha-marca corrompida virou um crítico.
+            #
+            # Cada pedaço é um envelope COMPLETO e independente: mesma instalação,
+            # sua fatia de leituras. O agente publica um por um, e uma linha
+            # corrompida custa 20 leituras em vez de 100. Reduz o raio; não fecha a
+            # janela — ver o comentário de `acompanhar()` em `sei360_agente.py`.
+            #
+            # `falhas` e `motivo` viajam no PRIMEIRO pedaço, não repetidos em
+            # todos: repetir faria o agente contar cada falha N vezes no log.
+            _leituras = env.get("leituras") or []
+            _POR_LINHA = 20
+            _fatias = [_leituras[i:i + _POR_LINHA]
+                       for i in range(0, len(_leituras), _POR_LINHA)] or [[]]
+            for _i, _fatia in enumerate(_fatias):
+                _pedaco = {"instancia": env.get("instancia"), "leituras": _fatia}
+                if _i == 0:
+                    _pedaco["falhas"] = env.get("falhas") or []
+                    _pedaco["motivo"] = env.get("motivo")
+                    _pedaco["pedidos"] = env.get("pedidos")
+                print("ACOMP_OK " + json.dumps(_pedaco, ensure_ascii=False))
             log(f"acompanhamento: {len(env.get('leituras') or [])} lido(s), "
                 f"{len(env.get('falhas') or [])} falha(s)"
                 + (f" — {env['motivo']}" if env.get("motivo") else ""))
