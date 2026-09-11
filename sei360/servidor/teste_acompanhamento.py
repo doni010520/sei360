@@ -47,9 +47,12 @@ checar("a tabela da lista existe", "acompanhado" in _tabelas, str(sorted(_tabela
 checar("a tabela do histórico existe", "acompanhado_leitura" in _tabelas)
 # `fonte` e `medido_em` são a armadilha do reaproveitamento: dado vindo da
 # carteira pode ser de dias atrás, e gravá-lo como "lido hoje" seria mentir no
-# carimbo. `aberto_em_fonte` diz se as unidades vieram da ÁRVORE do SEI ou da
-# máquina de estados do andamento — a segunda errou em 100% dos 1.278 casos
-# observáveis medidos em 10/09/2026.
+# carimbo. `aberto_em_fonte` diz se as unidades vieram da ÁRVORE ou da máquina
+# de estados do andamento — a segunda errou em 100% dos 1.278 casos observáveis
+# medidos em 10/09/2026. "Árvore" aqui é a linha "Processo aberto nas
+# unidades: ..." que o próprio SEI publica no topo da árvore, e NÃO a lista
+# histórica de unidades dos metadados — que é a que o projeto irmão
+# `sei_sistema` corrige computando do andamento.
 _cols = {r[1] for r in _cx.execute("PRAGMA table_info(acompanhado_leitura)")}
 checar("o histórico sabe de ONDE e de QUANDO é o dado",
        {"fonte", "medido_em", "aberto_em_fonte"} <= _cols, str(sorted(_cols)))
@@ -99,6 +102,18 @@ _sobrou_leitura = _cx.execute(
 checar("apagar a conta leva a lista junto", _sobrou_lista == 0, str(_sobrou_lista))
 checar("e leva as leituras junto", _sobrou_leitura == 0, str(_sobrou_leitura))
 _cx.commit(); _cx.close()
+
+print("\n2. normalizar o número colado")
+import acompanhamento as ac                                      # noqa: E402
+
+checar("espaço em volta sai", ac.normalizar("  019.5120.2026.0161681-50 ")
+       == "019.5120.2026.0161681-50")
+checar("linha vazia é recusada", ac.normalizar("   ") is None)
+checar("texto que não é número é recusado", ac.normalizar("processo da Laisa") is None)
+# O SEI 4.0 da FESF e o 5.0.4 da SESAB imprimem o mesmo número com pontuação
+# diferente; quem cola, cola o que viu.
+checar("número sem pontuação passa", ac.normalizar("019512020260161681") is not None)
+checar("número curto demais é recusado", ac.normalizar("123") is None)
 
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
