@@ -275,3 +275,77 @@ tela, porque a alternativa é a pessoa supor sincronia que não existe.
 
 A listagem é uma tela do SEI que o coletor ainda não abre; é o único ponto do módulo
 que precisa de navegação nova, e é por isso que ela é opcional e sai por último.
+
+---
+
+## 11. Ficha completa — decidido em 11/09/2026, depois da fase 2
+
+Pedido do usuário: *"deve aparecer as informações completas do processo, como aparece
+no controle de processo, para que possa entender qual é cada processo. Além disso,
+deve haver as opções para aparecer as informações mais completas de cada processo."*
+
+A lista de números nus é ilegível, e o pedido é legítimo. Mas a disponibilidade dos
+campos tem **três camadas diferentes**, e só uma era escolha de desenho.
+
+### 11.1 O que existe onde
+
+**Do processo — vale dentro e fora da mesa.** Autuação, unidade e usuário geradores,
+contagem de documentos e de movimentos, último movimento, unidades abertas (árvore),
+nível de acesso, hipótese legal, e-mails enviados, anexados, assinatura externa. Mais
+`assuntos` e `interessados`, que saem da tela Consultar/Alterar (um GET, sem submeter)
+— **uma requisição a mais**, levando de 5 para 6 por processo lido no SEI.
+
+**Da MESA — não existe fora dela.** Marcador, anotação (autor e data), responsável
+atribuído, "já visualizado", documento novo, e os cinco campos de custódia — portanto
+"parado há N dias aqui". Medido no coletor: `linha5` e `linha4` tiram esses campos da
+LINHA da tabela de Controle de Processos daquela mesa (`aria-label` no 5.x, tooltip no
+4.0). Para processo que não está em mesa da conta, essa linha não existe. Não é
+decisão: é o que o SEI expõe.
+
+**`tipo_processo` e `especificacao` também são da linha da mesa** — e é por isso que a
+especificação, que é justamente o que responde "qual é esse processo", **não está
+disponível para processo de fora**. O `tipo` se recupera de outro lugar (a própria
+busca já o devolve em `CAMPOS_ITEM`); a especificação, não. Fica como **melhor
+esforço** a partir da raiz da árvore, marcada como ausente quando não vier, e o nome
+do campo na tela Consultar/Alterar entra na lista do que se verifica em campo — o
+projeto nunca leu aquela tela e adivinhar id de campo do SEI já custou quatro erros
+nesta mesma entrega.
+
+### 11.2 A decisão de privacidade, e de quem foi
+
+`especificacao`, `anotacao`, `interessados` e `acompanhamento` vivem em
+`processo_texto`, separada de propósito por ser "onde estão os campos que podem citar
+paciente". A busca avançada exclui `especificacao` com motivo escrito: *"é texto que um
+servidor escreveu, pode citar paciente, e o consentimento para tratá-lo é por
+unidade."*
+
+O painel mostra esse texto para processo **nas** unidades da pessoa, onde o
+consentimento por unidade vale. O Acompanhamento o mostraria para processo **fora**
+delas, onde não há unidade que o sustente.
+
+**Decisão do usuário, 11/09/2026, perguntado explicitamente: mostrar para todos.** O
+alcance do texto livre passa a ir além do consentimento por unidade, neste módulo, por
+decisão de quem responde pelo dado — não por omissão de desenho e não por conveniência
+de implementação. Fica escrito aqui e em `SPECS.md` §5-quindecies com data e autor,
+porque é o tipo de decisão que alguém vai querer reconstituir.
+
+**O alcance é SÓ deste módulo.** A exclusão que a busca avançada faz continua valendo:
+é outra superfície, com outro alcance (a busca varre o SEI inteiro, o acompanhamento
+varre uma lista que a própria pessoa montou), e ampliá-la exigiria uma decisão própria.
+
+### 11.3 A forma
+
+**Linha enxuta, com expandir na linha** — decisão do usuário, e é o padrão que o painel
+já usa. Com teto de 100 itens, cartão sempre aberto viraria página de rolagem infinita;
+a ficha lateral do painel é desenhada para os campos da carteira e não para estes.
+
+O que fica na linha fechada: número, instalação (quando há mais de uma), a nota da
+pessoa, onde está aberto, último movimento, o que mudou, e a procedência. O que abre no
+expandir: tipo, especificação, autuação, quem gerou, assuntos, interessados, nível de
+acesso, contagens — e, para processo da carteira, também marcador, anotação,
+responsável e os dias na unidade, que ali existem.
+
+**Campo ausente não vira vazio silencioso.** Item de fora da carteira não tem marcador
+nem anotação porque a mesa não existe, e isso é diferente de "não tem marcador". A
+ficha diz qual dos dois, no espírito do `acomp_lido` e do `mesa_indeterminada` que o
+esquema já traz.
