@@ -10,7 +10,9 @@ O QUE ESTE MÓDULO NÃO FAZ, E É DESENHO
 Não escreve em `snapshot`, `processo` nem `poco_*`. Processo acompanhado não é
 carteira: não soma indicador do painel e não entra em relatório. A fronteira que o
 resto do sistema defende continua sendo a da carteira, e este módulo não abre porta
-lateral nela — ver `_da_carteira`, que passa pelo MESMO recorte do painel.
+lateral nela — o reaproveitamento da carteira (tarefa adiante desta) tem de passar
+pelo MESMO recorte por unidade que o painel usa, nunca por um SELECT direto em
+`processo` que enxergaria mesa de qualquer dono.
 """
 import json
 import re
