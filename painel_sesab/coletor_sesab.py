@@ -29,6 +29,7 @@ USO
     python coletor_sesab.py --mesas    # todas as unidades da conta
     python coletor_sesab.py --mesas --plano   # pergunta ao SEI360 o que ja foi lido
     python coletor_sesab.py --buscar          # UMA busca avancada; pedido por stdin
+    python coletor_sesab.py --acompanhar      # le N processos por numero; pedido por stdin
     python coletor_sesab.py --testar          # entra, confere quem e onde, e sai
 
 SAIDAS
@@ -117,6 +118,14 @@ SOMENTE = (sys.argv[sys.argv.index("--somente") + 1].split(",")
 # --buscar: roda UMA busca avançada e devolve o envelope. Não coleta, não publica,
 # não escreve em _coletas. O pedido chega por stdin, junto da credencial e do perfil.
 BUSCAR = "--buscar" in sys.argv
+# --acompanhar: le uma lista de processos POR NUMERO, um a um, fora de qualquer
+# mesa. E o outro lado do modulo de Acompanhamento do SEI360: o servidor diz quais
+# numeros a carteira nao respondeu, e a estacao le no SEI o que falta. Nao coleta,
+# nao publica, nao escreve em _coletas — e, como a busca, nao compartilha estado
+# com a coleta.
+ACOMPANHAR = "--acompanhar" in sys.argv
+# O MOTOR DA BUSCA VAI JUNTO nos dois modos: a leitura de um processo por numero
+# COMECA por uma pesquisa, e e dela que sai o link do processo.
 JS_BUSCA = BASE / "pesquisa_sei.js"
 
 # --credencial-stdin: quem chama entrega {"usuario":..,"senha":..} numa linha de
@@ -137,7 +146,7 @@ CREDENCIAL = None
 # UMA linha de stdin serve as duas coisas: a credencial do SEI e os dados de
 # conexao do plano. Duas leituras de stdin seriam duas chances de o chamador
 # travar esperando a segunda linha que nunca vem.
-if CRED_STDIN or PLANO or BUSCAR:
+if CRED_STDIN or PLANO or BUSCAR or ACOMPANHAR:
     try:
         CREDENCIAL = json.loads(sys.stdin.readline() or "{}")
     except ValueError:
@@ -199,6 +208,13 @@ if os.environ.get("SEI_SEM_SANDBOX") == "1":
 PEDIDO_BUSCA = (CREDENCIAL or {}).get("busca") or {}
 if BUSCAR and not PEDIDO_BUSCA:
     print("--buscar exige {\"busca\": {...}} em stdin")
+    sys.exit(4)
+PEDIDO_ACOMP = (CREDENCIAL or {}).get("acompanhamento") or {}
+if ACOMPANHAR and not PEDIDO_ACOMP.get("protocolos"):
+    # Lista vazia e ERRO de quem chamou, nao caso normal: o servidor so entrega
+    # trabalho quando ha trabalho (`ler: false` quando nao ha). Abrir o Chromium e
+    # logar no SEI para ler zero processo custa o mesmo que ler um.
+    print("--acompanhar exige {\"acompanhamento\": {\"protocolos\": [...]}} em stdin")
     sys.exit(4)
 # O ENVELOPE DO PLANO NAO E CREDENCIAL. Sem esta linha, `CREDENCIAL` ficava truthy
 # com {"plano": {...}} e o caminho de login (`if CREDENCIAL:`) lia CREDENCIAL
@@ -492,16 +508,54 @@ try:
             ctx.close()
             sys.exit(0)
 
-        if BUSCAR:
-            # UMA BUSCA, e nada mais. O motor é outro arquivo (pesquisa_sei.js):
-            # a busca não compartilha estado com a coleta, e um erro nela não pode
-            # deixar checkpoint de coleta pela metade.
+        def carregar_motor_da_busca():
+            """Injeta `pesquisa_sei.js` na aba.
+
+            OS DOIS MODOS QUE PESQUISAM passam por aqui — `--buscar` e
+            `--acompanhar`, que começa por uma pesquisa por número. Uma função só
+            para as duas não poderem divergir em QUAL arquivo carregam nem em
+            como: `add_init_script` para o motor renascer se a página navegar, e
+            `evaluate` para ele valer JÁ, nesta página, que é a que está aberta.
+            """
             if not JS_BUSCA.exists():
                 log(f"ERRO: nao achei {JS_BUSCA}")
                 ctx.close(); sys.exit(4)
             pg.add_init_script(path=str(JS_BUSCA))
             pg.evaluate(JS_BUSCA.read_text(encoding="utf-8"))
             pg.set_default_timeout(600_000)
+
+        if ACOMPANHAR:
+            # N PROCESSOS POR NÚMERO, um a um, e nada mais. Quem decide o que
+            # entra nesta lista é o servidor: ele já respondeu da carteira o que
+            # dava, e o que sobra é o que só o SEI sabe.
+            carregar_motor_da_busca()
+            _protos = PEDIDO_ACOMP.get("protocolos") or []
+            log(f"acompanhando {len(_protos)} processo(s) por numero…")
+            # OS CAMPOS DA PESQUISA SAEM DO PERFIL, como na busca. Sem eles
+            # `montar()` não acha o campo do número, a pesquisa volta cheia (ou
+            # vazia) e a estação relataria "não encontrado" sobre TODO processo —
+            # afirmando sobre os processos uma coisa que é verdade sobre a
+            # instalação. É a mesma trava que a rota do servidor já aplica com
+            # `disponivel_busca`.
+            env = pg.evaluate("(p) => SEIAuto.acompanharLista(p)", {
+                "instancia": PEDIDO_ACOMP.get("instancia") or PERFIL_JS.get("instancia"),
+                "protocolos": _protos,
+                "campos": PERFIL_SEI.get("campos_busca") or {},
+            })
+            # O ENVELOPE VAI PARA STDOUT numa linha, com prefixo — o mesmo
+            # contrato de BUSCA_OK. O log fica no resto das linhas.
+            print("ACOMP_OK " + json.dumps(env, ensure_ascii=False))
+            log(f"acompanhamento: {len(env.get('leituras') or [])} lido(s), "
+                f"{len(env.get('falhas') or [])} falha(s)"
+                + (f" — {env['motivo']}" if env.get("motivo") else ""))
+            ctx.close()
+            sys.exit(1 if env.get("motivo") else 0)
+
+        if BUSCAR:
+            # UMA BUSCA, e nada mais. O motor é outro arquivo (pesquisa_sei.js):
+            # a busca não compartilha estado com a coleta, e um erro nela não pode
+            # deixar checkpoint de coleta pela metade.
+            carregar_motor_da_busca()
             log(f"buscando… (busca {PEDIDO_BUSCA.get('busca_id')})")
             env = pg.evaluate("(p) => SEIBusca.pesquisar(p)", PEDIDO_BUSCA)
             # O ENVELOPE VAI PARA STDOUT numa linha, com prefixo. Quem chama lê

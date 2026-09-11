@@ -1833,7 +1833,135 @@ function limparCache() {
   log('cache de coleta limpo (credencial preservada)');
 }
 
+// ------------------------------------------------------------ acompanhamento
+/* ACOMPANHAMENTO — ler UM processo por numero, fora de qualquer mesa.
+
+   E COMPOSICAO, nao leitura nova: a pesquisa por numero (`SEIBusca.pesquisar`)
+   devolve o link, `urlHistorico` traz a arvore e a URL do andamento, `pegar`
+   traz o andamento e `derivar` produz o registro inteiro. Tres requisicoes por
+   processo, alem do POST da propria pesquisa.
+
+   O RESULTADO E FILTRADO, E A LISTA DE CAMPOS E EXPLICITA. `derivar` tambem
+   calcula os cinco campos de custodia (`marco_unidade`, `recebimento`,
+   `recebimento_por`, `envio`, `unidade_envio`) por `camposDaMesa(mov, UNIDADE)`
+   — derivados para a mesa em que a estacao esta parada, que NAO e a mesa deste
+   processo. Manda-los ao servidor seria mandar o dado de outra mesa com o nome
+   deste processo. Junto com eles viria `mov_custodia`, que carrega nome e login
+   de quem movimentou. Por isso a lista aqui e escrita a mao, e nunca um
+   espalhamento do objeto: campo novo em `derivar` nao vaza por acidente.
+
+   OS ESTADOS, E NENHUM SILENCIOSO
+     'lido'           — leu, e os quatro campos vao junto;
+     'nao_encontrado' — a pesquisa por numero nao devolveu linha;
+     'sem_acesso'     — o SEI devolveu a pagina SEM o conteudo que so aparece
+                        para quem pode ver o processo. E o que os `throw` de
+                        `urlHistorico` significam aqui.
+   Ficha vazia com cara de "processo sem novidade" seria pior que os tres.
+
+   FALHA TECNICA NAO E ESTADO. Rede que caiu, sessao que morreu, pagina que nao
+   parseou: nenhuma delas vira 'sem_acesso'. O item volta com `falha` e SEM
+   estado, e quem monta o envelope o deixa de fora — o servidor grava zero para
+   ele e ele continua pendente. Carimbar 'sem_acesso' numa falha de rede mentiria
+   na tela ("o SEI recusou") E queimaria a chance do dia, porque o servidor
+   atualiza `lido_em` em toda recusa. */
+async function acompanhar(protocolo, campos) {
+  if (!window.SEIBusca) return { protocolo, falha: 'pesquisa_sei.js nao carregado' };
+  // `pesquisar` NAO lanca: ele devolve `motivo` preenchido. Tratar excecao aqui e
+  // deixar de tratar o caso que acontece.
+  const env = await SEIBusca.pesquisar({
+    filtros: { numero_sei: protocolo },
+    // SEM `tramitacao_unidade`: o processo acompanhado esta, por definicao, fora
+    // das mesas de quem procura. Com o filtro ligado, a busca voltaria vazia e o
+    // modulo inteiro diria "nao encontrado" para tudo que existe.
+    campos: campos || {}, paginas_teto: 1,
+    // O href, so aqui e so agora — ver o comentario de `linhas()` em
+    // `pesquisa_sei.js`. Ele morre no fim desta funcao.
+    com_link: true,
+  });
+  if (env.motivo) return { protocolo, falha: 'busca: ' + env.motivo };
+  const item = (env.itens || [])[0];
+  if (!item || !item.link) return { protocolo, estado: 'nao_encontrado' };
+  let url, arvore;
+  try {
+    ({ url, arvore } = await urlHistorico(item.link));
+  } catch (e) {
+    const m = String(e && e.message ? e.message : e);
+    // SO estas duas mensagens sao recusa do SEI. Qualquer outra e falha nossa ou
+    // da rede, e nao pode virar afirmacao sobre o acesso da pessoa.
+    if (m === 'sem arvore' || m === 'sem historico') {
+      return { protocolo, estado: 'sem_acesso' };
+    }
+    return { protocolo, falha: m.slice(0, 80) };
+  }
+  let d;
+  try {
+    d = derivar(new DOMParser().parseFromString(await pegar(url), 'text/html'), arvore);
+  } catch (e) {
+    return { protocolo, falha: String(e && e.message ? e.message : e).slice(0, 80) };
+  }
+  return {
+    // O PROTOCOLO QUE ENTROU, nunca o que o SEI imprime. O servidor casa a
+    // resposta por TEXTO (`receber`, em `acompanhamento.py`), porque foi ele quem
+    // mandou este numero; devolver a forma pontuada da tela faria a leitura
+    // inteira ser ignorada em silencio quando a pessoa tivesse colado sem ponto.
+    protocolo, estado: 'lido', id_sei: item.id_sei || null,
+    aberto_em: (d.mesas || []).map(x => x.unidade),
+    aberto_em_fonte: d.mesas_fonte || 'andamento',
+    ultimo_movimento: d.ultimo_movimento || null,
+    documentos: d.documentos, movimentos: d.movimentos,
+  };
+}
+
+/* A lista inteira, UM DE CADA VEZ. Devolve o envelope que o servidor espera.
+
+   EM SERIE, NUNCA EM PARALELO. A coleta usa `CONC = 4` porque la o que se lê e a
+   carteira da propria pessoa e o custo de uma queda e um checkpoint; aqui a
+   rajada seria contra processos de outras unidades, e o SEI derruba sessao sob
+   rajada — a sessao de TRABALHO da pessoa, que e a mesma. A pausa e a mesma
+   `dorme(240)` da paginacao da busca.
+
+   TETO DE RELOGIO PROPRIO, e nao o do agente. O agente mata o coletor por relogio
+   de parede e nao fica com nada; aqui, parar sozinho devolve o que JA foi lido, e
+   o resto continua pendente para a proxima volta. Cem processos a tres
+   requisicoes cada nao cabem num numero que alguem adivinhe: o teto existe para o
+   envelope chegar, nao para a lista acabar. */
+async function acompanharLista(pedido) {
+  const protocolos = (pedido && pedido.protocolos) || [];
+  const campos = (pedido && pedido.campos) || {};
+  // 9 min, debaixo do teto de 10 do agente: o objetivo e RESPONDER antes de ser
+  // morto, porque morto nao devolve envelope nenhum.
+  const teto = (pedido && pedido.teto_ms) || 9 * 60 * 1000;
+  const saida = { instancia: (pedido && pedido.instancia) || null,
+                  leituras: [], falhas: [], motivo: null, pedidos: protocolos.length };
+  const t0 = Date.now();
+  for (let i = 0; i < protocolos.length; i++) {
+    if (i) await dorme(240);
+    const r = await acompanhar(protocolos[i], campos);
+    if (r.falha) {
+      saida.falhas.push({ protocolo: r.protocolo, motivo: r.falha });
+      // SESSAO CAIDA PARA TUDO. Insistir so multiplica requisicao invalida contra
+      // o SEI, e — pior — todo processo seguinte falharia do mesmo jeito, o que
+      // encheria `falhas` de ruido escondendo qual foi a causa.
+      if (/SESSAO/i.test(r.falha)) {
+        saida.motivo = `sessao caiu apos ${saida.leituras.length} de ${protocolos.length}`;
+        break;
+      }
+    } else {
+      saida.leituras.push(r);
+    }
+    if (Date.now() - t0 > teto) {
+      saida.motivo = `teto de tempo da estacao (${Math.round(teto / 60000)} min): `
+                   + `${i + 1} de ${protocolos.length}`;
+      break;
+    }
+  }
+  log(`acompanhamento: ${saida.leituras.length} lido(s), ${saida.falhas.length} falha(s)`
+      + (saida.motivo ? ` — ${saida.motivo}` : ''));
+  return saida;
+}
+
 window.SEIAuto = { rodar, rodarTodasAsMesas, listarTodasAsMesas, detalharTodasAsMesas,
+                   acompanhar, acompanharLista,
                    descobrirMesas, trocarMesa, listar, coletarDatas,
                    consertarTruncados, exportar, credencial, esquecer, limparCache,
                    mesasPorArvore, mesasPorAndamento, camposDaMesa,  // expostos para conferencia

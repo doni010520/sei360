@@ -207,8 +207,18 @@
   }
 
   /* As linhas do resultado. O SEI 5 entrega tipo e especificação no `aria-label`
-     do link; o 4.0 não — daí a leitura por célula como alternativa. */
-  function linhas(doc) {
+     do link; o 4.0 não — daí a leitura por célula como alternativa.
+
+     `comLink` é a ÚNICA porta pela qual o href sai daqui, e é fechada por
+     omissão. Ela existe para `SEIAuto.acompanhar()`, que abre o processo na mesma
+     passagem do navegador e joga o link fora em seguida: o envelope que ele manda
+     ao servidor tem lista de campos explícita, e `link` não está nela. Quem liga
+     isto assume o contrato do comentário abaixo — usar AGORA e não guardar.
+
+     O agente da estação não tem como ligá-la numa busca: `buscar()`, em
+     `sei360_agente.py`, repassa uma lista FIXA de seis chaves do pedido, e
+     `com_link` não é uma delas. Servidor comprometido não pede href. */
+  function linhas(doc, comLink) {
     const fora = [];
     const tabelas = Array.from(doc.querySelectorAll('table'))
       .filter(t => t.querySelector('a[href*="procedimento_trabalhar"], a[href*="protocolo_visualizar"], a[href*="id_procedimento"]'));
@@ -222,16 +232,19 @@
       const aria = a.getAttribute('aria-label') || '';
       const k = aria.indexOf(' / ');
       const cel = Array.from(tr.cells).map(c => N(c.textContent));
-      fora.push({
-        // O HREF NÃO SAI DAQUI. Ele carrega infra_hash de sessão, e hash morto
-        // não dá erro: derruba a sessão de quem está trabalhando.
+      const linha = {
+        // O HREF NÃO SAI DAQUI POR PADRÃO. Ele carrega infra_hash de sessão, e
+        // hash morto não dá erro: derruba a sessão de quem está trabalhando. Só
+        // `comLink` o entrega, e só para uso imediato — nunca para guardar.
         id_sei: idm ? idm[1] : null,
         protocolo: N(a.textContent),
         tipo_processo: k > 0 ? aria.slice(0, k).trim() : (cel[1] || null),
         unidade_geradora: cel.find(x => /\//.test(x) && !/\d{2}\/\d{2}\/\d{4}/.test(x)) || null,
         usuario_gerador: cel.find(x => /@/.test(x)) || null,
         data_inclusao: (cel.find(x => /^\d{2}\/\d{2}\/\d{4}/.test(x)) || '').slice(0, 10) || null,
-      });
+      };
+      if (comLink) linha.link = href.replace(/&amp;/g, '&');
+      fora.push(linha);
     });
     return fora;
   }
@@ -280,7 +293,9 @@
 
       for (let pg = 1; pg <= teto; pg++) {
         saida.paginas_lidas = pg;
-        const desta = linhas(d);
+        // `com_link` vem do PEDIDO e só é ligado por quem roda no mesmo navegador
+        // — ver o comentário de `linhas()`.
+        const desta = linhas(d, pedido.com_link);
         let novos = 0;
         desta.forEach(x => {
           const chave = x.id_sei || x.protocolo;

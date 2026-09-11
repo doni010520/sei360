@@ -3321,8 +3321,9 @@ def agente_acompanhamento():
     # estação lê numa e o servidor grava noutra.
     inst = instancia_do_agente(cx, ag)
     # E A INSTALAÇÃO TEM DE SABER BUSCAR. A leitura da estação começa por uma
-    # pesquisa por número (`SEIBusca.rodar`): numa instalação sem busca ela
-    # devolveria "não encontrado" para TODO processo, e a tela afirmaria sobre os
+    # pesquisa por número (`SEIAuto.acompanhar`, que começa chamando
+    # `SEIBusca.pesquisar`): numa instalação sem busca ela devolveria "não
+    # encontrado" para TODO processo, e a tela afirmaria sobre os
     # processos uma coisa que é verdade sobre a instalação. É a trava que
     # `busca.validar` já aplica, e o mesmo cuidado de `/api/agente/tarefa` com
     # `disponivel_coleta`.
