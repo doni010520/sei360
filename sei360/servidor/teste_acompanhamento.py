@@ -30,6 +30,7 @@ from datetime import timedelta             # noqa: E402
 # com data fixa, a cena passaria a depender do dia em que a suíte roda — e a
 # guarda que ela testa é justamente por DIA.
 _ONTEM = (janelas.com_fuso(agora()) - timedelta(days=1)).isoformat(timespec="seconds")
+_ANTEONTEM = (janelas.com_fuso(agora()) - timedelta(days=2)).isoformat(timespec="seconds")
 
 ok, falhas = 0, []
 
@@ -148,23 +149,26 @@ _cx.execute("INSERT INTO usuarios(id,email,papel,criado_em,ativo) "
             "VALUES(8,'outra@teste.local','servidor',?,1)", (agora(),))
 _cx.commit()
 
-_aceitos, _recusados = ac.adicionar(_cx, 7, "019.5120.2026.0161681-50", "SEI-SESAB")
-checar("um número entra", _aceitos == ["019.5120.2026.0161681-50"] and not _recusados)
+_aceitos, _recusados, _sem_espaco = ac.adicionar(
+    _cx, 7, "019.5120.2026.0161681-50", "SEI-SESAB")
+checar("um número entra", _aceitos == ["019.5120.2026.0161681-50"]
+       and not _recusados and not _sem_espaco)
 
-_aceitos, _recusados = ac.adicionar(
+_aceitos, _recusados, _sem_espaco = ac.adicionar(
     _cx, 7, "019.9393.2026.0163871-16\nprocesso da Laisa\n019.2403.2024.0013423-96",
     "SEI-SESAB")
 checar("lista de vários: as válidas entram", len(_aceitos) == 2, str(_aceitos))
 checar("e a inválida volta com o texto que a pessoa colou",
        _recusados == ["processo da Laisa"], str(_recusados))
 
-_aceitos, _ = ac.adicionar(_cx, 7, "019.5120.2026.0161681-50", "SEI-SESAB")
+_aceitos, _, _ = ac.adicionar(_cx, 7, "019.5120.2026.0161681-50", "SEI-SESAB")
 checar("repetido não duplica nem estoura", _aceitos == [], str(_aceitos))
 
 # O MESMO processo em forma diferente é o mesmo processo. A chave primária é o
 # texto do protocolo e não tem como impedir as duas formas de coexistirem; quem
 # impede é `adicionar`, comparando os dígitos.
-_aceitos, _ = ac.adicionar(_cx, 7, ac.digitos("019.9393.2026.0163871-16"), "SEI-SESAB")
+_aceitos, _, _ = ac.adicionar(_cx, 7, ac.digitos("019.9393.2026.0163871-16"),
+                              "SEI-SESAB")
 checar("o mesmo número colado sem pontuação não duplica a linha",
        _aceitos == [], str(_aceitos))
 
@@ -173,16 +177,27 @@ checar(f"a lista tem os três ({len(_lista)})", len(_lista) == 3)
 checar("todos nascem 'novo'", all(x["estado"] == "novo" for x in _lista))
 checar("a lista é da PESSOA: a outra conta vê vazio", ac.listar(_cx, 8) == [])
 
-ac.remover(_cx, 7, "SEI-SESAB", "019.5120.2026.0161681-50")
+_saiu = ac.remover(_cx, 7, "SEI-SESAB", "019.5120.2026.0161681-50")
 checar("remover tira da lista", len(ac.listar(_cx, 7)) == 2)
+# Quem escreve o log precisa saber se houve ato: `registrar` é a resposta de
+# "quem fez o quê" num incidente, e gravar remoção de protocolo que não estava
+# na lista afirma um ato que não aconteceu.
+checar("e diz quantas linhas saíram", _saiu == 1, str(_saiu))
+checar("remover o que não está na lista devolve zero",
+       ac.remover(_cx, 7, "SEI-SESAB", "019.0000.0000.0000000-00") == 0)
 
 # O teto recusa com o número atual, em vez de descartar em silêncio.
 _muitos = "\n".join(f"019.0000.2026.{i:07d}-11" for i in range(ac.TETO + 5))
-_aceitos, _recusados = ac.adicionar(_cx, 7, _muitos, "SEI-SESAB")
+_aceitos, _recusados, _sem_espaco = ac.adicionar(_cx, 7, _muitos, "SEI-SESAB")
 checar(f"o teto de {ac.TETO} corta", len(ac.listar(_cx, 7)) == ac.TETO,
        str(len(ac.listar(_cx, 7))))
-checar("e o que não caber volta como recusado, não some",
-       len(_recusados) >= 5, str(len(_recusados)))
+# MOTIVO SEPARADO, não um balde só. A linha barrada pelo teto voltava junto
+# das malformadas, e a tela carimbava nela "não parecem número de processo":
+# a pessoa ia conferir o dígito de um número correto em vez de abrir espaço.
+checar("e o que não caber volta como SEM ESPAÇO, não some",
+       len(_sem_espaco) >= 5, str(len(_sem_espaco)))
+checar("número válido barrado pelo teto não vira número inválido",
+       _recusados == [], str(_recusados))
 
 # Fronteira entre contas — hoje só testada para `listar`. `remover` e o teto
 # também precisam respeitá-la: são as duas outras portas por onde uma conta
@@ -191,7 +206,8 @@ checar("uma conta não remove da lista de outra",
        (ac.remover(_cx, 8, "SEI-SESAB", "019.9393.2026.0163871-16") or True)
        and any(x["protocolo"] == "019.9393.2026.0163871-16"
                for x in ac.listar(_cx, 7)))
-_aceitos8, _recusados8 = ac.adicionar(_cx, 8, "019.8888.2026.0000008-88", "SEI-SESAB")
+_aceitos8, _recusados8, _ = ac.adicionar(_cx, 8, "019.8888.2026.0000008-88",
+                                         "SEI-SESAB")
 checar("o teto cheio de uma conta não impede outra de adicionar",
        _aceitos8 == ["019.8888.2026.0000008-88"], str((_aceitos8, _recusados8)))
 _cx.commit(); _cx.close()
@@ -240,6 +256,41 @@ checar("contagem que CAIU também vira texto",
        ac.texto_do_delta({"documentos": -2}) != "")
 checar("mudança só de movimentos também vira texto",
        ac.texto_do_delta({"movimentos": 5}) != "")
+
+print("\n4-bis. a procedência em texto")
+# A tela dizia "Nada foi lido" e, embaixo, "pela sua coleta de 11/09" — duas
+# afirmações contrárias no mesmo cartão. E imprimia dia/mês sem ano: dado de
+# 11/09/2025 saía idêntico ao de hoje, que não é hipótese remota com uma coleta
+# parada. A procedência é texto gerado do dado, como `texto_do_delta`.
+_proc = {"estado": "lido", "fonte": "carteira",
+         "medido_em": "2026-08-27T07:45:00-03:00",
+         "leitura_em": "2026-09-11T09:00:00-03:00"}
+checar("dado da carteira diz a data da COLETA",
+       ac.texto_da_procedencia(_proc, "2026") == "pela sua coleta de 27/08",
+       ac.texto_da_procedencia(_proc, "2026"))
+checar("leitura no SEI diz a data da LEITURA",
+       ac.texto_da_procedencia(dict(_proc, fonte="sei"), "2026")
+       == "lido no SEI em 11/09")
+checar("ano que não é o corrente aparece",
+       ac.texto_da_procedencia(_proc, "2027") == "pela sua coleta de 27/08/2026",
+       ac.texto_da_procedencia(_proc, "2027"))
+checar("estado de recusa não ganha procedência",
+       ac.texto_da_procedencia(dict(_proc, estado="sem_acesso"), "2026") == "")
+checar("sem data não se inventa procedência",
+       ac.texto_da_procedencia(dict(_proc, medido_em=None), "2026") == "")
+checar("e item nunca lido também não",
+       ac.texto_da_procedencia({"estado": "novo"}, "2026") == "")
+
+# `medido_em` é documentado como obrigatório desde que a reserva silenciosa em
+# `agora()` saiu. Promessa que o código não impõe é comentário, não regra — e o
+# leitor do SEI da fase 2 é o chamador natural de um `medido_em` vazio.
+_cx = conectar()
+try:
+    ac.gravar_leitura(_cx, 90, "SEI-SESAB", "019.1.2026.1-11", {}, "sei", None)
+    checar("gravar_leitura recusa medido_em vazio", False, "aceitou")
+except ValueError:
+    checar("gravar_leitura recusa medido_em vazio", True)
+_cx.rollback(); _cx.close()
 
 print("\n5. reaproveitar a carteira")
 _cx = conectar()
@@ -294,6 +345,12 @@ checar("e com a data da COLETA, não a de agora",
 checar("as unidades abertas vieram da árvore",
        _meu["aberto_em"] == ["SESAB/MINHA"] and _meu["aberto_em_fonte"] == "arvore",
        str(_meu["aberto_em"]))
+# `mudou` nulo cobria TRÊS situações e a tela afirmava a terceira para todas:
+# primeira leitura, medição que não avançou, e comparação sem mudança. A
+# coluna diz qual foi — é o mesmo motivo de `fonte` e `medido_em` existirem.
+checar("a primeira leitura se declara primeira, e não sem mudança",
+       _meu["comparacao"] == "primeira" and _meu["mudou"] is None,
+       str(_meu["comparacao"]))
 
 # O TESTE QUE MAIS IMPORTA: processo que existe no banco, mas em unidade fora do
 # vínculo desta conta, NÃO é reaproveitado. Se este passar a falhar, o módulo
@@ -440,7 +497,7 @@ _cx.commit()
 _corrido = "01966662026000000666"
 checar("é o mesmo número da carteira, sem a pontuação",
        ac.digitos("019.6666.2026.0000006-66") == _corrido, _corrido)
-_aceitos, _ = ac.adicionar(_cx, 7, _corrido, "SEI-SESAB")
+_aceitos, _, _ = ac.adicionar(_cx, 7, _corrido, "SEI-SESAB")
 checar("o número corrido entra na lista", _aceitos == [_corrido], str(_aceitos))
 
 _n = ac.reaproveitar(_cx, 7, "SEI-SESAB")
@@ -590,7 +647,7 @@ _cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,ultimo_moviment
                documentos,movimentos,medido_em,mesas_fonte)
                VALUES(900,'1212','019.1212.2026.0000012-12',
                '{"dh":"05/09/2026 08:00","un":"SESAB/MINHA","de":"Processo recebido"}',
-               5,7,?,'arvore')""", (_ONTEM,))
+               5,7,?,'arvore')""", (_ANTEONTEM,))
 _cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
                VALUES(900,'1212','SESAB/MINHA',NULL)""")
 _cx.commit()
@@ -601,6 +658,8 @@ _cx.commit()
 _primeira = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.1212.2026.0000012-12"]
 checar("e não anuncia mudança, porque não houve observação anterior",
        _primeira["mudou"] is None, str(_primeira["mudou"]))
+checar("e a leitura se declara PRIMEIRA",
+       _primeira["comparacao"] == "primeira", str(_primeira["comparacao"]))
 
 # A coleta de hoje: o processo saiu da minha mesa para a outra, ganhou dois
 # documentos e três movimentos. Mexer na linha em vez de ingerir um snapshot novo
@@ -614,7 +673,7 @@ _cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,ultimo_moviment
                documentos,movimentos,medido_em,mesas_fonte)
                VALUES(903,'1212','019.1212.2026.0000012-12',
                '{"dh":"11/09/2026 09:30","un":"SESAB/OUTRA-MINHA","de":"Processo recebido"}',
-               7,10,?,'arvore')""", (agora(),))
+               7,10,?,'arvore')""", (_ONTEM,))
 _cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
                VALUES(903,'1212','SESAB/OUTRA-MINHA',NULL)""")
 _cx.commit()
@@ -638,6 +697,22 @@ checar("e o texto da tela sai desse delta",
        "OUTRA-MINHA" in ac.texto_do_delta(_segunda["mudou"])
        and "+2 documentos" in ac.texto_do_delta(_segunda["mudou"]),
        ac.texto_do_delta(_segunda["mudou"]))
+checar("e a leitura se declara COMPARADA",
+       _segunda["comparacao"] == "comparada", str(_segunda["comparacao"]))
+
+# A TERCEIRA leitura: medição mais nova (hoje) e dado IDÊNTICO. É o único caso em
+# que "sem mudança" é verdade — e era a frase que a tela imprimia para os quatro.
+_cx.execute("UPDATE acompanhado SET lido_em=? WHERE usuario_id=7 AND protocolo=?",
+            (_ONTEM, "019.1212.2026.0000012-12"))
+_cx.execute("UPDATE processo SET medido_em=? WHERE snapshot_id=903 AND id_sei='1212'",
+            (agora(),))
+_cx.commit()
+checar("a terceira leitura acontece", ac.reaproveitar(_cx, 7, "SEI-SESAB") == 1)
+_cx.commit()
+_igual = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.1212.2026.0000012-12"]
+checar("comparou de novo e nada mudou — aqui 'sem mudança' é verdade",
+       _igual["comparacao"] == "comparada" and _igual["mudou"] is None,
+       f"{_igual['comparacao']} / {_igual['mudou']}")
 _cx.commit(); _cx.close()
 
 print("\n5-novies. medição que anda para trás não vira perda")
@@ -674,6 +749,8 @@ _cx.commit()
 _terceira = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.1212.2026.0000012-12"]
 checar("mas não anuncia mudança nenhuma", _terceira["mudou"] is None,
        str(_terceira["mudou"]))
+checar("e a leitura diz que a medição NÃO AVANÇOU, que é outra coisa",
+       _terceira["comparacao"] == "sem_avanco", str(_terceira["comparacao"]))
 checar("e o texto da tela fica em silêncio", ac.texto_do_delta(_terceira["mudou"]) == "",
        ac.texto_do_delta(_terceira["mudou"]))
 # A guarda é sobre ANUNCIAR, não sobre esconder: a data volta a ser a de ontem, e
@@ -863,6 +940,47 @@ checar("e o processo saiu", not any(
 #
 # As duas contas seguem o MESMO número (a 8 desde a cena 3, a 7 desde a
 # 5-sexies), então a checagem distingue de verdade quem foi tocado.
+# AS QUATRO SITUAÇÕES NA TELA, com frases distintas. A ambiguidade era de
+# afirmação: "sem mudança" para item que nunca foi comparado com nada.
+checar("item nunca lido continua dizendo que aguarda leitura",
+       "aguardando primeira leitura" in _corpo)
+checar("primeira observação diz que não há com o que comparar",
+       "nada a comparar ainda" in _corpo, "a frase da primeira leitura sumiu")
+checar("medição que não avançou diz que não há dado novo",
+       "sem dado novo" in _corpo, "a frase do dado que não avançou sumiu")
+
+# TETO NA TELA. A recusa por falta de espaço tem de dizer ISSO — o teto mandava
+# conferir o dígito de um número correto. `ac.TETO` baixado ao tamanho atual da
+# lista em vez de semear 100 linhas: o que está sob teste é a MENSAGEM.
+_teto_real = ac.TETO
+ac.TETO = len(ac.listar(conectar(), 7))
+try:
+    _r = _c.post("/acompanhamento/adicionar",
+                 data={"csrf": _csrf, "numeros": "019.1616.2026.0000016-16"})
+finally:
+    ac.TETO = _teto_real
+_cheio = _r.data.decode("utf-8", "replace")
+checar("a recusa por teto diz que a lista está cheia",
+       "a lista está cheia" in _cheio, "sem a frase do teto")
+checar("e não carimba número válido como número inválido",
+       "não parecem número de processo" not in _cheio, "carimbou o motivo errado")
+checar("e o número não entrou",
+       not any(x["protocolo"] == "019.1616.2026.0000016-16"
+               for x in ac.listar(conectar(), 7)))
+_csrf = _csrf_do(_r, _csrf)
+
+# O LOG RESPONDE "quem fez o quê": remoção que não removeu nada não pode entrar
+# como remoção feita.
+_r = _c.post("/acompanhamento/remover",
+             data={"csrf": _csrf, "protocolo": "019.0000.0000.0000000-00",
+                   "instancia": "SEI-SESAB"})
+_no_log = conectar().execute(
+    "SELECT alvo FROM log_acesso WHERE usuario_id=7 AND acao='parar_acompanhar' "
+    "ORDER BY id DESC LIMIT 1").fetchone()
+checar("remoção que não achou linha fica dita assim no log",
+       "nada a remover" in ((_no_log["alvo"] if _no_log else "") or ""),
+       str(_no_log["alvo"] if _no_log else None))
+
 _csrf = _csrf_do(_r, _csrf)
 _r = _c.post("/acompanhamento/remover",
              data={"csrf": _csrf, "usuario_id": "8", "usuario": "8",

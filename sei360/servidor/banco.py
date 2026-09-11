@@ -688,6 +688,16 @@ CREATE TABLE IF NOT EXISTS acompanhado_leitura(
   documentos INTEGER,
   movimentos INTEGER,
   mudou TEXT,                             -- JSON do delta; NULL na 1a leitura
+  -- POR QUE `mudou` está nulo — que são TRÊS coisas diferentes: 'primeira' (não
+  -- havia leitura anterior), 'sem_avanco' (havia, mas esta medição não é mais
+  -- nova que a dela, então não há observação nova a comparar) e 'comparada'
+  -- (comparou, e o processo não mudou).
+  --
+  -- Sem esta coluna a tela afirmava a TERCEIRA para as três: imprimia "sem
+  -- mudança" sobre item que nunca foi comparado. É o espelho exato da falsidade
+  -- que `delta()` se recusa a cometer ao devolver None na primeira leitura — e
+  -- quem lê a tela decide com base nisso.
+  comparacao TEXT CHECK(comparacao IN ('primeira','sem_avanco','comparada')),
   -- A leitura morre com a lista. `remover()` já apaga as duas, mas a FK é o que
   -- garante isso quando o DELETE vier de outro lugar — do expurgo, de um
   -- ON DELETE CASCADE de `usuarios`, ou da mão de alguém no shell. É o mesmo

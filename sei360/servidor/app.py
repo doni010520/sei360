@@ -3299,7 +3299,7 @@ def agente_busca_resultado(bid):
 
 @app.get("/acompanhamento")
 @exige_login
-def acompanhamento_tela(recusados=None):
+def acompanhamento_tela(recusados=None, sem_espaco=None):
     """A lista da pessoa. `usuario_id` SÓ da sessão.
 
     `acompanhamento.py` recebe o `usuario_id` e obedece — é a camada de regra, e
@@ -3333,11 +3333,18 @@ def acompanhamento_tela(recusados=None):
     itens = acmod.listar(cx, u["usuario_id"])
     for x in itens:
         x["texto_mudou"] = acmod.texto_do_delta(x.get("mudou"))
+        # A PROCEDÊNCIA É TEXTO GERADO DO DADO, como o do delta — e não fatia de
+        # data no template. A coluna aceita nulo, e o template fatiando nulo
+        # derrubava a tela INTEIRA (500), não a linha; além disso a regra de
+        # quando mostrar o ano e de calar em estado de recusa é testável aqui e
+        # não é em Jinja.
+        x["procedencia"] = acmod.texto_da_procedencia(x)
     registrar(cx, u["usuario_id"], "ver_acompanhamento",
               alvo=f"{len(itens)} processo(s)", ip=ip_cliente())
     cx.commit(); cx.close()
     resp = make_response(render_template("acompanhamento.html", u=u, itens=itens,
-                                         teto=acmod.TETO, recusados=recusados or []))
+                                         teto=acmod.TETO, recusados=recusados or [],
+                                         sem_espaco=sem_espaco or []))
     resp.set_cookie(COOKIE_CSRF, seg.novo_csrf(), samesite="Lax",
                     secure=cookie_seguro(), path="/")
     return resp
@@ -3356,15 +3363,16 @@ def acompanhamento_adicionar():
     # como sendo de outra — o defeito que `acompanhado.instancia` nasceu sem
     # DEFAULT para evitar.
     inst = cfgmod.ler(cx, u["usuario_id"])["sistema"] or "SEI-SESAB"
-    aceitos, recusados = acmod.adicionar(
+    aceitos, recusados, sem_espaco = acmod.adicionar(
         cx, u["usuario_id"], request.form.get("numeros"), inst,
         nota=(request.form.get("nota") or "").strip() or None)
     registrar(cx, u["usuario_id"], "acompanhar",
-              alvo=f"+{len(aceitos)} -{len(recusados)}", ip=ip_cliente())
+              alvo=f"+{len(aceitos)} -{len(recusados)} cheio:{len(sem_espaco)}",
+              ip=ip_cliente())
     cx.commit(); cx.close()
     # As recusadas voltam RENDERIZADAS, não por query string: o texto é o que a
     # pessoa colou, e pode citar nome — e a URL vai para o log do gunicorn.
-    return acompanhamento_tela(recusados=recusados)
+    return acompanhamento_tela(recusados=recusados, sem_espaco=sem_espaco)
 
 
 @app.post("/acompanhamento/remover")
@@ -3377,10 +3385,14 @@ def acompanhamento_remover():
     # `protocolo` e `instancia` vêm do formulário porque são O QUE se remove; o
     # DE QUEM vem da sessão. `remover` apaga por (usuario_id, instancia,
     # protocolo), então o pior que um campo forjado faz é não achar linha.
-    acmod.remover(cx, u["usuario_id"], request.form.get("instancia") or "SEI-SESAB",
-                  request.form.get("protocolo") or "")
+    proto = request.form.get("protocolo") or ""
+    saiu = acmod.remover(cx, u["usuario_id"], request.form.get("instancia"), proto)
+    # O LOG DIZ SE HOUVE ATO. `registrar` é a resposta de "quem fez o quê" num
+    # incidente: gravar `parar_acompanhar` sobre protocolo que não estava na
+    # lista — número errado, duplo clique, formulário forjado — afirmava uma
+    # remoção que não aconteceu.
     registrar(cx, u["usuario_id"], "parar_acompanhar",
-              alvo=request.form.get("protocolo"), ip=ip_cliente())
+              alvo=proto if saiu else f"{proto} (nada a remover)", ip=ip_cliente())
     cx.commit(); cx.close()
     return redirect(url_for("acompanhamento_tela"))
 

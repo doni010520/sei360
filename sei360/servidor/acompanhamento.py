@@ -103,10 +103,16 @@ _SQL_DIGITOS = ("REPLACE(REPLACE(REPLACE(REPLACE(p.protocolo,'.',''),'-',''),"
 
 
 def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
-    """Uma ou várias linhas -> (aceitos, recusados).
+    """Uma ou várias linhas -> (aceitos, recusados, sem_espaco).
 
-    `recusados` leva o texto ORIGINAL da linha, não a versão normalizada: quem
-    colou precisa reconhecer o que não entrou para poder corrigir.
+    Os dois motivos de recusa vêm SEPARADOS, e não num balde só: `recusados` é
+    "isto não parece número de processo" e `sem_espaco` é "a lista está cheia".
+    A ação de quem colou é outra em cada caso — conferir o dígito contra parar
+    de acompanhar algo —, e a tela mandava conferir o dígito de número correto
+    porque os dois chegavam juntos.
+
+    As duas listas levam o texto ORIGINAL da linha, não a versão normalizada:
+    quem colou precisa reconhecer o que não entrou para poder corrigir.
     """
     quantos = cx.execute(
         "SELECT COUNT(*) FROM acompanhado WHERE usuario_id=?", (usuario_id,)
@@ -125,7 +131,7 @@ def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
     ja_seguidos = {digitos(r["protocolo"]) for r in cx.execute(
         "SELECT protocolo FROM acompanhado WHERE usuario_id=? AND instancia=?",
         (usuario_id, instancia))}
-    aceitos, recusados = [], []
+    aceitos, recusados, sem_espaco = [], [], []
     for linha in (texto or "").replace(",", "\n").splitlines():
         if not linha.strip():
             continue
@@ -136,7 +142,7 @@ def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
         if digitos(p) in ja_seguidos:
             continue
         if quantos >= TETO:
-            recusados.append(linha.strip())
+            sem_espaco.append(linha.strip())
             continue
         cx.execute("""INSERT INTO acompanhado(usuario_id,instancia,protocolo,origem,
                       nota,adicionado_em,estado) VALUES(?,?,?,?,?,?,'novo')""",
@@ -144,17 +150,24 @@ def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
         quantos += 1
         ja_seguidos.add(digitos(p))
         aceitos.append(p)
-    return aceitos, recusados
+    return aceitos, recusados, sem_espaco
 
 
 def remover(cx, usuario_id, instancia, protocolo):
-    """Sai da lista, e o histórico sai com ela — foi a pessoa que desistiu."""
-    cx.execute("""DELETE FROM acompanhado
+    """Sai da lista, e o histórico sai com ela — foi a pessoa que desistiu.
+
+    Devolve QUANTAS linhas saíram, que é zero quando não havia o que remover.
+    Quem escreve o log precisa disso: `registrar` é a resposta de "quem fez o
+    quê" num incidente, e gravar `parar_acompanhar` sobre protocolo que não
+    estava na lista afirma um ato que não aconteceu.
+    """
+    n = cx.execute("""DELETE FROM acompanhado
                   WHERE usuario_id=? AND instancia=? AND protocolo=?""",
-               (usuario_id, instancia, protocolo))
+               (usuario_id, instancia, protocolo)).rowcount
     cx.execute("""DELETE FROM acompanhado_leitura
                   WHERE usuario_id=? AND instancia=? AND protocolo=?""",
                (usuario_id, instancia, protocolo))
+    return n
 
 
 def listar(cx, usuario_id):
@@ -166,7 +179,7 @@ def listar(cx, usuario_id):
     linhas = cx.execute("""
         SELECT a.*, l.lido_em AS leitura_em, l.fonte, l.medido_em, l.aberto_em,
                l.aberto_em_fonte, l.ultimo_movimento, l.documentos, l.movimentos,
-               l.mudou
+               l.mudou, l.comparacao
         FROM acompanhado a
         LEFT JOIN acompanhado_leitura l ON l.id = (
             SELECT id FROM acompanhado_leitura
@@ -264,6 +277,36 @@ def texto_do_delta(d):
     return " · ".join(partes)
 
 
+def texto_da_procedencia(item, ano=None):
+    """De ONDE e de QUANDO é o dado desta linha, em português. Gerado do dado.
+
+    Fica VAZIO em estado de recusa: o cartão dizia "Nada foi lido" e, embaixo,
+    "pela sua coleta de 11/09" — duas afirmações contrárias na mesma linha.
+
+    O ANO aparece quando não é o corrente. `11/09` de 2025 renderizava idêntico
+    ao de hoje, e com uma coleta parada isso não é hipótese remota: é o mesmo
+    cuidado de sempre neste módulo, não deixar dado velho passar por recente.
+
+    Sem data não há procedência a declarar — `medido_em` é coluna que aceita
+    nulo, e fatiar nulo no template derrubava a tela INTEIRA, não a linha.
+    """
+    if item.get("estado") in ("sem_acesso", "nao_encontrado"):
+        return ""
+    fonte = item.get("fonte")
+    if not fonte:
+        return ""
+    # A carteira fala da MEDIÇÃO (que pode ser de dias atrás); a leitura no SEI
+    # fala da LEITURA, porque ali as duas são o mesmo instante.
+    quando = item.get("medido_em") if fonte == "carteira" else item.get("leitura_em")
+    if not quando or len(quando) < 10:
+        return ""
+    dia = f"{quando[8:10]}/{quando[5:7]}"
+    if quando[:4] != (ano or agora()[:4]):
+        dia += f"/{quando[:4]}"
+    return (f"pela sua coleta de {dia}" if fonte == "carteira"
+            else f"lido no SEI em {dia}")
+
+
 def _medicao_avancou(nova, anterior):
     """A medição nova é ESTRITAMENTE mais nova que a da leitura anterior?
 
@@ -295,6 +338,12 @@ def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte, medido_em
     dado de nove dias atrás. Quem lê no SEI passa `agora()`, explicitamente,
     porque ali a medição É agora.
     """
+    # EXIGIDO DE VERDADE, não só documentado: promessa que o código não impõe é
+    # comentário, e o chamador que esquecesse gravaria leitura sem procedência —
+    # a coluna aceita nulo, e quem fatiasse a data derrubaria a tela inteira.
+    if not medido_em:
+        raise ValueError("gravar_leitura exige medido_em: é a data da MEDIÇÃO, "
+                         "e quem lê no SEI passa agora() explicitamente")
     anterior = cx.execute("""SELECT medido_em, aberto_em, ultimo_movimento,
                              documentos, movimentos
                              FROM acompanhado_leitura
@@ -302,6 +351,11 @@ def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte, medido_em
                              ORDER BY id DESC LIMIT 1""",
                           (usuario_id, instancia, protocolo)).fetchone()
     prev = None
+    # AS TRÊS RAZÕES DE `mudou` FICAR NULO, ditas em `comparacao`. Antes eram
+    # indistinguíveis, e a tela afirmava "sem mudança" para as três — inclusive
+    # para a primeira observação de um processo, onde não houve comparação
+    # nenhuma. Nomear os três casos aqui é o que deixa a tela dizer a verdade.
+    #
     # SÓ SE COMPARA CONTRA OBSERVAÇÃO MAIS VELHA QUE ESTA. `ORDER BY id DESC` dá
     # a última INSERIDA, não a última MEDIDA, e as duas divergem no caso comum: o
     # processo sai da mesa de B, sobra a linha velha de A, e a medição anda para
@@ -316,7 +370,12 @@ def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte, medido_em
     # A doutrina é a que `delta()` já aplica à primeira leitura: não anunciar
     # mudança onde não houve observação nova. A leitura é gravada — a tela precisa
     # saber de quando é o dado que está mostrando —, mas `mudou` fica nulo.
-    if anterior and _medicao_avancou(medido_em, anterior["medido_em"]):
+    if not anterior:
+        comparacao = "primeira"
+    elif not _medicao_avancou(medido_em, anterior["medido_em"]):
+        comparacao = "sem_avanco"
+    else:
+        comparacao = "comparada"
         prev = {"aberto_em": json.loads(anterior["aberto_em"] or "null"),
                 "ultimo_movimento": json.loads(anterior["ultimo_movimento"] or "null"),
                 "documentos": anterior["documentos"],
@@ -324,14 +383,14 @@ def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte, medido_em
     d = delta(prev, dados)
     cx.execute("""INSERT INTO acompanhado_leitura(usuario_id,instancia,protocolo,
                   lido_em,fonte,medido_em,aberto_em,aberto_em_fonte,
-                  ultimo_movimento,documentos,movimentos,mudou)
-                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  ultimo_movimento,documentos,movimentos,mudou,comparacao)
+                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                (usuario_id, instancia, protocolo, agora(), fonte, medido_em,
                 json.dumps(dados.get("aberto_em"), ensure_ascii=False),
                 dados.get("aberto_em_fonte"),
                 json.dumps(dados.get("ultimo_movimento"), ensure_ascii=False),
                 dados.get("documentos"), dados.get("movimentos"),
-                json.dumps(d, ensure_ascii=False) if d else None))
+                json.dumps(d, ensure_ascii=False) if d else None, comparacao))
     cx.execute("""UPDATE acompanhado SET estado=?, lido_em=?,
                   id_sei=COALESCE(?, id_sei)
                   WHERE usuario_id=? AND instancia=? AND protocolo=?""",
