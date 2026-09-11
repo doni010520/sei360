@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Acompanhamento</title>
+{% include '_cabeca.html' %}
+</head><body>
+
+{% with pagina='acompanhamento' %}{% include '_nav.html' %}{% endwith %}
+
+<div class="folha" style="max-width:1180px">
+  <h1 style="font-family:var(--display);font-size:27px;margin:0 0 6px;font-weight:600">Acompanhamento</h1>
+  <div style="color:var(--ink-2);margin-bottom:20px;max-width:74ch">
+    Processos que você segue, <b>onde eles estiverem</b> — inclusive fora das suas mesas.
+    O que já está na sua carteira é respondido pela própria coleta, sem ida ao SEI.
+  </div>
+
+  {% if recusados %}
+  {# Linha que não é número volta com o texto ORIGINAL: quem colou precisa
+     reconhecer o que não entrou para poder corrigir. #}
+  <div class="destaque" style="border-left-color:var(--alerta);background:var(--alerta-soft)">
+    <b>{{ recusados|length }} linha(s) não entraram</b> — não parecem número de processo:
+    {% for t in recusados %}<code>{{ t }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="cartao" style="margin-bottom:18px">
+    <form method="post" action="/acompanhamento/adicionar">
+      <input type="hidden" name="csrf" class="csrf">
+      <label>Colar um número, ou vários (um por linha)</label>
+      <textarea name="numeros" rows="3" style="width:100%;font-family:var(--mono);
+        font-size:12px;padding:9px;border:1px solid var(--rule);border-radius:var(--r);
+        background:var(--card);color:var(--ink)"
+        placeholder="019.5120.2026.0161681-50"></textarea>
+      <label style="margin-top:8px">Por que você está seguindo (opcional)</label>
+      <input name="nota" placeholder="Repactuação HECC" style="width:100%">
+      <div style="margin-top:10px"><button class="bt forte" type="submit">Acompanhar</button>
+        <span style="color:var(--ink-3);font-size:12px;margin-left:8px">{{ itens|length }} de {{ teto }}</span></div>
+    </form>
+  </div>
+
+  {% for x in itens %}
+  <div class="cartao" style="margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline">
+      <span class="mono" style="font-size:13px">{{ x.protocolo }}</span>
+      {% if x.mudou %}<span class="tag al">{{ x.texto_mudou }}</span>
+      {% elif x.estado == 'novo' %}<span class="tag es">aguardando primeira leitura</span>
+      {% elif x.estado == 'sem_acesso' %}<span class="tag al">sem acesso</span>
+      {% elif x.estado == 'nao_encontrado' %}<span class="tag al">número não encontrado</span>
+      {% else %}<span style="color:var(--ink-3);font-size:12px">sem mudança</span>{% endif %}
+    </div>
+    {% if x.nota %}<div style="color:var(--ink-2);font-size:13px;margin-top:3px">{{ x.nota }}</div>{% endif %}
+
+    {% if x.estado == 'sem_acesso' %}
+      <div style="color:var(--alerta);font-size:13px;margin-top:8px">
+        O SEI não mostra este processo ao seu login. Nada foi lido.</div>
+    {% elif x.estado == 'nao_encontrado' %}
+      <div style="color:var(--alerta);font-size:13px;margin-top:8px">
+        Número não encontrado nesta instalação do SEI — confira o dígito.</div>
+    {% elif x.aberto_em %}
+      <div style="font-size:13px;margin-top:8px">aberto em
+        <b>{% for u in x.aberto_em %}{{ u.split('/')|last }}{% if not loop.last %}, {% endif %}{% endfor %}</b>
+        {% if x.aberto_em_fonte != 'arvore' %}
+        <span class="tag es" title="as unidades foram derivadas do andamento, não da árvore do SEI">não confirmado pela árvore</span>
+        {% endif %}
+      </div>
+      {% if x.ultimo_movimento %}
+      <div style="color:var(--ink-2);font-size:13px">{{ x.ultimo_movimento.dh }} ·
+        {{ x.ultimo_movimento.de }}</div>
+      {% endif %}
+    {% elif x.fonte and x.aberto_em is not none %}
+      {# LIDO, e a leitura não trouxe unidade nenhuma. `[]` e "nunca lido" são
+         coisas diferentes: a lista vazia quer dizer que a coleta daquele dia não
+         disse onde o processo está — árvore que não parseou —, nunca que ele não
+         está aberto em lugar nenhum. Sem esta linha, o item aparecia idêntico ao
+         que ainda não foi lido. #}
+      <div style="color:var(--ink-3);font-size:13px;margin-top:8px">
+        a leitura não trouxe unidade nenhuma</div>
+    {% endif %}
+
+    {# PROCEDÊNCIA, sempre: dado da carteira pode ser de dias atrás, e dizer
+       "lido hoje" sobre ele seria mentir no carimbo. #}
+    {% if x.fonte %}
+    <div style="color:var(--ink-3);font-size:11.5px;margin-top:6px">
+      {% if x.fonte == 'carteira' %}pela sua coleta de {{ x.medido_em[8:10] }}/{{ x.medido_em[5:7] }}
+      {% else %}lido no SEI em {{ x.leitura_em[8:10] }}/{{ x.leitura_em[5:7] }}{% endif %}
+    </div>
+    {% endif %}
+
+    <form method="post" action="/acompanhamento/remover" style="margin-top:8px">
+      <input type="hidden" name="csrf" class="csrf">
+      <input type="hidden" name="protocolo" value="{{ x.protocolo }}">
+      <input type="hidden" name="instancia" value="{{ x.instancia }}">
+      <button class="bt" type="submit">Parar de acompanhar</button>
+    </form>
+  </div>
+  {% else %}
+  <div class="vazio-msg">Nenhum processo acompanhado ainda. Cole um número acima.</div>
+  {% endfor %}
+</div>
+
+<script>
+const c=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+document.querySelectorAll('.csrf').forEach(i=>i.value=c);
+</script>
+</body></html>

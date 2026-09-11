@@ -766,6 +766,169 @@ checar("todo papel logado a vê",
            for pap in ("servidor", "gestor", "admin")))
 checar("e ela tem ícone próprio", bool(portas._ICONES.get("acompanhamento")))
 
+print("\n7. a tela")
+import app as A                                                  # noqa: E402
+A.app.config["TESTING"] = True
+_c = A.app.test_client()
+
+# Sessão da conta 7, direto no banco: o caminho de login já tem suíte própria.
+# `senha_trocada_em` não é detalhe — sem ele `exige_login` manda a pessoa para
+# `/primeiro_acesso`, e toda rota responderia 302 em vez de abrir. É o mesmo
+# cuidado que `teste_busca.py` já toma ao montar sessão pela tabela.
+import secrets as _sec                                           # noqa: E402
+import seguranca as _seg                                         # noqa: E402
+_tok = _sec.token_urlsafe(32)
+_cx = conectar()
+_cx.execute("""INSERT INTO sessoes(usuario_id,token_sha256,criado_em,ultimo_uso_em,
+               expira_em) VALUES(7,?,?,?,'2099-01-01T00:00:00-03:00')""",
+            (_seg.hash_token(_tok), agora(), agora()))
+_cx.execute("UPDATE usuarios SET senha_trocada_em=? WHERE id=7", (agora(),))
+_cx.commit(); _cx.close()
+_c.set_cookie("sei360_sess", _tok, domain="localhost")
+
+_r = _c.get("/acompanhamento")
+checar("a tela abre", _r.status_code == 200, str(_r.status_code))
+_corpo = _r.data.decode("utf-8", "replace")
+# O CSRF sai da PRÓPRIA tela, que é de onde o script dela o tira: um token
+# pescado de outra rota testaria um caminho que o navegador não percorre.
+#
+# E TEM DE SER RELIDO a cada resposta: toda renderização da tela rotaciona o
+# cookie, então guardar o primeiro e reusá-lo faz o POST seguinte levar token
+# velho e levar 400 — um caminho que o navegador nunca percorre, porque o script
+# da tela lê o cookie na hora de enviar.
+def _csrf_do(resp, atual):
+    bruto = resp.headers.get("Set-Cookie") or ""
+    if "sei360_csrf=" in bruto:
+        return bruto.split("sei360_csrf=")[1].split(";")[0]
+    return atual
+
+
+_csrf = _csrf_do(_r, "")
+checar("e deixa o CSRF da tela no cookie", bool(_csrf),
+       (_r.headers.get("Set-Cookie") or "")[:60])
+
+checar("lista o que a pessoa segue", "019.1111.2026.0000001-11" in _corpo)
+checar("mostra a procedência do dado da carteira, não 'lido hoje'",
+       "27/08" in _corpo, "a data da coleta tem de aparecer")
+checar("NÃO mostra o processo de mesa alheia como lido",
+       "019.2222.2026.0000002-22" in _corpo
+       and "aguardando primeira leitura" in _corpo)
+# Sem isto a pessoa perde a única pista de onde está — é o que `_nav.html`
+# documenta sobre `pagina`.
+checar("o menu marca a porta de acompanhamento",
+       'class="lat-i on" href="/acompanhamento"' in _corpo,
+       "a porta ativa não ficou marcada")
+
+# A LISTA É DAS DUAS INSTALAÇÕES, e `reaproveitar` é POR instalação. A
+# configuração ativa da conta 7 é a SESAB (é o padrão de `cfgmod.ler`): se a tela
+# reaproveitasse só a ativa, o item da FESF ficaria "aguardando primeira leitura"
+# com a resposta pronta na coleta da FESF — dizer que não se leu o que está no
+# banco é o defeito que este módulo existe para não cometer.
+_cx = conectar()
+_cx.execute("""UPDATE acompanhado SET estado='novo', lido_em=NULL
+               WHERE usuario_id=7 AND instancia='SEI-FESF'
+                 AND protocolo='019.3333.2026.0000003-33'""")
+_cx.commit(); _cx.close()
+_r = _c.get("/acompanhamento")
+_csrf = _csrf_do(_r, _csrf)
+_da_fesf = [x for x in ac.listar(conectar(), 7)
+            if x["instancia"] == "SEI-FESF"
+            and x["protocolo"] == "019.3333.2026.0000003-33"][0]
+checar("a tela reaproveita também a instalação que NÃO é a ativa",
+       _da_fesf["estado"] == "lido" and _da_fesf["fonte"] == "carteira",
+       f"{_da_fesf['estado']} / {_da_fesf['fonte']}")
+
+# NÚMERO NOVO, não um que a suíte já usou: com `019.7777...` — que entra na
+# lista na cena 5-quinquies — a checagem "e o processo entrou" ficava VERDE antes
+# de a rota existir, e a de remoção falhava por já haver a outra forma do mesmo
+# número. Fixture reaproveitado de outra cena testa a outra cena.
+_r = _c.post("/acompanhamento/adicionar",
+             data={"csrf": _csrf, "numeros": "019.1414.2026.0000014-14"})
+checar("adicionar pela tela funciona", _r.status_code in (200, 302), str(_r.status_code))
+checar("e o processo entrou", any(
+    x["protocolo"] == "019.1414.2026.0000014-14" for x in ac.listar(conectar(), 7)))
+
+_csrf = _csrf_do(_r, _csrf)
+_r = _c.post("/acompanhamento/remover",
+             data={"csrf": _csrf, "protocolo": "019.1414.2026.0000014-14",
+                   "instancia": "SEI-SESAB"})
+checar("remover pela tela funciona", _r.status_code in (200, 302))
+checar("e o processo saiu", not any(
+    x["protocolo"] == "019.1414.2026.0000014-14" for x in ac.listar(conectar(), 7)))
+
+# A FRONTEIRA DA ROTA: `usuario_id` só pode vir da SESSÃO. A camada de regra
+# confia no chamador de propósito — ela recebe o `usuario_id` e obedece —, então
+# a porta é aqui. Se um campo de formulário pudesse dizer de quem é a lista,
+# qualquer conta logada apagaria a lista de qualquer outra.
+#
+# As duas contas seguem o MESMO número (a 8 desde a cena 3, a 7 desde a
+# 5-sexies), então a checagem distingue de verdade quem foi tocado.
+_csrf = _csrf_do(_r, _csrf)
+_r = _c.post("/acompanhamento/remover",
+             data={"csrf": _csrf, "usuario_id": "8", "usuario": "8",
+                   "protocolo": "019.8888.2026.0000008-88", "instancia": "SEI-SESAB"})
+checar("usuario_id no formulário não toca na lista de outra conta",
+       any(x["protocolo"] == "019.8888.2026.0000008-88"
+           for x in ac.listar(conectar(), 8)),
+       "a rota leu o usuario_id do cliente")
+checar("e quem perdeu a linha foi a conta da SESSÃO",
+       not any(x["protocolo"] == "019.8888.2026.0000008-88"
+               for x in ac.listar(conectar(), 7)))
+
+# ESCRITA NO CAMINHO DE UMA LEITURA. `reaproveitar` roda dentro do GET para a
+# tela não dizer "aguardando primeira leitura" sobre processo que a coleta já
+# leu. Se ele tropeçar — banco travado, snapshot meio ingerido —, a pessoa tem
+# de ver a lista de qualquer jeito: a lista é o produto, o reaproveitamento é o
+# atalho.
+_reaproveitar_real = ac.reaproveitar
+
+
+def _explode(*a, **k):
+    raise RuntimeError("coleta ruim")
+
+
+ac.reaproveitar = _explode
+try:
+    _r = _c.get("/acompanhamento")
+finally:
+    ac.reaproveitar = _reaproveitar_real
+checar("reaproveitamento que falha não deixa a tela em branco",
+       _r.status_code == 200
+       and "019.1111.2026.0000001-11" in _r.data.decode("utf-8", "replace"),
+       str(_r.status_code))
+
+print("\n7-bis. o módulo não invadiu a carteira")
+import relatorios as _rel                                        # noqa: E402
+
+_cx = conectar()
+_uns7 = A.unidades_do(7)
+_cart = A.carteira(_uns7, 7)
+checar("processo acompanhado de FORA não entra na carteira",
+       not any(x.get("protocolo") == "019.2222.2026.0000002-22" for x in _cart),
+       "o modulo virou carteira")
+_dados_rel = _rel.carregar(_uns7, 7)
+checar("nem em relatorios.carregar()",
+       not any(d["protocolo"] == "019.2222.2026.0000002-22" for d in _dados_rel))
+checar("e a carteira continua trazendo o que é dela",
+       any(x.get("protocolo") == "019.1111.2026.0000001-11" for x in _cart))
+
+# Checagem 13 do desenho: processo que SAI da mesa não é mais respondido pela
+# carteira — fica esperando quem vá ao SEI. Com `ac.pendentes` (tarefa 8) isto
+# se diz numa linha; até lá, o fato se prova pelo que existe: a carteira devolve
+# zero e o item continua 'novo'.
+_cx.execute("UPDATE snapshot SET estado='expirado' WHERE id=900")
+_cx.execute("""UPDATE acompanhado SET lido_em=NULL, estado='novo'
+               WHERE protocolo='019.1111.2026.0000001-11'""")
+_cx.commit()
+checar("processo que saiu da mesa não é mais respondido pela carteira",
+       ac.reaproveitar(_cx, 7, "SEI-SESAB") == 0)
+_item_fora = {x["protocolo"]: x
+              for x in ac.listar(_cx, 7)}["019.1111.2026.0000001-11"]
+checar("e fica esperando a leitura de quem for ao SEI",
+       _item_fora["estado"] == "novo", str(_item_fora["estado"]))
+_cx.execute("UPDATE snapshot SET estado='corrente' WHERE id=900")
+_cx.commit(); _cx.close()
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)

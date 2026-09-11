@@ -184,6 +184,21 @@ def listar(cx, usuario_id):
     return saida
 
 
+def instancias(cx, usuario_id):
+    """As instalações em que esta pessoa tem item na lista.
+
+    `listar()` devolve a lista INTEIRA, das duas instalações juntas, mas
+    `reaproveitar` é POR instalação — o recorte da fronteira depende disso.
+    Quem chama precisa saber quais percorrer, e a resposta é o que a lista diz,
+    não a configuração ativa: reaproveitar só a ativa deixaria o item da FESF
+    dizendo "aguardando primeira leitura" com a resposta pronta na coleta da
+    FESF, que é o defeito que este módulo inteiro existe para não cometer.
+    """
+    return [r["instancia"] for r in cx.execute(
+        "SELECT DISTINCT instancia FROM acompanhado WHERE usuario_id=? "
+        "ORDER BY instancia", (usuario_id,))]
+
+
 def delta(anterior, atual):
     """O que mudou entre duas leituras. None quando nada mudou, e na primeira.
 

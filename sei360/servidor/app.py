@@ -3297,6 +3297,94 @@ def agente_busca_resultado(bid):
     return jsonify(estado=estado, motivo=motivo)
 
 
+@app.get("/acompanhamento")
+@exige_login
+def acompanhamento_tela(recusados=None):
+    """A lista da pessoa. `usuario_id` SÓ da sessão.
+
+    `acompanhamento.py` recebe o `usuario_id` e obedece — é a camada de regra, e
+    ela confia no chamador de propósito. A fronteira, portanto, é ESTA função:
+    nenhum dos três caminhos do módulo lê identidade de formulário, de query
+    string ou de JSON. `request.usuario` vem de `exige_login`, que a resolve do
+    cookie de sessão contra a tabela `sessoes`.
+    """
+    import acompanhamento as acmod
+    u = request.usuario
+    cx = conectar()
+    # A CARTEIRA RESPONDE ANTES DE A TELA PINTAR: é de graça — o dado já está no
+    # banco — e evita a tela dizer "aguardando primeira leitura" sobre processo
+    # que a coleta da própria pessoa já leu.
+    #
+    # Isto é ESCRITA no caminho de uma requisição de LEITURA, e por isso é
+    # melhor-esforço: se tropeçar, a pessoa ainda tem de ver a lista, que é o
+    # produto. Sem rollback de propósito — cada item respondido é independente
+    # dos outros, e desfazer os que deram certo só faria a próxima visita
+    # repetir o trabalho.
+    #
+    # POR INSTALAÇÃO, e a lista é de TODAS: `reaproveitar` recorta a fronteira
+    # por instalação, então reaproveitar só a configuração ATIVA deixaria o item
+    # da FESF esperando com a resposta pronta na coleta da FESF.
+    for inst in acmod.instancias(cx, u["usuario_id"]):
+        try:
+            acmod.reaproveitar(cx, u["usuario_id"], inst)
+        except Exception as ex:                                # noqa: BLE001
+            print(f"acompanhamento: reaproveitar {inst} falhou "
+                  f"({type(ex).__name__})", flush=True)
+    itens = acmod.listar(cx, u["usuario_id"])
+    for x in itens:
+        x["texto_mudou"] = acmod.texto_do_delta(x.get("mudou"))
+    registrar(cx, u["usuario_id"], "ver_acompanhamento",
+              alvo=f"{len(itens)} processo(s)", ip=ip_cliente())
+    cx.commit(); cx.close()
+    resp = make_response(render_template("acompanhamento.html", u=u, itens=itens,
+                                         teto=acmod.TETO, recusados=recusados or []))
+    resp.set_cookie(COOKIE_CSRF, seg.novo_csrf(), samesite="Lax",
+                    secure=cookie_seguro(), path="/")
+    return resp
+
+
+@app.post("/acompanhamento/adicionar")
+@exige_login
+def acompanhamento_adicionar():
+    import acompanhamento as acmod
+    confere_csrf()
+    u = request.usuario
+    cx = conectar()
+    # A INSTALAÇÃO É A DA CONFIGURAÇÃO ATIVA, não um campo do formulário: número
+    # colado na tela é número da instalação em que a pessoa está trabalhando, e
+    # deixar o cliente escolher a instalação seria deixá-lo carimbar dado de uma
+    # como sendo de outra — o defeito que `acompanhado.instancia` nasceu sem
+    # DEFAULT para evitar.
+    inst = cfgmod.ler(cx, u["usuario_id"])["sistema"] or "SEI-SESAB"
+    aceitos, recusados = acmod.adicionar(
+        cx, u["usuario_id"], request.form.get("numeros"), inst,
+        nota=(request.form.get("nota") or "").strip() or None)
+    registrar(cx, u["usuario_id"], "acompanhar",
+              alvo=f"+{len(aceitos)} -{len(recusados)}", ip=ip_cliente())
+    cx.commit(); cx.close()
+    # As recusadas voltam RENDERIZADAS, não por query string: o texto é o que a
+    # pessoa colou, e pode citar nome — e a URL vai para o log do gunicorn.
+    return acompanhamento_tela(recusados=recusados)
+
+
+@app.post("/acompanhamento/remover")
+@exige_login
+def acompanhamento_remover():
+    import acompanhamento as acmod
+    confere_csrf()
+    u = request.usuario
+    cx = conectar()
+    # `protocolo` e `instancia` vêm do formulário porque são O QUE se remove; o
+    # DE QUEM vem da sessão. `remover` apaga por (usuario_id, instancia,
+    # protocolo), então o pior que um campo forjado faz é não achar linha.
+    acmod.remover(cx, u["usuario_id"], request.form.get("instancia") or "SEI-SESAB",
+                  request.form.get("protocolo") or "")
+    registrar(cx, u["usuario_id"], "parar_acompanhar",
+              alvo=request.form.get("protocolo"), ip=ip_cliente())
+    cx.commit(); cx.close()
+    return redirect(url_for("acompanhamento_tela"))
+
+
 @app.post("/api/poco/plano")
 def poco_plano():
     """O que esta corrida precisa ler nesta mesa. Chamado ENTRE a listagem e a
