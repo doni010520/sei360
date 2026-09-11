@@ -110,3 +110,55 @@ def listar(cx, usuario_id):
             d[campo] = json.loads(d[campo]) if d.get(campo) else None
         saida.append(d)
     return saida
+
+
+# Os ÚNICOS quatro campos que o delta compara. `fonte` e `medido_em` ficam fora de
+# propósito: trocar de "respondido pela carteira" para "lido no SEI" não é mudança
+# NO PROCESSO, e apareceria como se fosse — exatamente o ruído que o selo de
+# divergência árvore/andamento já produziu uma vez neste produto.
+_COMPARADOS = ("aberto_em", "ultimo_movimento", "documentos", "movimentos")
+
+
+def delta(anterior, atual):
+    """O que mudou entre duas leituras. None quando nada mudou, e na primeira.
+
+    None na PRIMEIRA leitura, nunca "mudou tudo": não há com o que comparar, e
+    anunciar mudança onde não houve observação é a mesma falsidade do aviso de
+    divergência que a auditoria de 10/09/2026 mediu como 100% falso positivo.
+    """
+    if not anterior:
+        return None
+    antes_un = set(anterior.get("aberto_em") or [])
+    agora_un = set(atual.get("aberto_em") or [])
+    d = {}
+    if antes_un - agora_un:
+        d["saiu_de"] = sorted(antes_un - agora_un)
+    if agora_un - antes_un:
+        d["entrou_em"] = sorted(agora_un - antes_un)
+    mov_antes = (anterior.get("ultimo_movimento") or {}).get("dh")
+    mov_agora = (atual.get("ultimo_movimento") or {}).get("dh")
+    if mov_agora and mov_agora != mov_antes:
+        d["movimentou_em"] = mov_agora
+    for contagem in ("documentos", "movimentos"):
+        a, b = anterior.get(contagem), atual.get(contagem)
+        if a is not None and b is not None and b != a:
+            d[contagem] = b - a
+    return d or None
+
+
+def texto_do_delta(d):
+    """O delta em português. Gerado do dado — nunca escrito à mão na tela."""
+    if not d:
+        return ""
+    partes = []
+    if d.get("saiu_de"):
+        partes.append("saiu de " + ", ".join(u.split("/")[-1] for u in d["saiu_de"]))
+    if d.get("entrou_em"):
+        partes.append("foi recebido em "
+                      + ", ".join(u.split("/")[-1] for u in d["entrou_em"]))
+    if d.get("documentos", 0) > 0:
+        n = d["documentos"]
+        partes.append(f"{n} documento(s) novo(s)")
+    if not partes and d.get("movimentou_em"):
+        partes.append(f"movimentou em {d['movimentou_em']}")
+    return " · ".join(partes)

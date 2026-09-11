@@ -153,6 +153,27 @@ checar("e o que não caber volta como recusado, não some",
        len(_recusados) >= 5, str(len(_recusados)))
 _cx.commit(); _cx.close()
 
+print("\n4. o delta")
+_a = {"aberto_em": ["SESAB/DGESS"], "ultimo_movimento": {"dh": "01/08/2026 10:00"},
+      "documentos": 10, "movimentos": 20}
+_b = {"aberto_em": ["SESAB/CIR-IBOT"], "ultimo_movimento": {"dh": "09/09/2026 16:00"},
+      "documentos": 12, "movimentos": 23}
+
+checar("primeira leitura não tem delta", ac.delta(None, _b) is None)
+checar("leitura igual não inventa mudança", ac.delta(_a, dict(_a)) is None)
+
+_d = ac.delta(_a, _b)
+checar("saiu de uma unidade e entrou em outra",
+       _d["saiu_de"] == ["SESAB/DGESS"] and _d["entrou_em"] == ["SESAB/CIR-IBOT"], str(_d))
+checar("documento novo é contado", _d["documentos"] == 2, str(_d))
+checar("movimento novo é contado", _d["movimentos"] == 3, str(_d))
+checar("o texto da tela sai do delta, não da mão",
+       "CIR-IBOT" in ac.texto_do_delta(_d), ac.texto_do_delta(_d))
+
+# A armadilha do desenho: trocar de fonte não é mudança NO PROCESSO.
+_c = dict(_a); _c["fonte"] = "sei"
+checar("mudar de fonte não aparece como mudança", ac.delta(_a, _c) is None)
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)
