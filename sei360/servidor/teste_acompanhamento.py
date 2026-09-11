@@ -12,9 +12,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-# Nenhum teste aqui importa `app` ainda, mas uma tarefa adiante desta suíte vai
-# importar — e o laço de fundo do atendente correria contra o banco isolado do
-# teste. Desligar já evita a corrida quando esse dia chegar.
+# A cena da tela IMPORTA `app`, e importar `app` acende os laços de fundo: o do
+# atendente e o de `coleta_servidor`. Os dois correriam contra o banco isolado
+# desta suíte — que é temporário e some no fim —, então ficam desligados aqui.
 os.environ["SEI360_ATENDENTE"] = "0"
 
 from ambiente_teste import isolar          # noqa: E402
@@ -43,6 +43,22 @@ def checar(nome, cond, det=""):
     else:
         falhas.append(nome)
         print(f"  FALHA {nome}  {det}")
+
+
+def cartao(corpo, protocolo):
+    """O trecho do cartão DAQUELE processo, do número dele até o próximo cartão.
+
+    Checagem por página é conjunção de fatos soltos, e engana: "não mostra o
+    alheio como lido" ficava VERDE com a etiqueta de espera aplicada a TODO
+    item, porque as duas metades da conjunção eram verdade em cartões
+    diferentes. Afirmação sobre a linha se faz sobre a linha.
+    """
+    alvo = f'<span class="mono" style="font-size:13px">{protocolo}</span>'
+    i = corpo.find(alvo)
+    if i < 0:
+        return ""
+    fim = corpo.find('<div class="cartao"', i)
+    return corpo[i:fim] if fim > 0 else corpo[i:]
 
 
 banco.migrar()
@@ -863,6 +879,17 @@ _cx.execute("UPDATE usuarios SET senha_trocada_em=? WHERE id=7", (agora(),))
 _cx.commit(); _cx.close()
 _c.set_cookie("sei360_sess", _tok, domain="localhost")
 
+# UM ITEM COM MUDANÇA DE VERDADE na tela. A linha do delta é o produto do
+# módulo, e apagar `{{ x.texto_mudou }}` do template passava sem uma checagem
+# vermelha. A "coleta de hoje" traz três documentos novos no processo da cena
+# 5-undecies, e é o reaproveitamento DA PRÓPRIA TELA que vai medir isso.
+_cx = conectar()
+_cx.execute("UPDATE acompanhado SET lido_em=? WHERE usuario_id=7 AND protocolo=?",
+            (_ONTEM, "019.1313.2026.0000013-13"))
+_cx.execute("UPDATE processo SET documentos=5, medido_em=? "
+            "WHERE snapshot_id=903 AND id_sei='1313'", (agora(),))
+_cx.commit(); _cx.close()
+
 _r = _c.get("/acompanhamento")
 checar("a tela abre", _r.status_code == 200, str(_r.status_code))
 _corpo = _r.data.decode("utf-8", "replace")
@@ -887,9 +914,48 @@ checar("e deixa o CSRF da tela no cookie", bool(_csrf),
 checar("lista o que a pessoa segue", "019.1111.2026.0000001-11" in _corpo)
 checar("mostra a procedência do dado da carteira, não 'lido hoje'",
        "27/08" in _corpo, "a data da coleta tem de aparecer")
-checar("NÃO mostra o processo de mesa alheia como lido",
-       "019.2222.2026.0000002-22" in _corpo
-       and "aguardando primeira leitura" in _corpo)
+# POR CARTÃO, não por página. A versão anterior desta checagem era a conjunção
+# de dois fatos da PÁGINA — o número aparece, e a etiqueta de espera aparece —,
+# e ficava verde mesmo se a etiqueta fosse aplicada a todos os itens, inclusive
+# aos lidos. Dez mutações do template sobreviviam a este bloco, entre elas
+# apagar as unidades onde o processo está aberto, que é o produto do módulo.
+_meu_cartao = cartao(_corpo, "019.1111.2026.0000001-11")
+_alheio_cartao = cartao(_corpo, "019.2222.2026.0000002-22")
+checar("o cartão do processo da minha mesa existe", bool(_meu_cartao))
+checar("e diz EM QUE UNIDADES o processo está aberto",
+       "aberto em" in _meu_cartao and "MINHA" in _meu_cartao, _meu_cartao[:160])
+checar("com a procedência no próprio cartão",
+       "pela sua coleta de 27/08" in _meu_cartao, _meu_cartao[:160])
+checar("e sem afirmar que não mudou, porque foi a primeira observação",
+       "nada a comparar ainda" in _meu_cartao and "sem mudança" not in _meu_cartao,
+       _meu_cartao[:160])
+
+checar("o cartão do processo de mesa alheia aguarda leitura",
+       "aguardando primeira leitura" in _alheio_cartao, _alheio_cartao[:160])
+checar("e NÃO afirma unidade nenhuma sobre ele",
+       "aberto em" not in _alheio_cartao, _alheio_cartao[:160])
+checar("nem procedência, porque não houve leitura",
+       "pela sua coleta" not in _alheio_cartao, _alheio_cartao[:160])
+
+# As outras três formas de cartão, cada uma com a razão de existir:
+_mudou_cartao = cartao(_corpo, "019.1313.2026.0000013-13")
+checar("o cartão de quem mudou mostra o texto do delta",
+       "+3 documentos" in _mudou_cartao, _mudou_cartao[:200])
+_vazio_cartao = cartao(_corpo, "019.5555.2026.0000005-55")
+checar("leitura sem unidade nenhuma diz isso, em vez de parecer nunca lida",
+       "não trouxe unidade nenhuma" in _vazio_cartao, _vazio_cartao[:200])
+_andamento_cartao = cartao(_corpo, "019.8888.2026.0000008-88")
+checar("unidade vinda do andamento vem com o aviso da árvore",
+       "não confirmado pela árvore" in _andamento_cartao, _andamento_cartao[:200])
+
+# A leitura da lista entra no log: `registrar` é o que responde "quem viu o quê"
+# num incidente, e é promessa da docstring dele em `banco.py`.
+_viu = conectar().execute(
+    "SELECT alvo FROM log_acesso WHERE usuario_id=7 AND acao='ver_acompanhamento' "
+    "ORDER BY id DESC LIMIT 1").fetchone()
+checar("abrir a tela fica registrado no log de acesso",
+       _viu is not None and "processo(s)" in (_viu["alvo"] or ""),
+       str(_viu["alvo"] if _viu else None))
 # Sem isto a pessoa perde a única pista de onde está — é o que `_nav.html`
 # documenta sobre `pagina`.
 checar("o menu marca a porta de acompanhamento",
@@ -1015,23 +1081,34 @@ checar("reaproveitamento que falha não deixa a tela em branco",
        and "019.1111.2026.0000001-11" in _r.data.decode("utf-8", "replace"),
        str(_r.status_code))
 
+print("\n7-bis. o CSRF das duas rotas")
+# As duas rotas mudam dado e as duas chamam `confere_csrf()`. Apagar as duas
+# chamadas deixava a suíte inteira verde — e sem elas qualquer página de fora
+# posta formulário na sessão de quem estiver logado, que é o ataque que o token
+# existe para impedir.
+_antes_csrf = len(ac.listar(conectar(), 7))
+_r = _c.post("/acompanhamento/adicionar", data={"numeros": "019.1717.2026.0000017-17"})
+checar("adicionar sem token é recusado", _r.status_code == 400, str(_r.status_code))
+_r = _c.post("/acompanhamento/adicionar",
+             data={"csrf": _seg.novo_csrf(), "numeros": "019.1717.2026.0000017-17"})
+checar("e com token que não é o do cookie também", _r.status_code == 400,
+       str(_r.status_code))
+checar("nada entrou na lista por esses dois caminhos",
+       len(ac.listar(conectar(), 7)) == _antes_csrf,
+       f"{len(ac.listar(conectar(), 7))} contra {_antes_csrf}")
+
+_r = _c.post("/acompanhamento/remover",
+             data={"protocolo": "019.1111.2026.0000001-11", "instancia": "SEI-SESAB"})
+checar("remover sem token é recusado", _r.status_code == 400, str(_r.status_code))
+_r = _c.post("/acompanhamento/remover",
+             data={"csrf": _seg.novo_csrf(), "instancia": "SEI-SESAB",
+                   "protocolo": "019.1111.2026.0000001-11"})
+checar("e com token de outra sessão também", _r.status_code == 400, str(_r.status_code))
+checar("e a linha continua lá",
+       any(x["protocolo"] == "019.1111.2026.0000001-11"
+           for x in ac.listar(conectar(), 7)))
+
 print("\n7-ter. a instalação fica dita")
-
-
-def _cartao(corpo, protocolo):
-    """O trecho do cartão DAQUELE processo, do número dele até o próximo cartão.
-
-    Checagem por página é conjunção de fatos soltos, e engana: "não mostra o
-    alheio como lido" ficava VERDE com a etiqueta de espera aplicada a todo
-    item, porque as duas metades da conjunção eram verdade em cartões
-    diferentes. Afirmação sobre a linha se faz sobre a linha.
-    """
-    alvo = f'<span class="mono" style="font-size:13px">{protocolo}</span>'
-    i = corpo.find(alvo)
-    if i < 0:
-        return ""
-    fim = corpo.find('<div class="cartao"', i)
-    return corpo[i:fim] if fim > 0 else corpo[i:]
 
 
 # O PADRÃO FICA DITO. A configuração ativa é "a última que a pessoa mexeu": depois
@@ -1050,8 +1127,8 @@ checar("o formulário diz em que instalação o número vai entrar",
 # Com uma só, ele não aparece: carimbar "SESAB" em toda linha de quem só tem SESAB
 # é ruído que ensina a não ler o carimbo — a mesma regra do `multi_instancia` do
 # painel.
-_cart_fesf = _cartao(_corpo, "0016000251202662")
-_cart_sesab = _cartao(_corpo, "019.1111.2026.0000001-11")
+_cart_fesf = cartao(_corpo, "0016000251202662")
+_cart_sesab = cartao(_corpo, "019.1111.2026.0000001-11")
 # O RÓTULO VISÍVEL, não o `value` do campo escondido: a instalação já estava no
 # formulário de remoção de todo cartão, então procurar "FESF" no cartão passava
 # sem que a tela mostrasse nada a ninguém.
@@ -1079,7 +1156,7 @@ checar("remover sem instalação não apaga a linha da SESAB por padrão",
        f"HTTP {_r.status_code} — ou caiu na reserva silenciosa")
 _csrf = _csrf_do(_r, _csrf)
 
-print("\n7-bis. o módulo não invadiu a carteira")
+print("\n7-quater. o módulo não invadiu a carteira")
 import relatorios as _rel                                        # noqa: E402
 
 _cx = conectar()
