@@ -17,6 +17,7 @@ nunca de um SELECT direto em `processo` que enxergaria mesa de qualquer dono.
 import json
 import re
 
+import janelas
 from banco import agora
 
 # Teto por pessoa. Com o reaproveitamento da carteira, só o que está fora das
@@ -44,7 +45,14 @@ TETO = 100
 # entrava com o ponto dentro do protocolo e nunca casava com o SEI — aceito na
 # tela, eternamente "não encontrado" na leitura, e duplicado no dia em que a
 # pessoa colasse de novo sem o ponto.
-_SO_NUMERO = re.compile(r"^\d[\d.\-/]*\d$")
+#
+# `[0-9]`, NÃO `\d`: em Python `\d` casa dígito Unicode — '١٢٣' passa —, e o
+# espelho em SQL (`_SQL_DIGITOS`, abaixo) não converte nada disso: ele só tira
+# pontuação. Número que a régua de identidade não consegue representar entraria
+# na lista com `digitos()` vazio, colidindo com qualquer outro igualmente
+# exótico e não casando com carteira nenhuma. O alfabeto da identidade é ASCII
+# nas duas pontas, ou não é o mesmo alfabeto.
+_SO_NUMERO = re.compile(r"^[0-9][0-9.\-/]*[0-9]$")
 _MIN_DIGITOS = 10
 
 
@@ -72,7 +80,11 @@ def digitos(protocolo):
     reconhece na tela, e é a chave de `acompanhado`. Isto aqui é só a régua de
     comparação.
     """
-    return "".join(c for c in (protocolo or "") if c.isdigit())
+    # `'0' <= c <= '9'`, não `isdigit()`: `isdigit()` é verdadeiro para '²' e
+    # para dígito árabe-índico, e o espelho em SQL não trata nenhum dos dois —
+    # ele só tira pontuação. A régua tem de ser a MESMA nas duas pontas, senão
+    # a lista e a carteira passam a comparar coisas diferentes.
+    return "".join(c for c in (protocolo or "") if "0" <= c <= "9")
 
 
 # O espelho de `digitos()` em SQL, que é o que permite casar a lista com a
@@ -187,13 +199,21 @@ def delta(anterior, atual):
     """
     if not anterior:
         return None
-    antes_un = set(anterior.get("aberto_em") or [])
-    agora_un = set(atual.get("aberto_em") or [])
     d = {}
-    if antes_un - agora_un:
-        d["saiu_de"] = sorted(antes_un - agora_un)
-    if agora_un - antes_un:
-        d["entrou_em"] = sorted(agora_un - antes_un)
+    # AUSÊNCIA NÃO É CONJUNTO VAZIO — o mesmo cuidado que as contagens, abaixo,
+    # já tinham com `is not None`. Com `or []`, leitura relatada SEM o campo
+    # (árvore que não parseou, JSON truncado, campo que a estação não soube
+    # preencher) virava "não está aberto em lugar nenhum", e a tela dizia que o
+    # processo saiu de TODAS as unidades. A estação relata o que leu; o que ela
+    # não leu não pode virar afirmação — e é a docstring desta função que promete
+    # não anunciar mudança onde não houve observação.
+    antes_un, agora_un = anterior.get("aberto_em"), atual.get("aberto_em")
+    if antes_un is not None and agora_un is not None:
+        antes_un, agora_un = set(antes_un), set(agora_un)
+        if antes_un - agora_un:
+            d["saiu_de"] = sorted(antes_un - agora_un)
+        if agora_un - antes_un:
+            d["entrou_em"] = sorted(agora_un - antes_un)
     mov_antes = (anterior.get("ultimo_movimento") or {}).get("dh")
     mov_agora = (atual.get("ultimo_movimento") or {}).get("dh")
     if mov_agora and mov_agora != mov_antes:
@@ -229,20 +249,59 @@ def texto_do_delta(d):
     return " · ".join(partes)
 
 
-def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte,
-                   medido_em=None, estado="lido", id_sei=None):
+def _medicao_avancou(nova, anterior):
+    """A medição nova é ESTRITAMENTE mais nova que a da leitura anterior?
+
+    Sobre `medido_em`, que é ISO com offset — nunca sobre `ultimo_movimento.dh`,
+    que é `dd/mm/yyyy` e como texto põe 05/09 depois de 11/08.
+
+    Data faltando, ou ilegível, responde NÃO: sem frescor estabelecido não se
+    anuncia mudança. É o lado seguro do erro — o outro lado é imprimir perda de
+    documento na tela de quem confia no número.
+    """
+    if not nova or not anterior:
+        return False
+    try:
+        return janelas.com_fuso(nova) > janelas.com_fuso(anterior)
+    except (TypeError, ValueError):
+        return False
+
+
+def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte, medido_em,
+                   estado="lido", id_sei=None):
     """Uma leitura, com o delta contra a anterior já calculado.
 
     O delta é calculado AQUI, no servidor, e nunca chega pronto de fora: a
     estação relata o que leu, não o que concluiu.
+
+    `medido_em` é OBRIGATÓRIO. Era opcional, com reserva silenciosa em
+    `agora()` — e reserva silenciosa é exatamente o defeito que este campo
+    existe para não ter: chamador que esquecesse carimbava "medido agora" sobre
+    dado de nove dias atrás. Quem lê no SEI passa `agora()`, explicitamente,
+    porque ali a medição É agora.
     """
-    anterior = cx.execute("""SELECT aberto_em, ultimo_movimento, documentos, movimentos
+    anterior = cx.execute("""SELECT medido_em, aberto_em, ultimo_movimento,
+                             documentos, movimentos
                              FROM acompanhado_leitura
                              WHERE usuario_id=? AND instancia=? AND protocolo=?
                              ORDER BY id DESC LIMIT 1""",
                           (usuario_id, instancia, protocolo)).fetchone()
     prev = None
-    if anterior:
+    # SÓ SE COMPARA CONTRA OBSERVAÇÃO MAIS VELHA QUE ESTA. `ORDER BY id DESC` dá
+    # a última INSERIDA, não a última MEDIDA, e as duas divergem no caso comum: o
+    # processo sai da mesa de B, sobra a linha velha de A, e a medição anda para
+    # trás. Sem esta guarda a tela anunciava "saiu de B · -5 documentos · -9
+    # movimentos" — perda que nunca houve, só dado mais velho respondendo.
+    #
+    # Com a leitura no SEI na jogada fica pior: a guarda de "não lido hoje" é por
+    # DIA, não por frescor, então amanhã a carteira de nove dias atrás responde
+    # antes e o processo VOLTA NO TEMPO na tela, com movimentação inventada nas
+    # duas direções.
+    #
+    # A doutrina é a que `delta()` já aplica à primeira leitura: não anunciar
+    # mudança onde não houve observação nova. A leitura é gravada — a tela precisa
+    # saber de quando é o dado que está mostrando —, mas `mudou` fica nulo.
+    if anterior and _medicao_avancou(medido_em, anterior["medido_em"]):
         prev = {"aberto_em": json.loads(anterior["aberto_em"] or "null"),
                 "ultimo_movimento": json.loads(anterior["ultimo_movimento"] or "null"),
                 "documentos": anterior["documentos"],
@@ -252,8 +311,7 @@ def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte,
                   lido_em,fonte,medido_em,aberto_em,aberto_em_fonte,
                   ultimo_movimento,documentos,movimentos,mudou)
                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-               (usuario_id, instancia, protocolo, agora(), fonte,
-                medido_em or agora(),
+               (usuario_id, instancia, protocolo, agora(), fonte, medido_em,
                 json.dumps(dados.get("aberto_em"), ensure_ascii=False),
                 dados.get("aberto_em_fonte"),
                 json.dumps(dados.get("ultimo_movimento"), ensure_ascii=False),

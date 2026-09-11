@@ -22,7 +22,14 @@ from ambiente_teste import isolar          # noqa: E402
 isolar(__file__, copiar=False)
 
 import banco                               # noqa: E402
+import janelas                             # noqa: E402
 from banco import agora, conectar          # noqa: E402
+from datetime import timedelta             # noqa: E402
+
+# O "dia seguinte" das cenas de segunda leitura sai do RELÓGIO, não de literal:
+# com data fixa, a cena passaria a depender do dia em que a suíte roda — e a
+# guarda que ela testa é justamente por DIA.
+_ONTEM = (janelas.com_fuso(agora()) - timedelta(days=1)).isoformat(timespec="seconds")
 
 ok, falhas = 0, []
 
@@ -126,6 +133,12 @@ checar("dígitos são a identidade: pontuação diferente, mesmo processo",
        ac.digitos("019.1111.2026.0000001-11")
        == ac.digitos("01911112026000000111") == "01911112026000000111")
 checar("a barra também é pontuação", ac.digitos("019/2403-24") == "019240324")
+# `\d` do Python casa dígito Unicode (١٢٣) e `isdigit()` casa até '²'; o espelho
+# em SQL não faz nem uma coisa nem outra — ele só tira pontuação. Aceitar número
+# que a régua não representa produziria duas linhas com o mesmo `digitos()`
+# (vazio), e nenhuma casaria com carteira nenhuma.
+checar("dígito que não é ASCII não é número de processo",
+       ac.normalizar("١٢٣٤٥٦٧٨٩٠١٢") is None)
 
 print("\n3. adicionar, listar, remover")
 _cx = conectar()
@@ -203,6 +216,23 @@ checar("o texto da tela sai do delta, não da mão",
 # A armadilha do desenho: trocar de fonte não é mudança NO PROCESSO.
 _c = dict(_a); _c["fonte"] = "sei"
 checar("mudar de fonte não aparece como mudança", ac.delta(_a, _c) is None)
+
+# AUSÊNCIA NÃO É CONJUNTO VAZIO. As contagens já eram comparadas com
+# `is not None`; as unidades usavam `or []`, e então leitura relatada SEM o campo
+# — árvore que não parseou, JSON truncado, campo que a estação não soube
+# preencher — dizia que o processo saiu de TODAS as unidades. A estação relata o
+# que leu; o que ela não leu não pode virar afirmação.
+_sem_campo = {"ultimo_movimento": {"dh": "01/08/2026 10:00"}, "documentos": 10,
+              "movimentos": 20}
+checar("leitura sem `aberto_em` não afirma que o processo saiu de tudo",
+       ac.delta(_a, _sem_campo) is None, str(ac.delta(_a, _sem_campo)))
+checar("e anterior sem o campo não inventa entrada em unidade",
+       ac.delta(_sem_campo, _a) is None, str(ac.delta(_sem_campo, _a)))
+# Mas ausência de unidade não pode calar a mudança que FOI observada.
+_sem_campo_mudou = dict(_sem_campo, documentos=12)
+checar("ausência de unidades não cala a contagem que mudou",
+       ac.delta(_a, _sem_campo_mudou) == {"documentos": 2},
+       str(ac.delta(_a, _sem_campo_mudou)))
 
 # `texto_do_delta` existe para o texto nunca ser escrito à mão; ficar muda
 # sobre uma mudança real é o mesmo que não existir.
@@ -544,6 +574,151 @@ checar("responde a MEDIÇÃO mais fresca, não o snapshot mais fresco",
        f"{_regua['aberto_em']} / {_regua['documentos']}")
 checar("e o carimbo é a data da medição, não a da coleta",
        (_regua["medido_em"] or "").startswith("2026-09-10"), str(_regua["medido_em"]))
+_cx.commit(); _cx.close()
+
+print("\n5-octies. a segunda leitura, com mudança de verdade")
+_cx = conectar()
+# A FIAÇÃO INTEIRA, de ponta a ponta: `reaproveitar` -> `gravar_leitura` ->
+# `delta` -> coluna `mudou` -> `texto_do_delta`. Sem uma cena com SEGUNDA leitura
+# e mudança real, `gravar_leitura` podia parar de ler a leitura anterior — delta
+# sempre nulo — sem uma única checagem ficar vermelha.
+#
+# O "dia seguinte" é simulado recuando `lido_em`, que é a guarda de uma leitura
+# por dia. As datas saem do relógio (`_ONTEM`/`agora()`) e não de literal: com
+# literal, a cena passaria a depender do dia em que a suíte roda.
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,ultimo_movimento,
+               documentos,movimentos,medido_em,mesas_fonte)
+               VALUES(900,'1212','019.1212.2026.0000012-12',
+               '{"dh":"05/09/2026 08:00","un":"SESAB/MINHA","de":"Processo recebido"}',
+               5,7,?,'arvore')""", (_ONTEM,))
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'1212','SESAB/MINHA',NULL)""")
+_cx.commit()
+ac.adicionar(_cx, 7, "019.1212.2026.0000012-12", "SEI-SESAB")
+_cx.commit()
+checar("a primeira leitura acontece", ac.reaproveitar(_cx, 7, "SEI-SESAB") == 1)
+_cx.commit()
+_primeira = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.1212.2026.0000012-12"]
+checar("e não anuncia mudança, porque não houve observação anterior",
+       _primeira["mudou"] is None, str(_primeira["mudou"]))
+
+# A coleta de hoje: o processo saiu da minha mesa para a outra, ganhou dois
+# documentos e três movimentos. Mexer na linha em vez de ingerir um snapshot novo
+# é de propósito — a ingestão tem suíte própria; aqui o que está sob teste é a
+# SEGUNDA leitura.
+_cx.execute("UPDATE acompanhado SET lido_em=? WHERE usuario_id=7 AND protocolo=?",
+            (_ONTEM, "019.1212.2026.0000012-12"))
+_cx.execute("DELETE FROM processo_mesa WHERE snapshot_id=900 AND id_sei='1212'")
+_cx.execute("DELETE FROM processo WHERE snapshot_id=900 AND id_sei='1212'")
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,ultimo_movimento,
+               documentos,movimentos,medido_em,mesas_fonte)
+               VALUES(903,'1212','019.1212.2026.0000012-12',
+               '{"dh":"11/09/2026 09:30","un":"SESAB/OUTRA-MINHA","de":"Processo recebido"}',
+               7,10,?,'arvore')""", (agora(),))
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(903,'1212','SESAB/OUTRA-MINHA',NULL)""")
+_cx.commit()
+checar("a segunda leitura acontece", ac.reaproveitar(_cx, 7, "SEI-SESAB") == 1)
+_cx.commit()
+
+_segunda = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.1212.2026.0000012-12"]
+_quantas = _cx.execute("SELECT COUNT(*) FROM acompanhado_leitura WHERE usuario_id=7 "
+                       "AND protocolo='019.1212.2026.0000012-12'").fetchone()[0]
+checar("a série temporal ganhou a segunda linha", _quantas == 2, str(_quantas))
+# O evento mais valioso do módulo, e o que a soma de mesas calava.
+checar("o `saiu_de` sai", (_segunda["mudou"] or {}).get("saiu_de") == ["SESAB/MINHA"],
+       str(_segunda["mudou"]))
+checar("e o `entrou_em` também",
+       (_segunda["mudou"] or {}).get("entrou_em") == ["SESAB/OUTRA-MINHA"],
+       str(_segunda["mudou"]))
+checar("com as contagens medidas, não escritas à mão",
+       (_segunda["mudou"] or {}).get("documentos") == 2
+       and (_segunda["mudou"] or {}).get("movimentos") == 3, str(_segunda["mudou"]))
+checar("e o texto da tela sai desse delta",
+       "OUTRA-MINHA" in ac.texto_do_delta(_segunda["mudou"])
+       and "+2 documentos" in ac.texto_do_delta(_segunda["mudou"]),
+       ac.texto_do_delta(_segunda["mudou"]))
+_cx.commit(); _cx.close()
+
+print("\n5-novies. medição que anda para trás não vira perda")
+_cx = conectar()
+# O CENÁRIO MEDIDO: o processo saiu da mesa de OUTRA-MINHA, e sobra a linha velha
+# de MINHA. Sem guarda, a leitura de hoje seria comparada com a de ontem por
+# ORDEM DE INSERÇÃO, e a tela anunciaria "saiu de OUTRA-MINHA · -2 documentos ·
+# -3 movimentos" — perda que nunca houve, só dado mais velho respondendo.
+#
+# Pior com fonte mista, que é como a leitura no SEI vai chamar: leitura do SEI
+# hoje e, amanhã, a carteira de nove dias atrás responde primeiro, porque a
+# guarda de "não lido hoje" é por DIA e não por frescor. O processo voltaria no
+# tempo na tela, com movimentação inventada nas duas direções.
+#
+# A doutrina é a que `delta()` já aplica à primeira leitura: não anunciar mudança
+# onde não houve observação NOVA. A leitura é gravada — a tela precisa saber que
+# o dado é de ontem —, mas `mudou` fica nulo.
+_cx.execute("UPDATE acompanhado SET lido_em=? WHERE usuario_id=7 AND protocolo=?",
+            (_ONTEM, "019.1212.2026.0000012-12"))
+_cx.execute("DELETE FROM processo_mesa WHERE snapshot_id=903 AND id_sei='1212'")
+_cx.execute("DELETE FROM processo WHERE snapshot_id=903 AND id_sei='1212'")
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,ultimo_movimento,
+               documentos,movimentos,medido_em,mesas_fonte)
+               VALUES(900,'1212','019.1212.2026.0000012-12',
+               '{"dh":"05/09/2026 08:00","un":"SESAB/MINHA","de":"Processo recebido"}',
+               5,7,?,'arvore')""", (_ONTEM,))
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'1212','SESAB/MINHA',NULL)""")
+_cx.commit()
+checar("a leitura mais velha ainda é gravada",
+       ac.reaproveitar(_cx, 7, "SEI-SESAB") == 1)
+_cx.commit()
+
+_terceira = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.1212.2026.0000012-12"]
+checar("mas não anuncia mudança nenhuma", _terceira["mudou"] is None,
+       str(_terceira["mudou"]))
+checar("e o texto da tela fica em silêncio", ac.texto_do_delta(_terceira["mudou"]) == "",
+       ac.texto_do_delta(_terceira["mudou"]))
+# A guarda é sobre ANUNCIAR, não sobre esconder: a data volta a ser a de ontem, e
+# é assim que a tela diz de quando é o dado que está mostrando.
+checar("a procedência mostra que o dado voltou a ser o de ontem",
+       (_terceira["medido_em"] or "")[:10] == _ONTEM[:10], str(_terceira["medido_em"]))
+_cx.commit(); _cx.close()
+
+print("\n5-decies. barra e espaço no número da carteira")
+_cx = conectar()
+# O NÚMERO DA FESF TEM BARRA: `0016.000251/2026-62`. Se o espelho em SQL deixar
+# de tirar a barra, a instalação inteira sai do caminho da carteira em silêncio —
+# todo item da FESF passaria a gastar requisição no SEI por um dado já coletado.
+# O espaço é o outro caso: a pessoa não consegue colar um (o regex recusa), mas
+# ele aparece no texto que o SEI imprime.
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(902,'251','0016.000251/2026-62',
+               1,1,'2026-08-27T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(902,'251','FESF/GABINETE',NULL)""")
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(902,'252','0016.000252/2026 -63',
+               2,2,'2026-08-27T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(902,'252','FESF/GABINETE',NULL)""")
+_cx.commit()
+_com_barra, _com_espaco = "0016000251202662", "0016000252202663"
+checar("os dois números corridos são os da carteira",
+       ac.digitos("0016.000251/2026-62") == _com_barra
+       and ac.digitos("0016.000252/2026 -63") == _com_espaco,
+       f"{_com_barra} / {_com_espaco}")
+ac.adicionar(_cx, 7, f"{_com_barra}\n{_com_espaco}", "SEI-FESF")
+_cx.commit()
+checar("a carteira da FESF responde os dois",
+       ac.reaproveitar(_cx, 7, "SEI-FESF") == 2)
+_cx.commit()
+_fesf = {x["protocolo"]: x for x in ac.listar(_cx, 7)}
+checar("o de barra veio da carteira",
+       _fesf[_com_barra]["fonte"] == "carteira"
+       and _fesf[_com_barra]["aberto_em"] == ["FESF/GABINETE"],
+       f"{_fesf[_com_barra]['fonte']} / {_fesf[_com_barra]['aberto_em']}")
+checar("e o de espaço também",
+       _fesf[_com_espaco]["fonte"] == "carteira"
+       and _fesf[_com_espaco]["aberto_em"] == ["FESF/GABINETE"],
+       f"{_fesf[_com_espaco]['fonte']} / {_fesf[_com_espaco]['aberto_em']}")
 _cx.commit(); _cx.close()
 
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
