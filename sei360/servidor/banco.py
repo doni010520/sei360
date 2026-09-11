@@ -622,6 +622,52 @@ CREATE TABLE IF NOT EXISTS alerta(
   execucao_id INTEGER, unidade TEXT, texto TEXT,
   reconhecido_por INTEGER, reconhecido_em TEXT);
 CREATE INDEX IF NOT EXISTS ix_alerta_ts ON alerta(ts);
+
+-- ACOMPANHAMENTO — a lista de processos que a pessoa segue mesmo FORA das mesas
+-- dela. Tabela separada de `processo` de propósito: processo acompanhado não é
+-- carteira, não vira snapshot e não entra em relatório nenhum. Se entrasse, todo
+-- número do produto passaria a misturar "o que é meu" com "o que eu observo".
+--
+-- A chave é o PROTOCOLO, não o `id_sei`: o número é o que a pessoa tem na mão, e
+-- o id interno do SEI só se conhece depois da primeira leitura.
+CREATE TABLE IF NOT EXISTS acompanhado(
+  usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  instancia TEXT NOT NULL DEFAULT 'SEI-SESAB',
+  protocolo TEXT NOT NULL,
+  id_sei TEXT,
+  origem TEXT NOT NULL,                   -- 'manual'|'painel'|'sei_acompanhamento'
+  nota TEXT,
+  adicionado_em TEXT NOT NULL,
+  estado TEXT NOT NULL DEFAULT 'novo',    -- 'novo'|'lido'|'sem_acesso'|'nao_encontrado'
+  lido_em TEXT,
+  PRIMARY KEY(usuario_id, instancia, protocolo));
+
+-- O HISTÓRICO: uma linha por leitura. Existe para "o que mudou" ser DIFERENÇA
+-- MEDIDA, e não texto escrito à mão em algum lugar. É também a primeira série
+-- temporal do produto — todos os relatórios são retrato de um instante, e o
+-- snapshot velho é expurgado em 30 dias.
+--
+-- `fonte` e `medido_em` não são enfeite: a leitura pode vir da carteira, que
+-- pode ser de dias atrás (medido: nove dias úteis, em 10/09/2026). Carimbar isso
+-- como "lido hoje" seria mentir. `aberto_em_fonte` diz se as unidades vieram da
+-- ÁRVORE ou da máquina de estados do andamento — a segunda errou em 100% dos
+-- 1.278 casos observáveis, e a tela precisa poder dizer isso.
+CREATE TABLE IF NOT EXISTS acompanhado_leitura(
+  id INTEGER PRIMARY KEY,
+  usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  instancia TEXT NOT NULL,
+  protocolo TEXT NOT NULL,
+  lido_em TEXT NOT NULL,
+  fonte TEXT,                             -- 'carteira' | 'sei'
+  medido_em TEXT,
+  aberto_em TEXT,                         -- JSON: lista de unidades
+  aberto_em_fonte TEXT,                   -- 'arvore' | 'andamento'
+  ultimo_movimento TEXT,                  -- JSON {dh, un, de}
+  documentos INTEGER,
+  movimentos INTEGER,
+  mudou TEXT);                            -- JSON do delta; NULL na 1a leitura
+CREATE INDEX IF NOT EXISTS ix_acomp_leitura
+  ON acompanhado_leitura(usuario_id, instancia, protocolo, id DESC);
 """
 
 
