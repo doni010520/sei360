@@ -197,6 +197,177 @@ checar("contagem que CAIU também vira texto",
 checar("mudança só de movimentos também vira texto",
        ac.texto_do_delta({"movimentos": 5}) != "")
 
+print("\n5. reaproveitar a carteira")
+_cx = conectar()
+# A cena do teto, acima, deixou a lista da conta 7 com os 100 itens de
+# enchimento. Tirá-los aqui em vez de trocar de conta: é esta conta que tem
+# vínculo, coleta e mesa alheia montadas abaixo, e com o teto batido `adicionar`
+# recusaria em silêncio tudo o que esta cena precisa ter na lista.
+_cx.execute("DELETE FROM acompanhado WHERE usuario_id=7 "
+            "AND protocolo LIKE '019.0000.2026.%'")
+# Uma coleta plausível: snapshot corrente de uma unidade, com dono, e um processo
+# dentro. `medido_em` deliberadamente ANTIGO — é o caso real medido em 10/09/2026,
+# em que as 12 unidades estavam com coleta de nove dias úteis antes.
+_cx.execute("""INSERT INTO snapshot(id,unidade,coletado_em,estado,dono_usuario_id,
+               instancia) VALUES(900,'SESAB/MINHA','2026-08-27T07:45:00-03:00',
+               'corrente',7,'SEI-SESAB')""")
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,ultimo_movimento,
+               documentos,movimentos,medido_em,mesas_fonte)
+               VALUES(900,'111','019.1111.2026.0000001-11',
+               '{"dh":"20/08/2026 09:00","un":"SESAB/MINHA","de":"Processo recebido"}',
+               9,14,'2026-08-27T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'111','SESAB/MINHA',NULL)""")
+_cx.execute("INSERT INTO usuario_unidade(usuario_id,unidade,concedida_em) "
+            "VALUES(7,'SESAB/MINHA',?)", (agora(),))
+# A MESMA coleta, mas de unidade que a conta 7 NÃO alcança.
+_cx.execute("""INSERT INTO snapshot(id,unidade,coletado_em,estado,dono_usuario_id,
+               instancia) VALUES(901,'SESAB/ALHEIA','2026-08-27T07:45:00-03:00',
+               'corrente',8,'SEI-SESAB')""")
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,
+               movimentos,medido_em,mesas_fonte)
+               VALUES(901,'222','019.2222.2026.0000002-22',3,4,
+               '2026-08-27T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(901,'222','SESAB/ALHEIA',NULL)""")
+_cx.commit()
+
+ac.adicionar(_cx, 7, "019.1111.2026.0000001-11", "SEI-SESAB")
+ac.adicionar(_cx, 7, "019.2222.2026.0000002-22", "SEI-SESAB")
+_cx.commit()
+
+_n = ac.reaproveitar(_cx, 7, "SEI-SESAB")
+_cx.commit()
+checar("o processo da minha mesa é respondido pela carteira", _n == 1, str(_n))
+
+_itens = {x["protocolo"]: x for x in ac.listar(_cx, 7)}
+_meu = _itens["019.1111.2026.0000001-11"]
+checar("e fica com estado lido", _meu["estado"] == "lido", str(_meu["estado"]))
+checar("com a fonte dita", _meu["fonte"] == "carteira", str(_meu["fonte"]))
+# A armadilha 2: a data é a da MEDIÇÃO, não a de agora.
+checar("e com a data da COLETA, não a de agora",
+       (_meu["medido_em"] or "").startswith("2026-08-27"), str(_meu["medido_em"]))
+checar("as unidades abertas vieram da árvore",
+       _meu["aberto_em"] == ["SESAB/MINHA"] and _meu["aberto_em_fonte"] == "arvore",
+       str(_meu["aberto_em"]))
+
+# O TESTE QUE MAIS IMPORTA: processo que existe no banco, mas em unidade fora do
+# vínculo desta conta, NÃO é reaproveitado. Se este passar a falhar, o módulo
+# virou porta lateral na fronteira do sistema.
+_alheio = _itens["019.2222.2026.0000002-22"]
+checar("processo de mesa ALHEIA não é reaproveitado",
+       _alheio["estado"] == "novo" and _alheio["fonte"] is None,
+       f"{_alheio['estado']} / {_alheio['fonte']}")
+_cx.commit(); _cx.close()
+
+print("\n5-bis. duas mesas minhas, e a carteira que não diz nada")
+_cx = conectar()
+# O MESMO processo em DUAS mesas da MESMA conta — situação corrente, não exótica:
+# é o caso dos processos compartilhados que `relatorios.carregar` já documenta. As
+# duas coletas são de dias diferentes, e é a régua de cada linha que decide qual
+# contagem vale.
+_cx.execute("""INSERT INTO snapshot(id,unidade,coletado_em,estado,dono_usuario_id,
+               instancia) VALUES(903,'SESAB/OUTRA-MINHA','2026-08-28T07:45:00-03:00',
+               'corrente',7,'SEI-SESAB')""")
+_cx.execute("INSERT INTO usuario_unidade(usuario_id,unidade,concedida_em) "
+            "VALUES(7,'SESAB/OUTRA-MINHA',?)", (agora(),))
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(903,'444','019.4444.2026.0000004-44',
+               5,6,'2026-08-28T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(903,'444','SESAB/OUTRA-MINHA',NULL)""")
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(900,'444','019.4444.2026.0000004-44',
+               4,5,'2026-08-27T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'444','SESAB/MINHA',NULL)""")
+# E um processo da minha carteira cuja coleta não listou mesa NENHUMA: acontece
+# quando a linha "Processo aberto nas unidades" da árvore não parseou. A leitura
+# existe; a lista de unidades é que está vazia.
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(900,'555','019.5555.2026.0000005-55',
+               1,2,'2026-08-27T07:45:00-03:00','andamento')""")
+_cx.commit()
+
+ac.adicionar(_cx, 7, "019.4444.2026.0000004-44\n019.5555.2026.0000005-55", "SEI-SESAB")
+_cx.commit()
+_n = ac.reaproveitar(_cx, 7, "SEI-SESAB")
+_cx.commit()
+checar("os dois novos são respondidos pela carteira", _n == 2, str(_n))
+
+_itens = {x["protocolo"]: x for x in ac.listar(_cx, 7)}
+_duas = _itens["019.4444.2026.0000004-44"]
+_quantas = _cx.execute(
+    "SELECT COUNT(*) FROM acompanhado_leitura WHERE usuario_id=7 AND "
+    "protocolo='019.4444.2026.0000004-44'").fetchone()[0]
+# Duas leituras da mesma passada fariam a segunda medir o delta contra a
+# primeira, recém-inserida: a tela anunciaria movimentação de um processo parado.
+checar("processo em duas mesas minhas grava UMA leitura", _quantas == 1, str(_quantas))
+checar("e as duas mesas aparecem somadas em aberto_em",
+       _duas["aberto_em"] == ["SESAB/MINHA", "SESAB/OUTRA-MINHA"],
+       str(_duas["aberto_em"]))
+checar("as contagens saem da medição mais fresca",
+       (_duas["documentos"], _duas["movimentos"]) == (5, 6)
+       and (_duas["medido_em"] or "").startswith("2026-08-28"),
+       f"{_duas['documentos']}/{_duas['movimentos']} em {_duas['medido_em']}")
+
+# `[]` e `null` NÃO são a mesma coisa aqui: `listar()` devolve None tanto para
+# JSON null quanto para item sem leitura nenhuma, então null seria
+# indistinguível de "aguardando primeira leitura".
+_sem_mesa = _itens["019.5555.2026.0000005-55"]
+checar("coleta sem mesa nenhuma deixa aberto_em vazio, não nulo",
+       _sem_mesa["aberto_em"] == [] and _sem_mesa["estado"] == "lido",
+       f"{_sem_mesa['aberto_em']!r} / {_sem_mesa['estado']}")
+checar("e a procedência da lista vazia continua dita",
+       _sem_mesa["aberto_em_fonte"] == "andamento", str(_sem_mesa["aberto_em_fonte"]))
+
+# A economia só existe se a segunda passada do dia não refizer o trabalho — e
+# reler o mesmo dado gravaria leitura repetida com delta nulo.
+checar("rodar de novo no mesmo dia não relê nada",
+       ac.reaproveitar(_cx, 7, "SEI-SESAB") == 0)
+_cx.commit(); _cx.close()
+
+print("\n5-ter. a instalação não se mistura")
+_cx = conectar()
+# Vínculo na FESF, com coleta da FESF: unidade que esta conta ALCANÇA. O que não
+# se pode é responder com ela um item que a pessoa colou na lista da SESAB — a
+# leitura sairia sob `instancia='SEI-SESAB'` com as mesas da FESF dentro, que é o
+# carimbo errado que `acompanhado.instancia` nasceu sem DEFAULT para evitar.
+_cx.execute("""INSERT INTO snapshot(id,unidade,coletado_em,estado,dono_usuario_id,
+               instancia) VALUES(902,'FESF/GABINETE','2026-08-27T07:45:00-03:00',
+               'corrente',7,'SEI-FESF')""")
+_cx.execute("INSERT INTO usuario_unidade(usuario_id,instancia,unidade,concedida_em) "
+            "VALUES(7,'SEI-FESF','FESF/GABINETE',?)", (agora(),))
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(902,'333','019.3333.2026.0000003-33',
+               7,8,'2026-08-27T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(902,'333','FESF/GABINETE',NULL)""")
+_cx.commit()
+
+ac.adicionar(_cx, 7, "019.3333.2026.0000003-33", "SEI-SESAB")
+_cx.commit()
+_n = ac.reaproveitar(_cx, 7, "SEI-SESAB")
+_cx.commit()
+checar("coleta da FESF não responde item da lista da SESAB", _n == 0, str(_n))
+_na_sesab = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.3333.2026.0000003-33"]
+checar("e o item da SESAB segue esperando leitura",
+       _na_sesab["estado"] == "novo" and _na_sesab["fonte"] is None,
+       f"{_na_sesab['estado']} / {_na_sesab['fonte']}")
+
+# O contrapeso: o filtro por instalação não pode ser um "nunca responde nada".
+ac.adicionar(_cx, 7, "019.3333.2026.0000003-33", "SEI-FESF")
+_cx.commit()
+checar("a mesma coleta responde a lista da instalação certa",
+       ac.reaproveitar(_cx, 7, "SEI-FESF") == 1)
+_cx.commit()
+_na_fesf = [x for x in ac.listar(_cx, 7)
+            if x["protocolo"] == "019.3333.2026.0000003-33"
+            and x["instancia"] == "SEI-FESF"][0]
+checar("com a mesa da FESF, não a da SESAB",
+       _na_fesf["aberto_em"] == ["FESF/GABINETE"], str(_na_fesf["aberto_em"]))
+_cx.commit(); _cx.close()
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)
