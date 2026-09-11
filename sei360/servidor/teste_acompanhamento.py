@@ -1788,8 +1788,88 @@ checar("estação muda vira motivo declarado na busca",
        "não devolveu resultado" in (_corpo_post or {}).get("motivo", ""),
        str(_corpo_post)[:200])
 
+print("\n9-bis. o ciclo do acompanhamento na estação")
+# A ORDEM NO CICLO é o que este bloco não consegue provar sozinho, e fica dito:
+# que `acompanhar` roda DEPOIS de `buscar` e ANTES da coleta é propriedade de
+# `rodar()`, que abre o Chromium. O que se prova aqui é o contrato de cada ponta.
+_visto["chamadas"] = []
+_ag.chamar = _chamar_acomp = None
+
+
+def _servidor_falso(resposta_get):
+    def _f(cfg, caminho, corpo=None, metodo=None, timeout=120):
+        _visto.setdefault("chamadas", []).append((caminho, metodo, corpo))
+        if metodo == "GET":
+            return 200, resposta_get
+        return 200, {"gravadas": len(((corpo or {}).get("leituras") or [])),
+                     "ignoradas": 0}
+    return _f
+
+
+_TAREFA = {"ler": True, "instancia": "SEI-SESAB",
+           "protocolos": ["019.5120.2026.0161681-50", "019.9393.2026.0163871-16"],
+           "perfil": {"instancia": "SEI-SESAB", "login_url": "https://x/",
+                      "campos_busca": {"numero_sei": ["txtProtocoloPesquisa"]}}}
+
+# 1) Nada a ler: o agente não abre o Chromium e não empurra nada.
+_visto["chamadas"] = []
+_ag.chamar = _servidor_falso({"ler": False, "motivo": "nada acompanhado fora da carteira"})
+with contextlib.redirect_stdout(io.StringIO()):
+    _fez = _ag.acompanhar({"servidor": "http://x", "token": "t"})
+checar("sem trabalho, o agente não roda o coletor", _fez is False)
+checar("e não escreve no servidor",
+       not [c for c in _visto["chamadas"] if c[1] != "GET"], str(_visto["chamadas"]))
+
+# 2) O caminho bom: o pedido leva número e perfil, e o que a estação leu sobe.
+_visto["chamadas"] = []
+_ag.chamar = _servidor_falso(_TAREFA)
+_coletor_falso(
+    "import json, sys\n"
+    "pedido = json.loads(sys.stdin.readline())\n"
+    "leituras = [{'protocolo': p, 'estado': 'lido'}\n"
+    "            for p in pedido['acompanhamento']['protocolos']]\n"
+    "print('ACOMP_OK ' + json.dumps({'instancia': 'SEI-SESAB',\n"
+    "                               'leituras': leituras, 'eco': pedido}))\n")
+with contextlib.redirect_stdout(io.StringIO()):
+    _fez = _ag.acompanhar({"servidor": "http://x", "token": "t"})
+_post = [c for c in _visto["chamadas"] if c[1] != "GET"]
+checar("com trabalho, o agente roda", _fez is True)
+checar("e publica no endpoint do acompanhamento",
+       bool(_post) and _post[0][0] == "/api/agente/acompanhamento", str(_post[:1])[:160])
+_eco = (_post[0][2] or {}).get("eco") if _post else {}
+checar("o pedido leva a instalação e os números, e SÓ isso",
+       sorted(((_eco or {}).get("acompanhamento") or {})) == ["instancia", "protocolos"],
+       str(_eco)[:220])
+checar("o perfil viaja junto — é ele que diz em qual SEI entrar",
+       ((_eco or {}).get("perfil") or {}).get("instancia") == "SEI-SESAB", str(_eco)[:220])
+# A NOTA DA PESSOA não desce, e o envelope do servidor nem a manda: este bloco
+# confere que o agente não acrescenta campo nenhum por conta própria.
+checar("nenhuma nota, nenhum estado, nada além do combinado",
+       "nota" not in str(_eco), str(_eco)[:220])
+checar("o que a estação leu sobe inteiro",
+       len(((_post[0][2] or {}).get("leituras") or [])) == 2, str(_post[0][2])[:200])
+checar("e a instalação vai no envelope, para o servidor CONFERIR",
+       (_post[0][2] or {}).get("instancia") == "SEI-SESAB", str(_post[0][2])[:200])
+
+# 3) A estação morreu no meio: NADA é publicado. Envelope vazio não diz nada ao
+#    servidor (grava zero), e mandá-lo seria uma ida à rede para afirmar o nada.
+#    O item continua pendente porque `lido_em` não foi tocado — que é o certo.
+_visto["chamadas"] = []
+_ag.chamar = _servidor_falso(_TAREFA)
+_coletor_falso("import sys\nsys.stdin.readline()\nprint('o Chromium morreu')\n")
+_log = io.StringIO()
+with contextlib.redirect_stdout(_log):
+    _fez = _ag.acompanhar({"servidor": "http://x", "token": "t"})
+checar("estação muda não publica envelope vazio",
+       not [c for c in _visto["chamadas"] if c[1] != "GET"], str(_visto["chamadas"]))
+checar("mas a falha é dita em voz alta, não engolida",
+       "pendente" in _log.getvalue(), _log.getvalue()[-200:])
+
+_ag.chamar = _chamar_real
+
 import shutil                                                    # noqa: E402
 shutil.rmtree(_tmp, ignore_errors=True)
+
 
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:

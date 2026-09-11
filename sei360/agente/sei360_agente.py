@@ -302,6 +302,60 @@ def buscar(cfg):
     return True
 
 
+def acompanhar(cfg):
+    """Os processos acompanhados fora da carteira, se houver algum.
+
+    VEM DEPOIS DE `buscar` E ANTES DA COLETA, pelo mesmo argumento que o
+    comentário de `buscar()` faz: a lista é curta e alguém pode estar olhando
+    para ela. Uma coleta de 13 minutos na frente transformaria "acompanhar" em
+    "acompanhar amanhã".
+
+    O QUE DESCE é só o que a estação precisa para procurar no SEI: a instalação e
+    os números. A nota que a pessoa escreveu fica no servidor — é texto de gente,
+    pode citar nome, e a estação não tem o que fazer com ela (ver
+    `acompanhamento.pendentes`). O perfil desce junto porque é ele que diz em
+    qual instalação entrar; sem ele o coletor cairia na constante interna, a
+    SESAB, e uma leitura da FESF entraria no SEI errado.
+    """
+    s, tarefa = chamar(cfg, "/api/agente/acompanhamento", metodo="GET")
+    if s != 200 or not tarefa.get("ler"):
+        return False
+    protocolos = tarefa.get("protocolos") or []
+    print(f"acompanhamento: {len(protocolos)} processo(s) em {tarefa.get('instancia')}")
+    pedido = {"acompanhamento": {k: tarefa.get(k)
+                                 for k in ("instancia", "protocolos")},
+              "perfil": tarefa.get("perfil") or {}}
+    # 600 s é o MESMO teto da busca, e aqui ele é o de fora: a estação tem teto
+    # próprio de 9 min dentro do `.js` justamente para responder antes deste. Se
+    # este disparar, o processo é morto e não sobra envelope nenhum.
+    envelope = _rodar_coletor(pedido, "--acompanhar", "ACOMP_OK ", 600)
+    if envelope is None:
+        # ENVELOPE VAZIO NÃO É PUBLICADO. O servidor gravaria zero e nada mais —
+        # não há, nesta rota, onde registrar "a estação tentou e falhou" (ao
+        # contrário da busca, que tem uma linha própria para carimbar o motivo).
+        # Uma ida à rede para afirmar o nada é pior que não ir: `lido_em` não é
+        # tocado, os itens continuam pendentes, e a próxima volta tenta de novo.
+        # Quem precisa saber disto agora é quem está no prompt da estação.
+        print("  a estação não devolveu leitura nenhuma — "
+              f"os {len(protocolos)} item(ns) continuam pendentes")
+        return True
+    s, r = chamar(cfg, "/api/agente/acompanhamento", envelope, timeout=120)
+    if s != 200:
+        print(f"  servidor recusou ({s}): {r.get('erro')}")
+        return True
+    print(f"  servidor gravou {r.get('gravadas')}, ignorou {r.get('ignoradas')}")
+    if envelope.get("falhas"):
+        # FALHA SEM ESTADO é item que continua pendente. Ela não vira linha no
+        # banco de propósito (ver `acompanhar()` em `automacao_sei.js`), então o
+        # único lugar onde ela aparece é aqui.
+        print(f"  {len(envelope['falhas'])} processo(s) não puderam ser lidos: "
+              + "; ".join(f"{f.get('protocolo')}: {f.get('motivo')}"
+                          for f in envelope["falhas"][:5]))
+    if envelope.get("motivo"):
+        print(f"  {envelope['motivo']}")
+    return True
+
+
 def rodar(args):
     cfg = cfg_ler()
     if getattr(args, "atender", False):
@@ -319,6 +373,23 @@ def rodar(args):
     with Trava():
         if buscar(cfg):
             return 0
+
+    # O ACOMPANHAMENTO VEM EM SEGUIDA, e antes da coleta, pelo mesmo argumento:
+    # lista curta, e alguém pode estar olhando. Uma coleta de 13 minutos na
+    # frente transformaria "acompanhar" em "acompanhar amanhã".
+    #
+    # NÃO devolve 0 como a busca: ler três processos leva segundos, e sair aqui
+    # empurraria a coleta do dia para a batida seguinte do agendador toda vez que
+    # alguém colasse um número. A busca sai porque quem pesquisou está na tela
+    # esperando a próxima pergunta ao servidor; aqui não há ninguém esperando uma
+    # segunda volta.
+    #
+    # A TRAVA É OUTRA, e de propósito: duas execuções sobre o mesmo perfil do
+    # Chromium o corrompem, então cada etapa toma e devolve a trava em vez de
+    # segurá-la pelo ciclo inteiro — é o que deixa um plantão de busca entrar
+    # entre elas.
+    with Trava():
+        acompanhar(cfg)
 
     s, tarefa = chamar(cfg, "/api/agente/tarefa", metodo="GET")
     if s != 200:
