@@ -223,6 +223,55 @@ def atender(cfg, minutos=ATENDIMENTO_MIN):
     return 0
 
 
+def _rodar_coletor(pedido, modo, marca, teto):
+    """Roda o coletor num modo de UMA tacada e devolve o envelope, ou None.
+
+    ERA O CORPO DE `buscar()`, e saiu de lá quando `acompanhar()` passou a
+    precisar do mesmo laço. A alternativa — copiar as trinta linhas — é o defeito
+    que este projeto documenta em meia dúzia de lugares: duas cópias do mesmo
+    laço divergem na primeira correção que alguém fizer só numa delas, e aqui o
+    que divergiria é o teto de relógio, que é justamente a parte que existe
+    porque algo já deu errado uma vez.
+
+    O CONTRATO, que é o dos dois modos: uma linha de stdin com o pedido, o
+    coletor responde com logs em stdout e UMA linha começada por `marca` com o
+    envelope em JSON. O que não é a marca é ecoado, indentado — é o log da
+    estação, e quem está de plantão no prompt precisa vê-lo.
+
+    `None` significa "a estação não devolveu envelope nenhum": ou o coletor
+    morreu antes de imprimir a marca, ou o relógio de parede o matou. Quem chama
+    decide o que isso significa para o módulo dele — aqui não se inventa
+    resultado.
+    """
+    proc = subprocess.Popen(
+        [sys.executable, str(COLETOR), modo],
+        cwd=str(COLETOR.parent), stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"})
+    proc.stdin.write(json.dumps(pedido) + "\n")
+    proc.stdin.flush()
+    proc.stdin.close()
+    envelope = None
+    inicio = time.time()
+    try:
+        for linha in proc.stdout:
+            linha = linha.rstrip()
+            if linha.startswith(marca):
+                envelope = json.loads(linha[len(marca):])
+            else:
+                print("   ", linha)
+            if time.time() - inicio > teto:
+                raise TimeoutError
+        proc.wait(timeout=max(1, teto - (time.time() - inicio)))
+    except (TimeoutError, subprocess.TimeoutExpired):
+        # O MESMO exit 5 sintético da coleta: `page.evaluate` não obedece o
+        # timeout do Playwright, então quem mata é o relógio de parede.
+        proc.kill()
+        envelope = None
+    return envelope
+
+
 def buscar(cfg):
     """Uma busca, se houver. Devolve True se rodou alguma.
 
@@ -243,34 +292,8 @@ def buscar(cfg):
                         ("busca_id", "instancia", "mesa", "filtros", "campos",
                          "paginas_teto")},
               "perfil": tarefa.get("perfil") or {}}
-    proc = subprocess.Popen(
-        [sys.executable, str(COLETOR), "--buscar"],
-        cwd=str(COLETOR.parent), stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace",
-        env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"})
-    proc.stdin.write(json.dumps(pedido) + "\n")
-    proc.stdin.flush()
-    proc.stdin.close()
-    envelope, linhas = None, []
     teto = tarefa.get("segundos_teto") or 600
-    inicio = time.time()
-    try:
-        for linha in proc.stdout:
-            linha = linha.rstrip()
-            linhas.append(linha)
-            if linha.startswith("BUSCA_OK "):
-                envelope = json.loads(linha[len("BUSCA_OK "):])
-            else:
-                print("   ", linha)
-            if time.time() - inicio > teto:
-                raise TimeoutError
-        proc.wait(timeout=max(1, teto - (time.time() - inicio)))
-    except (TimeoutError, subprocess.TimeoutExpired):
-        # O MESMO exit 5 sintético da coleta: `page.evaluate` não obedece o
-        # timeout do Playwright, então quem mata é o relógio de parede.
-        proc.kill()
-        envelope = None
+    envelope = _rodar_coletor(pedido, "--buscar", "BUSCA_OK ", teto)
     if envelope is None:
         envelope = {"busca_id": bid, "itens": [], "total_declarado": None,
                     "motivo": f"a estação não devolveu resultado em {teto // 60} min"}

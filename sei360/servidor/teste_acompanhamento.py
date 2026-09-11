@@ -1661,6 +1661,136 @@ checar("mas o delta continua gravado na série, porque foi medido",
            conectar(), 7)}["019.2020.2026.0000020-20"]["mudou"] or {}
         ).get("documentos") == 5)
 
+print("\n9. o laço que roda o coletor na estação")
+# O QUE DÁ PARA PROVAR AQUI: que `_rodar_coletor` lê a linha-marca, ecoa o resto
+# como log e mata pelo relógio de parede — que é o corpo que `buscar()` tinha e
+# que `acompanhar()` passou a compartilhar. O coletor de mentira abaixo é um
+# script Python de três linhas: ele prova o LAÇO, não o SEI.
+#
+# O QUE NÃO DÁ PARA PROVAR AQUI, e fica dito: que o coletor de verdade abre o
+# Chromium, entra no SEI com a sessão de uma pessoa e devolve a marca. Isso exige
+# a estação dela, com o segundo fator, e nenhuma fixture substitui.
+import tempfile                                                  # noqa: E402
+import time                                                      # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agente"))
+import sei360_agente as _ag                                      # noqa: E402
+
+_tmp = Path(tempfile.mkdtemp(prefix="sei360_coletor_"))
+
+
+def _coletor_falso(corpo):
+    """Grava um coletor de mentira e aponta o agente para ele.
+
+    O agente roda `[sys.executable, COLETOR, modo]` com `cwd=COLETOR.parent`, e é
+    só isso que precisa ser verdade para o laço ser exercitado.
+    """
+    arq = _tmp / "coletor_falso.py"
+    arq.write_text(corpo, encoding="utf-8")
+    _ag.COLETOR = arq
+    return arq
+
+
+# 1) O caminho bom: log, marca, e o processo termina.
+_coletor_falso(
+    "import json, sys\n"
+    "pedido = json.loads(sys.stdin.readline())\n"
+    "print('abrindo o SEI...')\n"
+    "print('MARCA_OK ' + json.dumps({'eco': pedido}))\n"
+    "print('fim')\n")
+_env = _ag._rodar_coletor({"a": 1}, "--modo-falso", "MARCA_OK ", 30)
+checar("o envelope sai da linha-marca", (_env or {}).get("eco") == {"a": 1}, str(_env))
+
+# 2) A marca NÃO é ecoada como log, e o resto é. Sem isso o envelope inteiro —
+#    que numa busca real tem centenas de linhas — vira ruído no prompt de quem
+#    está de plantão, e a linha que importa some no meio.
+import io                                                        # noqa: E402
+import contextlib                                                # noqa: E402
+_buf = io.StringIO()
+with contextlib.redirect_stdout(_buf):
+    _ag._rodar_coletor({"a": 1}, "--modo-falso", "MARCA_OK ", 30)
+_saida = _buf.getvalue()
+checar("o log da estação é ecoado", "abrindo o SEI" in _saida and "fim" in _saida,
+       _saida[:120])
+checar("e a linha-marca não entra no log", "MARCA_OK" not in _saida, _saida[:120])
+
+# 3) Sem marca nenhuma o envelope é None — e None é "a estação não devolveu
+#    resultado", nunca um envelope vazio inventado aqui.
+_coletor_falso("import sys\nsys.stdin.readline()\nprint('nada aconteceu')\n")
+checar("coletor que não imprime a marca devolve None",
+       _ag._rodar_coletor({}, "--modo-falso", "MARCA_OK ", 30) is None)
+
+# 4) O TETO DE RELÓGIO. `page.evaluate` não obedece o timeout do Playwright
+#    (medido: 887 s sob teto de 600 s), então quem mata é o relógio de parede.
+#    O coletor de mentira fala sem parar, como o de verdade fala: é assim que o
+#    teto chega a ser avaliado — o laço só olha o relógio quando uma linha chega.
+_coletor_falso(
+    "import sys, time\n"
+    "sys.stdin.readline()\n"
+    "while True:\n"
+    "    print('ainda aqui'); sys.stdout.flush(); time.sleep(0.02)\n")
+_t0 = time.time()
+with contextlib.redirect_stdout(io.StringIO()):
+    _pendurado = _ag._rodar_coletor({}, "--modo-falso", "MARCA_OK ", 1)
+_gasto = time.time() - _t0
+checar("coletor pendurado é morto pelo relógio e devolve None", _pendurado is None)
+checar("e morre perto do teto, não depois da paciência de alguém", _gasto < 20,
+       f"{_gasto:.1f}s")
+
+# 5) E `buscar()` continua fazendo o que fazia: pergunta, monta o pedido com as
+#    SEIS chaves de sempre, roda o coletor e publica o envelope na busca certa.
+#    A extração não podia mudar nada disto — é o que este bloco prova.
+_visto = {}
+
+
+def _chamar_falso(cfg, caminho, corpo=None, metodo=None, timeout=120):
+    _visto.setdefault("chamadas", []).append((caminho, metodo, corpo))
+    if metodo == "GET":
+        return 200, {"buscar": True, "busca_id": 77, "instancia": "SEI-SESAB",
+                     "mesa": "SESAB/DGESS", "filtros": {"numero_sei": "1"},
+                     "campos": {"numero_sei": ["txtProtocoloPesquisa"]},
+                     "paginas_teto": 3, "segundos_teto": 30,
+                     "perfil": {"instancia": "SEI-SESAB"}}
+    return 200, {"estado": "concluida"}
+
+
+_chamar_real = _ag.chamar
+_ag.chamar = _chamar_falso
+_coletor_falso(
+    "import json, sys\n"
+    "pedido = json.loads(sys.stdin.readline())\n"
+    "print('BUSCA_OK ' + json.dumps({'busca_id': 77, 'itens': [], 'eco': pedido}))\n")
+with contextlib.redirect_stdout(io.StringIO()):
+    _rodou = _ag.buscar({"servidor": "http://x", "token": "t"})
+_ag.chamar = _chamar_real
+_posts = [c for c in _visto["chamadas"] if c[1] != "GET"]
+checar("buscar() ainda roda a busca que o servidor ofereceu", _rodou is True)
+checar("e publica na busca certa", bool(_posts) and _posts[0][0] == "/api/agente/busca/77",
+       str(_posts[:1])[:160])
+_eco = (_posts[0][2] or {}).get("eco") if _posts else {}
+checar("o pedido continua levando as seis chaves da busca, e só elas",
+       sorted((_eco or {}).get("busca", {})) == sorted(
+           ["busca_id", "campos", "filtros", "instancia", "mesa", "paginas_teto"]),
+       str(_eco)[:200])
+checar("e o perfil continua viajando junto",
+       ((_eco or {}).get("perfil") or {}).get("instancia") == "SEI-SESAB", str(_eco)[:200])
+
+# 6) Envelope nenhum vira MOTIVO declarado, não silêncio: a busca fica registrada
+#    como não respondida, que é o que a tela de quem pesquisou precisa dizer.
+_visto["chamadas"] = []
+_ag.chamar = _chamar_falso
+_coletor_falso("import sys\nsys.stdin.readline()\nprint('morri')\n")
+with contextlib.redirect_stdout(io.StringIO()):
+    _ag.buscar({"servidor": "http://x", "token": "t"})
+_ag.chamar = _chamar_real
+_corpo_post = [c for c in _visto["chamadas"] if c[1] != "GET"][0][2]
+checar("estação muda vira motivo declarado na busca",
+       "não devolveu resultado" in (_corpo_post or {}).get("motivo", ""),
+       str(_corpo_post)[:200])
+
+import shutil                                                    # noqa: E402
+shutil.rmtree(_tmp, ignore_errors=True)
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)
