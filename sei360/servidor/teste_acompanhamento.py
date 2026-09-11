@@ -1015,6 +1015,70 @@ checar("reaproveitamento que falha não deixa a tela em branco",
        and "019.1111.2026.0000001-11" in _r.data.decode("utf-8", "replace"),
        str(_r.status_code))
 
+print("\n7-ter. a instalação fica dita")
+
+
+def _cartao(corpo, protocolo):
+    """O trecho do cartão DAQUELE processo, do número dele até o próximo cartão.
+
+    Checagem por página é conjunção de fatos soltos, e engana: "não mostra o
+    alheio como lido" ficava VERDE com a etiqueta de espera aplicada a todo
+    item, porque as duas metades da conjunção eram verdade em cartões
+    diferentes. Afirmação sobre a linha se faz sobre a linha.
+    """
+    alvo = f'<span class="mono" style="font-size:13px">{protocolo}</span>'
+    i = corpo.find(alvo)
+    if i < 0:
+        return ""
+    fim = corpo.find('<div class="cartao"', i)
+    return corpo[i:fim] if fim > 0 else corpo[i:]
+
+
+# O PADRÃO FICA DITO. A configuração ativa é "a última que a pessoa mexeu": depois
+# de tocar na FESF, número colado entra como SEI-FESF e a tela não dizia nada.
+# Item carimbado na instalação errada fica "aguardando primeira leitura" para
+# sempre — os dígitos nunca casam com a coleta daquela instalação — e, na fase 2,
+# é lido no SEI errado. É a doutrina de `ingestao.py`, de `coleta.py` e do próprio
+# DDL de `acompanhado.instancia`.
+_r = _c.get("/acompanhamento")
+_csrf = _csrf_do(_r, _csrf)
+_corpo = _r.data.decode("utf-8", "replace")
+checar("o formulário diz em que instalação o número vai entrar",
+       "vai entrar em" in _corpo, "o destino do que se cola não está dito")
+
+# A conta 7 tem item nas DUAS instalações, e é aí que o rótulo por cartão informa.
+# Com uma só, ele não aparece: carimbar "SESAB" em toda linha de quem só tem SESAB
+# é ruído que ensina a não ler o carimbo — a mesma regra do `multi_instancia` do
+# painel.
+_cart_fesf = _cartao(_corpo, "0016000251202662")
+_cart_sesab = _cartao(_corpo, "019.1111.2026.0000001-11")
+# O RÓTULO VISÍVEL, não o `value` do campo escondido: a instalação já estava no
+# formulário de remoção de todo cartão, então procurar "FESF" no cartão passava
+# sem que a tela mostrasse nada a ninguém.
+checar("o cartão da FESF diz que é da FESF", ">FESF</span>" in _cart_fesf,
+       _cart_fesf[:160] or "cartão não encontrado")
+checar("e o da SESAB diz que é da SESAB", ">SESAB</span>" in _cart_sesab,
+       _cart_sesab[:160] or "cartão não encontrado")
+
+_no_log = conectar().execute(
+    "SELECT alvo FROM log_acesso WHERE usuario_id=7 AND acao='acompanhar' "
+    "ORDER BY id DESC LIMIT 1").fetchone()
+checar("o log de quem acompanha diz em qual instalação foi",
+       "SEI-" in ((_no_log["alvo"] if _no_log else "") or ""),
+       str(_no_log["alvo"] if _no_log else None))
+
+# SEM RESERVA SILENCIOSA NA REMOÇÃO. O `or "SEI-SESAB"` reencenava o idioma que a
+# tabela nasceu sem: formulário sem `instancia` apagava a linha da SESAB, que
+# pode não ser a linha que a pessoa estava vendo.
+_r = _c.post("/acompanhamento/remover",
+             data={"csrf": _csrf, "protocolo": "019.1111.2026.0000001-11"})
+checar("remover sem instalação não apaga a linha da SESAB por padrão",
+       _r.status_code in (200, 302)
+       and any(x["protocolo"] == "019.1111.2026.0000001-11"
+               for x in ac.listar(conectar(), 7)),
+       f"HTTP {_r.status_code} — ou caiu na reserva silenciosa")
+_csrf = _csrf_do(_r, _csrf)
+
 print("\n7-bis. o módulo não invadiu a carteira")
 import relatorios as _rel                                        # noqa: E402
 

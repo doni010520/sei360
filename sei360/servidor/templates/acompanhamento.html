@@ -45,6 +45,14 @@
         placeholder="019.5120.2026.0161681-50"></textarea>
       <label for="nota" style="margin-top:8px">Por que você está seguindo (opcional)</label>
       <input name="nota" id="nota" placeholder="Repactuação HECC" style="width:100%">
+      {# O DESTINO FICA DITO, em vez de aplicado em silêncio — a regra de
+         `ingestao.py` e de `coleta.py`, e o motivo de `acompanhado.instancia`
+         ter nascido sem DEFAULT. Quem mexeu na FESF por último cola aqui um
+         número que entra como da FESF, e antes a tela não dizia nada. #}
+      <div style="color:var(--ink-3);font-size:12px;margin-top:9px">
+        vai entrar em <b>{{ instancia_rotulo }}</b> ({{ instancia_ativa }}), a instalação
+        da sua configuração ativa — <a href="/configuracao">trocar</a>
+      </div>
       <div style="margin-top:10px"><button class="bt forte" type="submit">Acompanhar</button>
         <span style="color:var(--ink-3);font-size:12px;margin-left:8px">{{ itens|length }} de {{ teto }}</span></div>
     </form>
@@ -53,7 +61,14 @@
   {% for x in itens %}
   <div class="cartao" style="margin-bottom:10px">
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline">
-      <span class="mono" style="font-size:13px">{{ x.protocolo }}</span>
+      <span style="display:flex;gap:7px;align-items:baseline;flex-wrap:wrap">
+        <span class="mono" style="font-size:13px">{{ x.protocolo }}</span>
+        {# DE QUAL INSTALAÇÃO É ESTA LINHA, e só quando há mais de uma na lista.
+           Sem isto, o item colado na instalação errada era indistinguível do
+           certo — e é justamente ele que nunca vai casar com a coleta. #}
+        {% if multi_instancia %}<span class="tag"
+          title="instalação do SEI a que este processo pertence">{{ x.instancia_rotulo }}</span>{% endif %}
+      </span>
       {# QUATRO SITUAÇÕES, não duas. `mudou` nulo cobria três coisas — primeira
          observação, medição que não avançou, e comparação sem mudança — e este
          lugar afirmava a terceira para todas: dizia "sem mudança" sobre processo

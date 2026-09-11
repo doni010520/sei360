@@ -3333,6 +3333,7 @@ def acompanhamento_tela(recusados=None, sem_espaco=None):
     itens = acmod.listar(cx, u["usuario_id"])
     for x in itens:
         x["texto_mudou"] = acmod.texto_do_delta(x.get("mudou"))
+        x["instancia_rotulo"] = perfil_sei.rotulo(x["instancia"])
         # A PROCEDÊNCIA É TEXTO GERADO DO DADO, como o do delta — e não fatia de
         # data no template. A coluna aceita nulo, e o template fatiando nulo
         # derrubava a tela INTEIRA (500), não a linha; além disso a regra de
@@ -3341,10 +3342,26 @@ def acompanhamento_tela(recusados=None, sem_espaco=None):
         x["procedencia"] = acmod.texto_da_procedencia(x)
     registrar(cx, u["usuario_id"], "ver_acompanhamento",
               alvo=f"{len(itens)} processo(s)", ip=ip_cliente())
+    # ONDE O PRÓXIMO NÚMERO VAI CAIR. A configuração ativa é "a última que a
+    # pessoa mexeu" (`configuracao.ler`), então depois de mexer na FESF o número
+    # colado aqui entra como da FESF — em silêncio, na versão anterior. Item
+    # carimbado na instalação errada nunca casa com a coleta dela: fica
+    # "aguardando primeira leitura" para sempre e, na leitura pelo SEI, é
+    # procurado na instalação errada.
+    inst_ativa = cfgmod.ler(cx, u["usuario_id"])["sistema"]
     cx.commit(); cx.close()
     resp = make_response(render_template("acompanhamento.html", u=u, itens=itens,
                                          teto=acmod.TETO, recusados=recusados or [],
-                                         sem_espaco=sem_espaco or []))
+                                         sem_espaco=sem_espaco or [],
+                                         instancia_ativa=inst_ativa,
+                                         instancia_rotulo=perfil_sei.rotulo(inst_ativa),
+                                         # O RÓTULO POR CARTÃO só aparece quando há
+                                         # mais de uma instalação na lista: carimbar
+                                         # "SESAB" em toda linha de quem só tem SESAB
+                                         # é ruído que ensina a não ler o carimbo. É a
+                                         # mesma regra do `multi_instancia` do painel.
+                                         multi_instancia=len(
+                                             {x["instancia"] for x in itens}) > 1))
     resp.set_cookie(COOKIE_CSRF, seg.novo_csrf(), samesite="Lax",
                     secure=cookie_seguro(), path="/")
     return resp
@@ -3362,12 +3379,16 @@ def acompanhamento_adicionar():
     # deixar o cliente escolher a instalação seria deixá-lo carimbar dado de uma
     # como sendo de outra — o defeito que `acompanhado.instancia` nasceu sem
     # DEFAULT para evitar.
-    inst = cfgmod.ler(cx, u["usuario_id"])["sistema"] or "SEI-SESAB"
+    # SEM `or "SEI-SESAB"`: `cfgmod.ler` já cai em `perfil_sei.PADRAO` quando não
+    # há configuração, então a reserva era código morto que reencenava justamente
+    # o idioma do DEFAULT que esta tabela nasceu sem. As rotas vizinhas não têm.
+    inst = cfgmod.ler(cx, u["usuario_id"])["sistema"]
     aceitos, recusados, sem_espaco = acmod.adicionar(
         cx, u["usuario_id"], request.form.get("numeros"), inst,
         nota=(request.form.get("nota") or "").strip() or None)
     registrar(cx, u["usuario_id"], "acompanhar",
-              alvo=f"+{len(aceitos)} -{len(recusados)} cheio:{len(sem_espaco)}",
+              alvo=f"{inst} +{len(aceitos)} -{len(recusados)} "
+                   f"cheio:{len(sem_espaco)}",
               ip=ip_cliente())
     cx.commit(); cx.close()
     # As recusadas voltam RENDERIZADAS, não por query string: o texto é o que a
@@ -3392,7 +3413,8 @@ def acompanhamento_remover():
     # lista — número errado, duplo clique, formulário forjado — afirmava uma
     # remoção que não aconteceu.
     registrar(cx, u["usuario_id"], "parar_acompanhar",
-              alvo=proto if saiu else f"{proto} (nada a remover)", ip=ip_cliente())
+              alvo=f"{request.form.get('instancia')} {proto}"
+                   + ("" if saiu else " (nada a remover)"), ip=ip_cliente())
     cx.commit(); cx.close()
     return redirect(url_for("acompanhamento_tela"))
 
