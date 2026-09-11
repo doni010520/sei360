@@ -539,6 +539,10 @@ CREATE TABLE IF NOT EXISTS poco_conferencia(
 -- CESS ha grupos com nome de pessoa alimentados so por ela. Fica por dono ate o
 -- teste de duas contas na mesma mesa dizer o contrario. Custa ~19 s por pessoa
 -- por dia — a apolice mais barata do desenho.
+--
+-- Nao confundir com a tabela `acompanhado` (mais abaixo, fora do poco): aquela
+-- e a lista PESSOAL da pessoa, atravessando mesas; esta e cache da tela do SEI,
+-- por mesa e por dono.
 CREATE TABLE IF NOT EXISTS poco_acompanhamento(
   id_sei TEXT NOT NULL, instancia TEXT NOT NULL DEFAULT 'SEI-SESAB',
   mesa TEXT NOT NULL,
@@ -623,22 +627,35 @@ CREATE TABLE IF NOT EXISTS alerta(
   reconhecido_por INTEGER, reconhecido_em TEXT);
 CREATE INDEX IF NOT EXISTS ix_alerta_ts ON alerta(ts);
 
--- ACOMPANHAMENTO — a lista de processos que a pessoa segue mesmo FORA das mesas
--- dela. Tabela separada de `processo` de propósito: processo acompanhado não é
--- carteira, não vira snapshot e não entra em relatório nenhum. Se entrasse, todo
--- número do produto passaria a misturar "o que é meu" com "o que eu observo".
+-- ============================================================ ACOMPANHAMENTO
+-- A lista de processos que a pessoa segue mesmo FORA das mesas dela. Tabela
+-- separada de `processo` de propósito: processo acompanhado não é carteira,
+-- não vira snapshot e não entra em relatório nenhum. Se entrasse, todo número
+-- do produto passaria a misturar "o que é meu" com "o que eu observo".
 --
--- A chave é o PROTOCOLO, não o `id_sei`: o número é o que a pessoa tem na mão, e
--- o id interno do SEI só se conhece depois da primeira leitura.
+-- A chave é o PROTOCOLO, não o `id_sei`: o número é o que a pessoa tem na mão,
+-- e o id interno do SEI só se conhece depois da primeira leitura.
+--
+-- Não confundir com `poco_acompanhamento` (linha ~542): aquele é cache da tela
+-- "Acompanhamento Especial" do SEI, por mesa e por dono; esta é a lista
+-- pessoal da pessoa, atravessando mesas — nome parecido, coisas diferentes.
 CREATE TABLE IF NOT EXISTS acompanhado(
   usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
-  instancia TEXT NOT NULL DEFAULT 'SEI-SESAB',
+  -- SEM default, ao contrário das tabelas antigas deste arquivo. `coleta.py`,
+  -- `configuracao.py` e `ingestao.py` cada um documenta um defeito medido em que
+  -- cair calado em 'SEI-SESAB' carimbou dado da FESF como SESAB. As tabelas que
+  -- ainda têm o default o carregam como bagagem de linhas anteriores à FESF
+  -- existir; esta nasce hoje, e quem grava resolve a instância explicitamente.
+  instancia TEXT NOT NULL,
   protocolo TEXT NOT NULL,
   id_sei TEXT,
   origem TEXT NOT NULL,                   -- 'manual'|'painel'|'sei_acompanhamento'
   nota TEXT,
   adicionado_em TEXT NOT NULL,
-  estado TEXT NOT NULL DEFAULT 'novo',    -- 'novo'|'lido'|'sem_acesso'|'nao_encontrado'
+  estado TEXT NOT NULL DEFAULT 'novo'
+    CHECK(estado IN ('novo','lido','sem_acesso','nao_encontrado')),
+  -- É a ÚLTIMA leitura, valor que se atualiza a cada leitura — como
+  -- `ultimo_contato_em` — e não um carimbo de transição de estado.
   lido_em TEXT,
   PRIMARY KEY(usuario_id, instancia, protocolo));
 
@@ -649,23 +666,34 @@ CREATE TABLE IF NOT EXISTS acompanhado(
 --
 -- `fonte` e `medido_em` não são enfeite: a leitura pode vir da carteira, que
 -- pode ser de dias atrás (medido: nove dias úteis, em 10/09/2026). Carimbar isso
--- como "lido hoje" seria mentir. `aberto_em_fonte` diz se as unidades vieram da
--- ÁRVORE ou da máquina de estados do andamento — a segunda errou em 100% dos
--- 1.278 casos observáveis, e a tela precisa poder dizer isso.
+-- como "lido hoje" seria mentir.
 CREATE TABLE IF NOT EXISTS acompanhado_leitura(
   id INTEGER PRIMARY KEY,
   usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
   instancia TEXT NOT NULL,
   protocolo TEXT NOT NULL,
   lido_em TEXT NOT NULL,
-  fonte TEXT,                             -- 'carteira' | 'sei'
+  fonte TEXT NOT NULL,                    -- 'carteira' | 'sei'
   medido_em TEXT,
   aberto_em TEXT,                         -- JSON: lista de unidades
+  -- 'arvore' aqui é a linha "Processo aberto nas unidades: ..." que o próprio SEI
+  -- publica no topo da árvore (`Nos[0].html`), e NÃO a lista histórica de
+  -- unidades dos metadados — que é a que o projeto irmão `sei_sistema` corrige
+  -- computando do andamento. Medido em 10/09/2026 sobre 15 coletas do SEI360,
+  -- com a própria lista da mesa como terceira fonte: em 1.278 discordâncias
+  -- observáveis entre a linha da árvore e a máquina de estados do andamento, a
+  -- árvore bateu com a mesa em 100% dos casos e o andamento em 0%.
   aberto_em_fonte TEXT,                   -- 'arvore' | 'andamento'
   ultimo_movimento TEXT,                  -- JSON {dh, un, de}
   documentos INTEGER,
   movimentos INTEGER,
-  mudou TEXT);                            -- JSON do delta; NULL na 1a leitura
+  mudou TEXT,                             -- JSON do delta; NULL na 1a leitura
+  -- A leitura morre com a lista. `remover()` já apaga as duas, mas a FK é o que
+  -- garante isso quando o DELETE vier de outro lugar — do expurgo, de um
+  -- ON DELETE CASCADE de `usuarios`, ou da mão de alguém no shell. É o mesmo
+  -- par lista/detalhe de `busca`/`busca_item` e `snapshot`/`processo`.
+  FOREIGN KEY(usuario_id, instancia, protocolo)
+    REFERENCES acompanhado(usuario_id, instancia, protocolo) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS ix_acomp_leitura
   ON acompanhado_leitura(usuario_id, instancia, protocolo, id DESC);
 """
