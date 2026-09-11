@@ -114,6 +114,11 @@ checar("texto que não é número é recusado", ac.normalizar("processo da Laisa
 # diferente; quem cola, cola o que viu.
 checar("número sem pontuação passa", ac.normalizar("019512020260161681") is not None)
 checar("número curto demais é recusado", ac.normalizar("123") is None)
+# O caso que corrompia a chave em silêncio: pontuação colada na ponta.
+checar("ponto final colado é recusado, não aceito com o ponto dentro",
+       ac.normalizar("019.5120.2026.0161681-50.") is None)
+checar("e o mesmo número sem o ponto continua passando",
+       ac.normalizar("019.5120.2026.0161681-50") == "019.5120.2026.0161681-50")
 
 print("\n3. adicionar, listar, remover")
 _cx = conectar()
@@ -151,6 +156,17 @@ checar(f"o teto de {ac.TETO} corta", len(ac.listar(_cx, 7)) == ac.TETO,
        str(len(ac.listar(_cx, 7))))
 checar("e o que não caber volta como recusado, não some",
        len(_recusados) >= 5, str(len(_recusados)))
+
+# Fronteira entre contas — hoje só testada para `listar`. `remover` e o teto
+# também precisam respeitá-la: são as duas outras portas por onde uma conta
+# poderia enxergar ou travar a lista de outra.
+checar("uma conta não remove da lista de outra",
+       (ac.remover(_cx, 8, "SEI-SESAB", "019.9393.2026.0163871-16") or True)
+       and any(x["protocolo"] == "019.9393.2026.0163871-16"
+               for x in ac.listar(_cx, 7)))
+_aceitos8, _recusados8 = ac.adicionar(_cx, 8, "019.8888.2026.0000008-88", "SEI-SESAB")
+checar("o teto cheio de uma conta não impede outra de adicionar",
+       _aceitos8 == ["019.8888.2026.0000008-88"], str((_aceitos8, _recusados8)))
 _cx.commit(); _cx.close()
 
 print("\n4. o delta")
@@ -173,6 +189,13 @@ checar("o texto da tela sai do delta, não da mão",
 # A armadilha do desenho: trocar de fonte não é mudança NO PROCESSO.
 _c = dict(_a); _c["fonte"] = "sei"
 checar("mudar de fonte não aparece como mudança", ac.delta(_a, _c) is None)
+
+# `texto_do_delta` existe para o texto nunca ser escrito à mão; ficar muda
+# sobre uma mudança real é o mesmo que não existir.
+checar("contagem que CAIU também vira texto",
+       ac.texto_do_delta({"documentos": -2}) != "")
+checar("mudança só de movimentos também vira texto",
+       ac.texto_do_delta({"movimentos": 5}) != "")
 
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:

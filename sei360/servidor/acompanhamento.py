@@ -24,13 +24,27 @@ from banco import agora
 # lista cheia inteiramente de fora — contra as ~5.900 que a coleta de 1.182
 # processos já faz. O teto existe para a lista não virar uma segunda coleta sem
 # ninguém ter decidido isso.
+#
+# A contagem é lida uma vez por chamada, e sob concorrência (3 workers x 2
+# threads) duas colagens simultâneas da mesma conta podem passar do teto —
+# medido, chega a 101. Aceito de propósito: este teto é ORÇAMENTO de requisição
+# ao SEI, não fronteira de acesso, e três itens a mais custam nove requisições
+# uma vez. Serializar a leitura+escrita da contagem para isso seria cerimônia
+# desproporcional numa lista pessoal.
 TETO = 100
 
 # Só dígitos e a pontuação que o SEI usa. Linha que não casa NÃO é descartada em
 # silêncio: volta como recusada, com o texto que a pessoa colou. É o princípio de
 # `filtros_recusados` em `pesquisa_sei.js` — entrada que não pegou muda o universo
 # da resposta sem mudar uma linha do resultado.
-_SO_NUMERO = re.compile(r"^[\d.\-/]+$")
+#
+# Dígito nas DUAS PONTAS, não `^[\d.\-/]+$`. O ponto é separador legítimo DENTRO
+# do número, e o regex antigo não distinguia isso de ponto final de frase: um
+# número copiado de citação ("... conforme o SEI 019.5120.2026.0161681-50.")
+# entrava com o ponto dentro do protocolo e nunca casava com o SEI — aceito na
+# tela, eternamente "não encontrado" na leitura, e duplicado no dia em que a
+# pessoa colasse de novo sem o ponto.
+_SO_NUMERO = re.compile(r"^\d[\d.\-/]*\d$")
 _MIN_DIGITOS = 10
 
 
@@ -53,6 +67,16 @@ def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
     quantos = cx.execute(
         "SELECT COUNT(*) FROM acompanhado WHERE usuario_id=?", (usuario_id,)
     ).fetchone()[0]
+    # UMA consulta para o conjunto já seguido, não uma por linha: colar 60
+    # números fazia 61 SELECTs (e colar os mesmos 60 de novo, 61 SELECTs para
+    # zero aceite) — o mesmo N+1 que o comentário de `listar()`, duas funções
+    # abaixo, existe para evitar. Idioma da casa: `poco.py`, função `_carregar`.
+    # Sem `IN (...)` em lotes porque aqui o universo já é o da PESSOA inteira,
+    # sempre <= TETO — não uma lista de candidatos que pode passar dos limites
+    # de variável por statement do SQLite.
+    ja_seguidos = {r["protocolo"] for r in cx.execute(
+        "SELECT protocolo FROM acompanhado WHERE usuario_id=? AND instancia=?",
+        (usuario_id, instancia))}
     aceitos, recusados = [], []
     for linha in (texto or "").replace(",", "\n").splitlines():
         if not linha.strip():
@@ -61,10 +85,7 @@ def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
         if not p:
             recusados.append(linha.strip())
             continue
-        ja = cx.execute("""SELECT 1 FROM acompanhado
-                           WHERE usuario_id=? AND instancia=? AND protocolo=?""",
-                        (usuario_id, instancia, p)).fetchone()
-        if ja:
+        if p in ja_seguidos:
             continue
         if quantos >= TETO:
             recusados.append(linha.strip())
@@ -73,6 +94,7 @@ def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
                       nota,adicionado_em,estado) VALUES(?,?,?,?,?,?,'novo')""",
                    (usuario_id, instancia, p, origem, nota, agora()))
         quantos += 1
+        ja_seguidos.add(p)
         aceitos.append(p)
     return aceitos, recusados
 
@@ -114,15 +136,14 @@ def listar(cx, usuario_id):
     return saida
 
 
-# Os ÚNICOS quatro campos que o delta compara. `fonte` e `medido_em` ficam fora de
-# propósito: trocar de "respondido pela carteira" para "lido no SEI" não é mudança
-# NO PROCESSO, e apareceria como se fosse — exatamente o ruído que o selo de
-# divergência árvore/andamento já produziu uma vez neste produto.
-_COMPARADOS = ("aberto_em", "ultimo_movimento", "documentos", "movimentos")
-
-
 def delta(anterior, atual):
     """O que mudou entre duas leituras. None quando nada mudou, e na primeira.
+
+    Compara só QUATRO campos: `aberto_em`, `ultimo_movimento`, `documentos` e
+    `movimentos`. `fonte` e `medido_em` ficam fora de propósito: trocar de
+    "respondido pela carteira" para "lido no SEI" não é mudança NO PROCESSO, e
+    apareceria como se fosse — exatamente o ruído que o selo de divergência
+    árvore/andamento já produziu uma vez neste produto.
 
     None na PRIMEIRA leitura, nunca "mudou tudo": não há com o que comparar, e
     anunciar mudança onde não houve observação é a mesma falsidade do aviso de
@@ -158,9 +179,15 @@ def texto_do_delta(d):
     if d.get("entrou_em"):
         partes.append("foi recebido em "
                       + ", ".join(u.split("/")[-1] for u in d["entrou_em"]))
-    if d.get("documentos", 0) > 0:
-        n = d["documentos"]
-        partes.append(f"{n} documento(s) novo(s)")
+    for campo, rotulo in (("documentos", "documento"), ("movimentos", "movimento")):
+        n = d.get(campo)
+        if not n:
+            continue
+        # COM SINAL. Documento cancelado no SEI faz a contagem CAIR, e a versão
+        # anterior desta função só falava de aumento — o item aparecia marcado
+        # como alterado, sem uma palavra dizendo o que mudou.
+        plural = "" if abs(n) == 1 else "s"
+        partes.append(f"{n:+d} {rotulo}{plural}")
     if not partes and d.get("movimentou_em"):
         partes.append(f"movimentou em {d['movimentou_em']}")
     return " · ".join(partes)

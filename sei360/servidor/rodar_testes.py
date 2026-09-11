@@ -26,6 +26,7 @@ SUITES = [
     ("teste_deploy_novo.py", "primeiro deploy, do volume vazio"),
     ("teste_poco.py", "poço: reaproveitar sem vazar a visão de ninguém"),
     ("teste_busca.py", "busca avançada, instância e cofre por instalação"),
+    ("teste_acompanhamento.py", "acompanhamento: lista por pessoa, fora da mesa"),
     ("teste_acesso.py", "recuperação de senha e segundo fator por e-mail"),
 ]
 CONTAINER = ("teste_container.py", "imagem Docker (exige Docker instalado)")
