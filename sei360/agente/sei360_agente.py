@@ -334,7 +334,21 @@ def acompanhar(cfg):
     SESAB, e uma leitura da FESF entraria no SEI errado.
     """
     s, tarefa = chamar(cfg, "/api/agente/acompanhamento", metodo="GET")
-    if s != 200 or not tarefa.get("ler"):
+    if s != 200:
+        return False
+    # O RECUO FICA DITO, mesmo quando não há trabalho — é o único lugar em que
+    # alguém vê que um processo parou de ser tentado. Sem esta linha, falha
+    # sistemática num processo é indistinguível de processo em dia: ele some da
+    # fila e ninguém fica sabendo. "3x hoje" o separa de falha passageira, que
+    # não aparece aqui porque o item volta à fila no ciclo seguinte.
+    parados = tarefa.get("descansando") or []
+    if parados:
+        print("acompanhamento: " + ", ".join(
+            f"{p.get('protocolo')} ({p.get('tentativas')}x sem leitura hoje)"
+            for p in parados[:5])
+            + (f" e mais {len(parados) - 5}" if len(parados) > 5 else "")
+            + " — descansam até amanhã")
+    if not tarefa.get("ler"):
         return False
     protocolos = tarefa.get("protocolos") or []
     print(f"acompanhamento: {len(protocolos)} processo(s) em {tarefa.get('instancia')}")

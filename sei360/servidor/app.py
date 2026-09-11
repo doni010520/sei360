@@ -3333,14 +3333,31 @@ def agente_acompanhamento():
             "a busca por número não roda em "
             f"{perfil_sei.INSTANCIAS[inst]['nome']}, e é por ela que a leitura "
             "de processo fora da carteira começa"))
-    lista = acmod.pendentes(cx, ag["dono_usuario_id"], inst)
-    # COMMIT ANTES DE DECIDIR: `pendentes` chama `reaproveitar`, que ESCREVE — o
-    # que a carteira respondeu de graça tem de ficar gravado mesmo quando sobra
-    # zero para a estação. É justamente o caso bom.
-    cx.commit(); cx.close()
+    # `try/finally` COMO O POST IRMÃO ABAIXO: `pendentes` ESCREVE (o
+    # reaproveitamento da carteira e o contador de entregas), e uma exceção aqui
+    # deixava a conexão aberta — três workers x duas threads vazando conexão a
+    # cada 30 min é o vazamento mais discreto que este arquivo poderia ter.
+    try:
+        lista = acmod.pendentes(cx, ag["dono_usuario_id"], inst)
+        # O RECUO FICA VISÍVEL. Item que sai da fila por ter falhado três vezes é
+        # indistinguível, para quem olha, de item que foi lido — e o custo do
+        # engano é alguém achar que o processo está em dia.
+        parados = acmod.descansando(cx, ag["dono_usuario_id"], inst)
+        # COMMIT ANTES DE DECIDIR: `pendentes` chama `reaproveitar`, que ESCREVE —
+        # o que a carteira respondeu de graça tem de ficar gravado mesmo quando
+        # sobra zero para a estação. É justamente o caso bom.
+        cx.commit()
+    finally:
+        cx.close()
     if not lista:
-        return jsonify(ler=False, motivo="nada acompanhado fora da carteira")
+        motivo = "nada acompanhado fora da carteira"
+        if parados:
+            motivo = (f"{len(parados)} processo(s) descansam até amanhã: a estação "
+                      f"os recebeu {acmod.TENTATIVAS_ATE_DESCANSAR}x hoje sem "
+                      "devolver leitura")
+        return jsonify(ler=False, motivo=motivo, descansando=parados)
     return jsonify(ler=True, instancia=inst, protocolos=lista,
+                   descansando=parados,
                    perfil=perfil_sei.envelope_do_coletor(inst))
 
 

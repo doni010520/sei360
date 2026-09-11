@@ -1275,6 +1275,15 @@ def _do_agente(caminho, corpo_obj=None, metodo="POST", tok=None):
     return _c.post(caminho, data=corpo, headers=cab)
 
 
+# O CONTADOR DE ENTREGAS É ZERADO AQUI, DE PROPÓSITO. `pendentes` conta cada vez
+# que entrega um item à estação e só zera quando uma leitura volta; esta suíte
+# chamou `pendentes` duas vezes acima sem nunca publicar leitura nenhuma, e isso é
+# exatamente o que o recuo existe para barrar (ver a seção 8-nonies). Aqui o que
+# se quer provar é o ENVELOPE, então a fila começa limpa.
+_cx = conectar()
+_cx.execute("UPDATE acompanhado SET tentativas=0, tentativa_em=NULL")
+_cx.commit(); _cx.close()
+
 _r = _do_agente("/api/agente/acompanhamento", metodo="GET")
 checar("a estação autenticada recebe a tarefa", _r.status_code == 200,
        str(_r.status_code))
@@ -1292,8 +1301,14 @@ checar("o perfil da instalação vai junto",
        str(_tarefa.get("perfil"))[:120])
 # O ENVELOPE É FECHADO, e é isto que a tarefa 9 vai consumir. Campo a mais aqui é
 # campo que a estação passa a poder usar — e a nota é texto de gente.
+#
+# `descansando` entrou depois, e passa pelo mesmo crivo: carrega NÚMERO DE
+# PROCESSO e uma contagem, a mesma classe de dado que `protocolos` já leva. Ele
+# existe porque recuo silencioso é indistinguível de processo em dia, e o log da
+# estação é o único lugar onde alguém veria isso.
 checar("e o envelope não manda nada além do necessário",
-       set(_tarefa) == {"ler", "instancia", "protocolos", "perfil"}, str(sorted(_tarefa)))
+       set(_tarefa) == {"ler", "instancia", "protocolos", "perfil", "descansando"},
+       str(sorted(_tarefa)))
 checar("a nota da pessoa NÃO viaja para a estação",
        "Laisa" not in _r.data.decode("utf-8", "replace"),
        "o texto que a pessoa escreveu saiu do servidor")
@@ -1661,6 +1676,89 @@ checar("mas o delta continua gravado na série, porque foi medido",
            conectar(), 7)}["019.2020.2026.0000020-20"]["mudou"] or {}
         ).get("documentos") == 5)
 
+print("\n8-nonies. falha técnica repetida recua, em vez de insistir 34x por dia")
+# O QUE ESTE BLOCO DEFENDE, em número: falha técnica não carimba `lido_em` — de
+# propósito, para o item continuar pendente —, e sem recuo `pendentes` reoferecia
+# o mesmo processo a cada batida do agendador. 34 ciclos x 100 itens x 5
+# requisições ≈ 17 mil requisições por dia contra o SEI do órgão, três vezes a
+# coleta inteira, cada ciclo abrindo um Chromium, e nada percebendo.
+#
+# Queda de sessão já era barata (a estação para no primeiro `SESSAO`). O caro era
+# a falha sistemática que NÃO é sessão: parse, DOMException, rede intermitente.
+
+# A COLUNA TEM DE CHEGAR AO BANCO QUE JÁ EXISTE. `CREATE TABLE IF NOT EXISTS` não
+# altera tabela existente, então quem acrescenta coluna nova é a migração — e ela
+# lê o próprio DDL. Este par de checagens existe porque a armadilha foi paga:
+# `_colunas_do_ddl` recortava a tabela com uma expressão não-gulosa que para no
+# PRIMEIRO `);`, e um `);` escrito DENTRO de um comentário do DDL truncava a
+# lista de colunas ali. `tentativas` e `tentativa_em` não eram criadas em banco
+# existente, e o sintoma seria "no such column" no meio de uma tela, em produção.
+_COLS_DDL = banco._colunas_do_ddl(banco.DDL)
+checar("a migração enxerga as colunas novas no DDL",
+       {"tentativas", "tentativa_em"} <= set(_COLS_DDL.get("acompanhado", {})),
+       str(list(_COLS_DDL.get("acompanhado", {}))))
+checar("e nenhuma tabela do DDL é lida sem coluna nenhuma (o sinal do `);` no comentário)",
+       not [t for t, c in _COLS_DDL.items() if not c],
+       str([t for t, c in _COLS_DDL.items() if not c]))
+
+_cx = conectar()
+_cx.execute("UPDATE acompanhado SET tentativas=0, tentativa_em=NULL, lido_em=NULL")
+_cx.commit()
+_ALVO_RECUO = "019.2222.2026.0000002-22"
+_ofertas = []
+for _volta in range(5):
+    _ofertas.append(_ALVO_RECUO in ac.pendentes(_cx, 7, "SEI-SESAB"))
+    _cx.commit()
+checar("as três primeiras voltas oferecem o item", _ofertas[:3] == [True] * 3,
+       str(_ofertas))
+checar("da quarta em diante, não mais — ele descansa até amanhã",
+       _ofertas[3:] == [False, False], str(_ofertas))
+_parados = ac.descansando(_cx, 7, "SEI-SESAB")
+checar("e o recuo é dito, com o número e a contagem",
+       any(p["protocolo"] == _ALVO_RECUO and p["tentativas"] >= 3 for p in _parados),
+       str(_parados)[:200])
+
+# LEITURA ZERA O CONTADOR, de qualquer fonte. É a resposta que o contador mede.
+ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": _ALVO_RECUO, "aberto_em": ["SESAB/ALHEIA"],
+     "aberto_em_fonte": "arvore", "documentos": 3, "movimentos": 4}]})
+_cx.commit()
+checar("leitura que chega zera a contagem",
+       _cx.execute("SELECT tentativas FROM acompanhado WHERE usuario_id=7 "
+                   "AND instancia='SEI-SESAB' AND protocolo=?",
+                   (_ALVO_RECUO,)).fetchone()[0] == 0)
+checar("e o item sai do descanso", not any(p["protocolo"] == _ALVO_RECUO
+                                           for p in ac.descansando(_cx, 7, "SEI-SESAB")))
+
+# RECUSA DO SEI TAMBÉM ZERA: a estação chegou ao processo e o SEI respondeu.
+# "não é para você" é resposta, não falha técnica — e deixar o contador subir aqui
+# faria o item descansar por ter sido lido.
+_cx.execute("UPDATE acompanhado SET tentativas=9, lido_em=NULL WHERE usuario_id=7 "
+            "AND instancia='SEI-SESAB' AND protocolo=?", (_ALVO_RECUO,))
+_cx.commit()
+ac.receber(_cx, 7, "SEI-SESAB",
+           {"leituras": [{"protocolo": _ALVO_RECUO, "estado": "sem_acesso"}]})
+_cx.commit()
+checar("recusa do SEI é resposta, e também zera",
+       _cx.execute("SELECT tentativas FROM acompanhado WHERE usuario_id=7 "
+                   "AND instancia='SEI-SESAB' AND protocolo=?",
+                   (_ALVO_RECUO,)).fetchone()[0] == 0)
+
+# É RECUO, NÃO DESISTÊNCIA: contagem alta de ONTEM não barra nada hoje. Sem a
+# comparação de data, um item que falhasse três vezes numa terça ficaria parado
+# para sempre — e desistir em silêncio é pior que insistir.
+_cx.execute("UPDATE acompanhado SET tentativas=9, tentativa_em=?, lido_em=NULL "
+            "WHERE usuario_id=7 AND instancia='SEI-SESAB' AND protocolo=?",
+            (_ONTEM, _ALVO_RECUO))
+_cx.commit()
+checar("contagem de ontem não barra o item hoje",
+       _ALVO_RECUO in ac.pendentes(_cx, 7, "SEI-SESAB"), "não foi oferecido")
+checar("e a contagem recomeça do 1, não continua de 9",
+       _cx.execute("SELECT tentativas FROM acompanhado WHERE usuario_id=7 "
+                   "AND instancia='SEI-SESAB' AND protocolo=?",
+                   (_ALVO_RECUO,)).fetchone()[0] == 1)
+_cx.commit(); _cx.close()
+
 print("\n9. o laço que roda o coletor na estação")
 # O QUE DÁ PARA PROVAR AQUI: que `_rodar_coletor` lê a linha-marca, ecoa o resto
 # como log e mata pelo relógio de parede — que é o corpo que `buscar()` tinha e
@@ -1864,6 +1962,22 @@ checar("estação muda não publica envelope vazio",
        not [c for c in _visto["chamadas"] if c[1] != "GET"], str(_visto["chamadas"]))
 checar("mas a falha é dita em voz alta, não engolida",
        "pendente" in _log.getvalue(), _log.getvalue()[-200:])
+
+# 4) O RECUO CHEGA AO LOG DA ESTAÇÃO. É o único lugar em que alguém vê que um
+#    processo parou de ser tentado — o servidor o tira da fila em silêncio, e
+#    item que some da fila é indistinguível de item que foi lido. Aparece mesmo
+#    quando não há mais nada a ler, que é justamente quando importa.
+_ag.chamar = _servidor_falso(
+    {"ler": False, "motivo": "1 processo(s) descansam até amanhã",
+     "descansando": [{"protocolo": "019.2222.2026.0000002-22", "tentativas": 3}]})
+_log = io.StringIO()
+with contextlib.redirect_stdout(_log):
+    _fez = _ag.acompanhar({"servidor": "http://x", "token": "t"})
+checar("sem trabalho o agente não roda, mas DIZ quem está descansando",
+       _fez is False and "019.2222.2026.0000002-22" in _log.getvalue(),
+       _log.getvalue()[-200:])
+checar("e distingue recuo de falha passageira, com a contagem",
+       "3x sem leitura hoje" in _log.getvalue(), _log.getvalue()[-200:])
 
 _ag.chamar = _chamar_real
 

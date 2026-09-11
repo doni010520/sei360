@@ -401,8 +401,12 @@ def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte, medido_em
                 json.dumps(dados.get("ultimo_movimento"), ensure_ascii=False),
                 dados.get("documentos"), dados.get("movimentos"),
                 json.dumps(d, ensure_ascii=False) if d else None, comparacao))
+    # `tentativas=0`: CHEGOU LEITURA, de qualquer fonte. O contador existe para
+    # medir entregas SEM resposta, e esta é a resposta. Zerar aqui cobre as duas
+    # fontes de uma vez — a carteira (`reaproveitar`) e o SEI (`receber`) —
+    # porque as duas passam por esta função.
     cx.execute("""UPDATE acompanhado SET estado=?, lido_em=?,
-                  id_sei=COALESCE(?, id_sei)
+                  id_sei=COALESCE(?, id_sei), tentativas=0
                   WHERE usuario_id=? AND instancia=? AND protocolo=?""",
                (estado, agora(), id_sei, usuario_id, instancia, protocolo))
     return d
@@ -594,12 +598,47 @@ def reaproveitar(cx, usuario_id, instancia):
 # virar afirmação na tela de quem confia no número.
 
 
+# Quantas entregas sem resposta antes de o item descansar até amanhã. Três, e não
+# uma: rede intermitente e Chromium que não subiu naquela batida são falhas
+# passageiras, e desistir na primeira faria o módulo perder o dia por um soluço.
+# Acima de três, o que há é falha sistemática — e aí insistir 31 vezes mais só
+# multiplica requisição inválida contra o SEI do órgão.
+TENTATIVAS_ATE_DESCANSAR = 3
+
+
+def descansando(cx, usuario_id, instancia):
+    """Os itens que o servidor parou de oferecer HOJE, e quantas vezes falharam.
+
+    Existe para o recuo não ser silencioso. Item que some da fila sem ninguém
+    dizer por quê é indistinguível de item que foi lido — e o custo do engano é
+    alguém olhando a tela achar que o processo está em dia.
+    """
+    return [{"protocolo": r["protocolo"], "tentativas": r["tentativas"]}
+            for r in cx.execute(
+                """SELECT protocolo, tentativas FROM acompanhado
+                   WHERE usuario_id=? AND instancia=? AND tentativas>=?
+                     AND substr(COALESCE(tentativa_em,''),1,10)=substr(?,1,10)
+                     AND (lido_em IS NULL OR substr(lido_em,1,10)<>substr(?,1,10))
+                   ORDER BY tentativas DESC, protocolo""",
+                (usuario_id, instancia, TENTATIVAS_ATE_DESCANSAR, agora(), agora()))]
+
+
 def pendentes(cx, usuario_id, instancia):
     """O que a estação precisa ler no SEI: os protocolos, e só eles.
 
+    ESCREVE: cada item devolvido sai daqui com `tentativas` incrementado, e o
+    contador só é zerado quando uma leitura chega (`gravar_leitura`, e a recusa
+    em `receber`). Três entregas sem resposta e o item descansa até amanhã.
+
+    O CONTADOR É DE ENTREGA, não de falha relatada. A estação que morre com o
+    Chromium aberto depois de ler 100 processos não relata falha nenhuma — e é
+    exatamente esse o caso que custa 500 requisições por ciclo. Contar o que foi
+    ENTREGUE cobre também o caso em que ela relata, e não depende de campo novo
+    vindo de fora.
+
     Chama `reaproveitar` primeiro de propósito. Sem isso a estação leria no SEI
     processo que a coleta já trouxe de graça — e a economia do desenho existiria
-    só no papel: três requisições por processo por dia para reler o que está no
+    só no papel: cinco requisições por processo por dia para reler o que está no
     banco.
 
     SÓ O NÚMERO SOBE. A estação vai procurar cada um no SEI, então precisa do
@@ -614,7 +653,8 @@ def pendentes(cx, usuario_id, instancia):
     linha inserida fora de `adicionar` não passa por ele. Ver `TETO`, no topo.
     """
     reaproveitar(cx, usuario_id, instancia)
-    return [r["protocolo"] for r in cx.execute(
+    hoje = agora()
+    lista = [r["protocolo"] for r in cx.execute(
         # A MESMA GUARDA DE UMA LEITURA POR DIA que `reaproveitar` aplica, e pelo
         # mesmo motivo: sem ela a estação releria o mesmo processo a cada ciclo do
         # agente. O 'novo' na frente para a primeira leitura de um item recém
@@ -622,8 +662,29 @@ def pendentes(cx, usuario_id, instancia):
         """SELECT protocolo FROM acompanhado
            WHERE usuario_id=? AND instancia=?
              AND (lido_em IS NULL OR substr(lido_em,1,10) <> substr(?,1,10))
+             -- O RECUO. Três entregas sem resposta HOJE e o item sai da fila até
+             -- amanhã. A comparação de data é o que torna isso recuo e não
+             -- desistência: `tentativas` alto de ontem não barra nada.
+             AND NOT (tentativas >= ?
+                      AND substr(COALESCE(tentativa_em,''),1,10) = substr(?,1,10))
            ORDER BY estado='novo' DESC, adicionado_em
-           LIMIT ?""", (usuario_id, instancia, agora(), TETO))]
+           LIMIT ?""",
+        (usuario_id, instancia, hoje, TENTATIVAS_ATE_DESCANSAR, hoje, TETO))]
+    if lista:
+        # CONTA HOJE, NÃO DESDE SEMPRE. Entrega de ontem que falhou não soma com a
+        # de hoje: o `CASE` reinicia a contagem quando o dia vira, senão um item
+        # com três falhas na terça ganharia UMA tentativa por dia dali em diante,
+        # que é um recuo que ninguém pediu e que é difícil de explicar olhando a
+        # tabela.
+        marc = ",".join("?" * len(lista))
+        cx.execute(f"""UPDATE acompanhado
+                       SET tentativas = CASE
+                             WHEN substr(COALESCE(tentativa_em,''),1,10)=substr(?,1,10)
+                             THEN tentativas + 1 ELSE 1 END,
+                           tentativa_em = ?
+                       WHERE usuario_id=? AND instancia=? AND protocolo IN ({marc})""",
+                   [hoje, hoje, usuario_id, instancia] + lista)
+    return lista
 
 
 # O que a estação relata quando o SEI recusou ou não achou. Traduzido AQUI, e não
@@ -781,7 +842,11 @@ def receber(cx, usuario_id, instancia, envelope):
             # passaria a ser a ÚLTIMA leitura, apagando da tela o que já se sabia.
             # O estado no item é o que a tela mostra, e `texto_da_procedencia`
             # cala nele de propósito.
-            cx.execute("""UPDATE acompanhado SET estado=?, lido_em=?
+            # `tentativas=0` TAMBÉM AQUI: recusa do SEI não é falha técnica. A
+            # estação chegou ao processo e o SEI respondeu — "não é para você" ou
+            # "não existe" são respostas. O contador mede entrega sem resposta, e
+            # deixá-lo subir aqui faria o item descansar por ter sido lido.
+            cx.execute("""UPDATE acompanhado SET estado=?, lido_em=?, tentativas=0
                           WHERE usuario_id=? AND instancia=? AND protocolo=?""",
                        (estado, agora(), usuario_id, instancia, p))
             gravadas += 1

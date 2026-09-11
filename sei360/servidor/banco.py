@@ -657,6 +657,26 @@ CREATE TABLE IF NOT EXISTS acompanhado(
   -- É a ÚLTIMA leitura, valor que se atualiza a cada leitura — como
   -- `ultimo_contato_em` — e não um carimbo de transição de estado.
   lido_em TEXT,
+  -- QUANTAS VEZES ESTE ITEM FOI ENTREGUE À ESTAÇÃO HOJE SEM VOLTAR LEITURA.
+  -- Zerado assim que uma leitura chega, de qualquer fonte.
+  --
+  -- Sem isto, falha TÉCNICA — que de propósito não carimba `lido_em`, para o
+  -- item continuar pendente — reoferecia o mesmo processo a cada batida do
+  -- agendador: 34 ciclos por dia x 100 itens x 5 requisições ≈ 17 mil
+  -- requisições diárias contra o SEI do órgão, três vezes a coleta inteira, cada
+  -- ciclo abrindo um Chromium, e nada no sistema percebendo. Queda de sessão já
+  -- era barata (a estação para no primeiro `SESSAO`); o caro era a falha
+  -- sistemática que NÃO é sessão — parse, DOMException, rede intermitente.
+  --
+  -- CONTA ENTREGA, NÃO FALHA RELATADA, e isso é deliberado: a estação que morre
+  -- com o Chromium aberto depois de ler 100 processos não relata nada, e é
+  -- justamente esse o caso que custa as 500 requisições. Contar o que o servidor
+  -- ENTREGOU cobre os dois, e não depende de campo novo vindo de fora.
+  tentativas INTEGER NOT NULL DEFAULT 0,
+  -- QUANDO foi a última entrega. É o que faz `tentativas` significar "hoje": sem
+  -- data, um item que falhou três vezes numa terça ficaria parado para sempre, e
+  -- o recuo viraria desistência silenciosa.
+  tentativa_em TEXT,
   PRIMARY KEY(usuario_id, instancia, protocolo));
 
 -- O HISTÓRICO: uma linha por leitura. Existe para "o que mudou" ser DIFERENÇA
@@ -717,10 +737,18 @@ def _colunas_do_ddl(ddl):
     e o sintoma seria a migração silenciosamente não migrar.
     """
     import re
+    # COMENTÁRIO SAI ANTES DE ACHAR A TABELA, e não depois de recortá-la. A
+    # expressão abaixo é não-gulosa e para no PRIMEIRO `);` — então um `);`
+    # escrito dentro de um comentário do DDL truncava o corpo da tabela ali, e as
+    # colunas depois dele simplesmente não existiam para a migração. Medido em
+    # 11/09/2026: `acompanhado.tentativas` e `.tentativa_em` não eram criadas em
+    # banco existente, e o sintoma seria "no such column: tentativas" no meio de
+    # uma tela, em produção, meses depois de o DDL estar certo. Recortar primeiro
+    # e limpar depois era o inverso da ordem necessária.
+    ddl = re.sub(r"--[^\n]*", "", ddl)
     tabelas = {}
     for m in re.finditer(r"CREATE TABLE IF NOT EXISTS (\w+)\s*\((.*?)\);", ddl, re.S):
         nome, corpo = m.group(1), m.group(2)
-        corpo = re.sub(r"--[^\n]*", "", corpo)          # tira comentário de linha
         colunas, nivel, atual = {}, 0, ""
         for ch in corpo + ",":
             if ch == "(":
