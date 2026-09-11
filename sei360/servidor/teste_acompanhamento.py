@@ -115,6 +115,44 @@ checar("texto que não é número é recusado", ac.normalizar("processo da Laisa
 checar("número sem pontuação passa", ac.normalizar("019512020260161681") is not None)
 checar("número curto demais é recusado", ac.normalizar("123") is None)
 
+print("\n3. adicionar, listar, remover")
+_cx = conectar()
+_cx.execute("INSERT INTO usuarios(id,email,papel,criado_em,ativo) "
+            "VALUES(7,'seguidora@teste.local','servidor',?,1)", (agora(),))
+_cx.execute("INSERT INTO usuarios(id,email,papel,criado_em,ativo) "
+            "VALUES(8,'outra@teste.local','servidor',?,1)", (agora(),))
+_cx.commit()
+
+_aceitos, _recusados = ac.adicionar(_cx, 7, "019.5120.2026.0161681-50", "SEI-SESAB")
+checar("um número entra", _aceitos == ["019.5120.2026.0161681-50"] and not _recusados)
+
+_aceitos, _recusados = ac.adicionar(
+    _cx, 7, "019.9393.2026.0163871-16\nprocesso da Laisa\n019.2403.2024.0013423-96",
+    "SEI-SESAB")
+checar("lista de vários: as válidas entram", len(_aceitos) == 2, str(_aceitos))
+checar("e a inválida volta com o texto que a pessoa colou",
+       _recusados == ["processo da Laisa"], str(_recusados))
+
+_aceitos, _ = ac.adicionar(_cx, 7, "019.5120.2026.0161681-50", "SEI-SESAB")
+checar("repetido não duplica nem estoura", _aceitos == [], str(_aceitos))
+
+_lista = ac.listar(_cx, 7)
+checar(f"a lista tem os três ({len(_lista)})", len(_lista) == 3)
+checar("todos nascem 'novo'", all(x["estado"] == "novo" for x in _lista))
+checar("a lista é da PESSOA: a outra conta vê vazio", ac.listar(_cx, 8) == [])
+
+ac.remover(_cx, 7, "SEI-SESAB", "019.5120.2026.0161681-50")
+checar("remover tira da lista", len(ac.listar(_cx, 7)) == 2)
+
+# O teto recusa com o número atual, em vez de descartar em silêncio.
+_muitos = "\n".join(f"019.0000.2026.{i:07d}-11" for i in range(ac.TETO + 5))
+_aceitos, _recusados = ac.adicionar(_cx, 7, _muitos, "SEI-SESAB")
+checar(f"o teto de {ac.TETO} corta", len(ac.listar(_cx, 7)) == ac.TETO,
+       str(len(ac.listar(_cx, 7))))
+checar("e o que não caber volta como recusado, não some",
+       len(_recusados) >= 5, str(len(_recusados)))
+_cx.commit(); _cx.close()
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)
