@@ -107,9 +107,14 @@ não repete esse erro.
 pessoa cola números  ->  POST /acompanhamento/adicionar
                             valida formato, aplica teto, grava estado='novo'
                                         |
+servidor tenta a     ->  para cada um, procura na CARTEIRA da pessoa (secao
+CARTEIRA primeiro           5-bis). Achou? grava a leitura dali, de graca, e o
+                            processo NAO vai para a fila do agente.
+                                        |
 estação pergunta     ->  GET /api/agente/acompanhamento
-                            devolve os 'novo' + os que ainda nao foram lidos HOJE,
-                            todos do dono daquele agente (nunca de outra conta)
+                            devolve so o que a carteira NAO respondeu: os 'novo'
+                            e os nao lidos hoje, todos do dono daquele agente
+                            (nunca de outra conta)
                                         |
 estação lê no SEI    ->  pesquisa_sei.js busca por numero_sei -> link do processo
                             leitura REDUZIDA, ~3 requisições: a página do
@@ -135,6 +140,55 @@ abertas, data/hora do último movimento, contagem de documentos e contagem de
 movimentos. O texto da tela é gerado do delta ("saiu da DGESS e foi recebido na
 CIR-IBOT"), nunca escrito à mão em lugar nenhum.
 
+## 5-bis. Reaproveitar a coleta da mesa
+
+**Se o processo já está numa mesa da pessoa, o módulo não lê nada: usa o que a
+coleta trouxe.** É a mesma economia do poço, aplicada dentro de uma conta só — e
+aqui ela é integral, porque os quatro campos de que o módulo vive já estão
+guardados: `processo_mesa` tem as unidades da árvore, e `processo` tem
+`ultimo_movimento`, `documentos` e `movimentos`.
+
+Efeito no custo: quem acompanha processo da própria carteira não gera **nenhuma**
+requisição ao SEI. Só o que está fora da mesa é lido de fato — que é exatamente o
+caso que o módulo existe para atender.
+
+Três armadilhas que o reaproveitamento abre, e o que fecha cada uma:
+
+**1. A fronteira.** A busca na carteira tem de passar pela MESMA função de recorte
+que o painel usa (`snapshots_de(cx, usuario_id, unidades)`), nunca por um `SELECT`
+direto em `processo`. Um `SELECT` por `id_sei` encontraria a linha de qualquer
+unidade do banco, inclusive de mesa que aquela conta não alcança — e o módulo
+viraria a porta lateral que contorna a fronteira que o resto do sistema defende.
+
+**2. A idade.** A linha da carteira pode ser de dias atrás: na base medida em
+10/09/2026, todas as 12 unidades estavam com coleta de 27/08 — nove dias úteis.
+Gravar isso como "lido hoje" seria mentir com o carimbo. Então cada leitura registra
+`fonte` e `medido_em`:
+
+```sql
+ALTER TABLE acompanhado_leitura ADD COLUMN fonte TEXT;      -- 'carteira' | 'sei'
+ALTER TABLE acompanhado_leitura ADD COLUMN medido_em TEXT;  -- quando o dado foi medido
+```
+
+A tela diz **"pela sua coleta de 27/08"** quando vem da carteira e **"lido agora"**
+quando vem de leitura direta. São procedências diferentes e o produto inteiro trata
+procedência como parte do número, não como rodapé.
+
+**3. A fonte de `aberto_em`.** A linha da carteira carrega `mesas_fonte`, que pode
+ser `'andamento'` quando a árvore não veio. Nesse caso o `aberto_em` reaproveitado é
+o que a medição de 10/09 mostrou errar em 100% dos casos observáveis. Não se relê por
+isso — relê seria trocar um dado velho por uma requisição a cada dia —, mas a tela
+marca `aberto_em` como não confirmado pela árvore, do mesmo modo que a faixa do
+painel marca coleta compartilhada.
+
+**Quando o processo sai da mesa**, ele simplesmente deixa de ser achado na carteira e
+volta para a fila do agente na leitura seguinte. A transição é automática e não
+precisa de aviso nenhum: é o momento em que o módulo começa a fazer o que prometeu.
+
+**O delta não vê a fonte.** "O que mudou" compara os quatro valores e mais nada —
+trocar de `carteira` para `sei` não é mudança no processo e não pode aparecer como se
+fosse.
+
 ## 6. Estados, e nenhum silêncio
 
 | Estado | Quando | O que a tela diz |
@@ -150,8 +204,10 @@ quem nunca filtrou) e ele não se repete aqui.
 
 ## 7. Limites
 
-**Teto de 100 processos por pessoa.** Cada processo custa cerca de 3 requisições ao
-SEI; 100 são ~300, contra as ~5.900 que a coleta de 1.182 processos já faz. O teto
+**Teto de 100 processos por pessoa.** Com o reaproveitamento da carteira (5-bis), só
+o que está fora das mesas custa requisição: cerca de 3 por processo, ou ~300 no pior
+caso de uma lista cheia inteiramente fora da carteira — contra as ~5.900 que a coleta
+de 1.182 processos já faz. O teto
 existe para a lista não virar uma segunda coleta sem ninguém ter decidido isso. Ao
 estourar, a tela recusa com o número atual — não descarta em silêncio.
 
@@ -179,7 +235,15 @@ Suíte nova, `teste_acompanhamento.py`, no padrão de `ambiente_teste.isolar()`:
 7. primeira leitura tem `mudou` nulo, não "mudou tudo";
 8. `sem_acesso` e `nao_encontrado` chegam à tela como texto próprio, não como ficha vazia;
 9. processo acompanhado **não** aparece em `carteira()` nem em `relatorios.carregar()`;
-10. a porta nova aparece no menu para todo papel logado.
+10. a porta nova aparece no menu para todo papel logado;
+11. processo que ESTÁ na carteira é respondido pela carteira e **não** entra na fila
+    do agente — e a leitura sai com `fonte='carteira'` e o `medido_em` do snapshot,
+    não com a hora de agora;
+12. processo na carteira de OUTRA conta, fora do vínculo desta, **não** é
+    reaproveitado: vai para a fila do agente como qualquer processo de fora (o teste
+    que prova que o reaproveitamento não contorna a fronteira);
+13. processo que sai da mesa entre duas leituras volta para a fila do agente sozinho;
+14. mudar de `fonte` entre duas leituras não aparece no delta como mudança.
 
 ## 9. O que fica de fora desta versão
 
