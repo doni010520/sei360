@@ -1306,6 +1306,41 @@ Quando a linha reaproveitada veio do andamento, a tela marca "não confirmado pe
 árvore". Isto NÃO contradiz `project_sei_unidades_abertas` do projeto irmão: lá a
 fonte enganosa é a lista histórica de unidades dos metadados, outra coisa.
 
+**A ficha completa, e as três camadas de disponibilidade.** Acrescentada em
+11/09/2026, depois do módulo pronto, a pedido do usuário: uma lista de números de 25
+dígitos não diz qual processo é qual. A ficha é GUARDADA em `acompanhado_leitura`,
+coluna a coluna, e não relida de `processo` na hora de pintar — a ficha pertence à
+LEITURA, e ir buscar devolveria o marcador de hoje sob um carimbo de 27/08, além de
+transformar `listar()` em uma consulta por item. São 26 colunas, em três grupos:
+
+- **do processo** (valem dentro e fora da mesa): `tipo_processo`, `autuacao`,
+  `gerador_unidade`, `gerador_usuario`, `nivel_acesso`, `hipotese_legal`, `assuntos`,
+  `anexados`, `emails_enviados`, `assinatura_externa`;
+- **da mesa** (não existem fora dela — `linha5`/`linha4` os tiram da LINHA da tabela
+  de Controle de Processos daquela mesa): `marcador`, `marcador_cor`,
+  `atribuido_nome`, `atribuido_login`, `visualizado`, `marco_unidade`, `recebimento`,
+  `recebimento_por`, `envio`, `unidade_envio`, `mesa_indeterminada`, mais `anotacao`,
+  `anotacao_autor` e `anotacao_data`;
+- **texto livre** (`processo_texto` na carteira): `especificacao`, `interessados`, e a
+  anotação acima.
+
+A tela distingue "não tem" de "não existe": `fonte='carteira'` significa que havia
+linha de mesa, e nulo ali é ausência do campo; `fonte='sei'` significa que não havia,
+e a ficha diz isso por escrito em vez de imprimir "Marcador —". É a régua já existente
+(`reaproveitar` só responde o que está numa mesa da conta), não uma segunda coluna a
+manter. E a procedência passou a carimbar a FICHA INTEIRA — "todos os campos desta
+ficha são da sua coleta de 27/08" —, porque o rodapé discreto do cartão falava só das
+unidades enquanto o marcador de nove dias atrás aparecia com cara de agora.
+
+**Decisão de privacidade — do usuário, 11/09/2026, perguntado explicitamente.**
+`especificacao`, `anotacao` e `interessados` vivem em `processo_texto`, separada de
+propósito por ser onde estão os campos que podem citar paciente; o painel só os mostra
+para processo NAS unidades da pessoa, onde o consentimento por unidade vale. Neste
+módulo eles aparecem para processo FORA delas — **mostrar para todos**, por decisão de
+quem responde pelo dado, não por omissão de desenho. **O alcance é só deste módulo:** a
+busca avançada continua excluindo `especificacao` com o motivo escrito dela, e ampliar
+aquilo exigiria decisão própria.
+
 **O que fica por provar em campo.** Nada do lado da estação foi exercido contra o SEI
 real — exige sessão autenticada de uma pessoa, com 2FA, na estação dela. A lista está
 no topo de `painel_sesab/_teste_acompanhar.js`. O item que mais importa: **que o

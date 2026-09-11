@@ -718,6 +718,60 @@ CREATE TABLE IF NOT EXISTS acompanhado_leitura(
   -- que `delta()` se recusa a cometer ao devolver None na primeira leitura — e
   -- quem lê a tela decide com base nisso.
   comparacao TEXT CHECK(comparacao IN ('primeira','sem_avanco','comparada')),
+  -- ======================================================= A FICHA COMPLETA
+  -- Acrescentada em 11/09/2026, a pedido do usuário: "deve aparecer as
+  -- informações completas do processo, como aparece no controle de processo,
+  -- para que possa entender qual é cada processo". Lista de números de 25
+  -- dígitos é ilegível — nenhum deles diz qual processo é qual.
+  --
+  -- A FICHA É GUARDADA, não relida: ela pertence À LEITURA, e cada linha desta
+  -- tabela é um retrato de um instante. Guardar só o ponteiro para `processo`
+  -- faria a ficha de 27/08 aparecer com o marcador de hoje — e a série, que é o
+  -- valor deste módulo, deixaria de descrever o que foi observado. É o mesmo
+  -- motivo de `medido_em` e `fonte` existirem, aplicado ao resto dos campos.
+  --
+  -- OS CAMPOS DO PROCESSO — valem DENTRO e FORA da mesa, e é por isso que a
+  -- leitura no SEI (outra tarefa) consegue preenchê-los para processo de fora.
+  tipo_processo TEXT, autuacao TEXT,
+  gerador_unidade TEXT, gerador_usuario TEXT,
+  nivel_acesso TEXT, hipotese_legal TEXT,
+  assuntos TEXT, anexados TEXT,           -- JSON: listas
+  emails_enviados INTEGER, assinatura_externa INTEGER,
+  -- OS CAMPOS DA MESA. Medido no coletor: `linha5`/`linha4` os tiram da LINHA da
+  -- tabela de Controle de Processos daquela mesa (aria-label no 5.x, tooltip no
+  -- 4.0). Para processo que NÃO está em mesa da conta essa linha não existe —
+  -- não é decisão de desenho, é o que o SEI expõe. Nulo aqui, portanto, tem dois
+  -- significados diferentes, e é `fonte` quem os separa: 'carteira' => havia
+  -- linha de mesa, e nulo é "não tem"; 'sei' => não havia, e nulo é "não
+  -- existe". A tela diz qual dos dois (`acompanhamento.texto_sem_mesa`), no
+  -- espírito de `acomp_lido` e `mesa_indeterminada`.
+  marcador TEXT, marcador_cor TEXT,
+  atribuido_nome TEXT, atribuido_login TEXT,
+  visualizado INTEGER,
+  marco_unidade TEXT, recebimento TEXT, recebimento_por TEXT,
+  envio TEXT, unidade_envio TEXT,
+  -- Copiado da linha da carteira, e não recalculado: lá ele já significa "a
+  -- unidade desta linha não aparece na custódia, então os cinco campos acima são
+  -- 'não sei', nunca 'sem movimentação'". Sem trazê-lo junto, os cinco nulos
+  -- perderiam o motivo no caminho.
+  mesa_indeterminada INTEGER,
+  -- O TEXTO LIVRE. Mora em `processo_texto` na carteira — a tabela que o esquema
+  -- separou por ser "onde estão os campos que podem citar paciente" —, e o
+  -- painel só o mostra para processo NAS unidades da pessoa, onde o
+  -- consentimento por unidade vale. Aqui ele aparece para processo FORA delas.
+  --
+  -- DECISÃO DO USUÁRIO, 11/09/2026, perguntado explicitamente: mostrar para
+  -- todos. Registrada em PLANO_ACOMPANHAMENTO_2026-09-11.md §11.2 e em SPECS.md
+  -- §5-quindecies, com data e autor, porque é o tipo de decisão que alguém vai
+  -- querer reconstituir. O ALCANCE É SÓ DESTE MÓDULO: a busca avançada continua
+  -- excluindo `especificacao` com o motivo escrito dela, e ampliar aquilo
+  -- exigiria uma decisão própria.
+  --
+  -- `anotacao` é da MESA tanto quanto `marcador` (o SEI a guarda por unidade);
+  -- ela está neste grupo por morar em `processo_texto`, não por ser de outra
+  -- camada de disponibilidade.
+  especificacao TEXT, interessados TEXT,  -- interessados: JSON
+  anotacao TEXT, anotacao_autor TEXT, anotacao_data TEXT,
   -- A leitura morre com a lista. `remover()` já apaga as duas, mas a FK é o que
   -- garante isso quando o DELETE vier de outro lugar — do expurgo, de um
   -- ON DELETE CASCADE de `usuarios`, ou da mão de alguém no shell. É o mesmo

@@ -3434,6 +3434,17 @@ def acompanhamento_tela(recusados=None, sem_espaco=None):
         # quando mostrar o ano e de calar em estado de recusa é testável aqui e
         # não é em Jinja.
         x["procedencia"] = acmod.texto_da_procedencia(x)
+        # A PROCEDÊNCIA DA FICHA INTEIRA é outra frase, e não o mesmo rodapé
+        # repetido: com marcador, anotação e dias na unidade dentro do expandir,
+        # "pela sua coleta de 27/08" discreto no pé do cartão deixa a ficha
+        # parecendo de agora — e o marcador de nove dias atrás é exatamente o
+        # campo que alguém lê para decidir o que fazer hoje.
+        x["ficha_de"] = acmod.texto_da_ficha(x)
+        # POR QUE OS CAMPOS DA MESA NÃO ESTÃO NA FICHA — quando não estão. Vazio
+        # quando estão, e aí branco é branco de verdade. Item de fora da carteira
+        # não tem marcador porque a MESA não existe, e imprimir "Marcador —"
+        # sobre ele afirmaria que o processo não tem marcador.
+        x["sem_mesa"] = acmod.texto_sem_mesa(x)
     registrar(cx, u["usuario_id"], "ver_acompanhamento",
               alvo=f"{len(itens)} processo(s)", ip=ip_cliente())
     # ONDE O PRÓXIMO NÚMERO VAI CAIR. A configuração ativa é "a última que a

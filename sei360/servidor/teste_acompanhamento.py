@@ -1198,6 +1198,219 @@ checar("com a coleta de volta, a carteira o tira da conta da estação",
        "019.1111.2026.0000001-11" not in ac.pendentes(_cx, 7, "SEI-SESAB"))
 _cx.commit(); _cx.close()
 
+print("\n7-quinquies. a ficha completa")
+# O PEDIDO, de 11/09/2026: "deve aparecer as informações completas do processo,
+# como aparece no controle de processo, para que possa entender qual é cada
+# processo". Lista de números de 25 dígitos é ilegível — nenhum deles diz qual
+# processo é qual.
+#
+# A DISPONIBILIDADE TEM TRÊS CAMADAS (seção 11.1 do desenho), e só uma era
+# escolha de desenho: (a) o que vale dentro e fora da mesa; (b) o que SÓ existe
+# na LINHA da mesa — marcador, anotação, responsável, visualizado e os cinco de
+# custódia —, que para processo de fora não existe porque o SEI não tem essa
+# linha; (c) o texto livre, que a decisão de privacidade do usuário, de
+# 11/09/2026, perguntado explicitamente, autorizou mostrar NESTE módulo.
+#
+# A COLUNA TEM DE CHEGAR AO BANCO QUE JÁ EXISTE, e é o primeiro bloco por isso:
+# `CREATE TABLE IF NOT EXISTS` não altera tabela existente, e o defeito do `);`
+# dentro de comentário (ver 8-nonies) acabou de custar duas colunas que só
+# nasciam em banco novo. Aqui a checagem é a de verdade: DERRUBA as colunas do
+# banco já criado e manda a migração recriá-las — comparar o DDL com ele mesmo
+# não prova nada sobre o banco.
+_CAMPOS_NOVOS = set(ac.CAMPOS_FICHA)
+_COLS_FICHA_DDL = banco._colunas_do_ddl(banco.DDL).get("acompanhado_leitura", {})
+checar("o DDL declara a ficha inteira no histórico",
+       _CAMPOS_NOVOS <= set(_COLS_FICHA_DDL),
+       str(sorted(_CAMPOS_NOVOS - set(_COLS_FICHA_DDL))))
+_cx = conectar()
+for _col in sorted(_CAMPOS_NOVOS):
+    _cx.execute(f"ALTER TABLE acompanhado_leitura DROP COLUMN {_col}")
+_cx.commit()
+_sem = {r[1] for r in _cx.execute("PRAGMA table_info(acompanhado_leitura)")}
+_cx.close()
+checar("(cena) o banco ficou sem as colunas da ficha",
+       not (_CAMPOS_NOVOS & _sem), str(sorted(_CAMPOS_NOVOS & _sem)))
+banco.migrar()
+_cx = conectar()
+_voltaram = {r[1] for r in _cx.execute("PRAGMA table_info(acompanhado_leitura)")}
+checar("a migração recria a ficha em banco JÁ EXISTENTE, não só em banco novo",
+       _CAMPOS_NOVOS <= _voltaram, str(sorted(_CAMPOS_NOVOS - _voltaram)))
+
+# ---- a carteira responde a ficha inteira, e o texto de gente vem com ela.
+# Texto com `<script>` de propósito: especificação, anotação e interessados são
+# texto que um servidor escreveu, e vão para HTML. O Jinja escapa por padrão — o
+# que este bloco prova é que ninguém pôs `|safe` no caminho.
+_ESPEC = ('Contratação de lavanderia hospitalar <script>alert(1)</script> '
+          + "para o HECC " + "x" * 300)
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,tipo_processo,
+               autuacao,gerador_unidade,gerador_usuario,nivel_acesso,hipotese_legal,
+               assuntos,anexados,emails_enviados,assinatura_externa,
+               marcador,marcador_cor,atribuido_nome,atribuido_login,visualizado,
+               marco_unidade,recebimento,recebimento_por,envio,unidade_envio,
+               mesa_indeterminada,documentos,movimentos,medido_em,mesas_fonte,
+               ultimo_movimento)
+               VALUES(900,'1616','019.1616.2026.0000016-16',
+               'Administrativo: Contratação de Serviços',
+               '12/03/2026','SESAB/DGESS','ana.souza','Restrito',
+               'Informação Pessoal (Art. 31 da Lei 12.527/2011)',
+               '["Contratação de serviços","Saúde"]','["019.9.2026.1-10"]',
+               4,1,'Urgente <b>','vermelho','Ana <Souza>','ana.souza',0,
+               '15/08/2026','15/08/2026 08:10','carlos.lima','20/08/2026 17:02',
+               'SESAB/CIR-IBOT',0,12,31,'2026-08-27T07:45:00-03:00','arvore',
+               '{"dh":"20/08/2026 17:02","un":"SESAB/MINHA","de":"Processo enviado"}')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'1616','SESAB/MINHA',NULL)""")
+_cx.execute("""INSERT INTO processo_texto(snapshot_id,id_sei,especificacao,anotacao,
+               anotacao_autor,anotacao_data,interessados,acompanhamento)
+               VALUES(900,'1616',?,'cobrar a nota <b>hoje</b>','ana.souza',
+               '26/08/2026','["Hospital & Cia","Maria <M> Silva"]',NULL)""",
+            (_ESPEC,))
+# A MESMA armadilha da fronteira, agora com o JOIN de `processo_texto`: o texto
+# do processo de mesa ALHEIA existe no banco, e um JOIN mal escopado o traria.
+_cx.execute("""INSERT INTO processo_texto(snapshot_id,id_sei,especificacao)
+               VALUES(901,'222','SEGREDO DA MESA ALHEIA')""")
+_cx.commit()
+ac.adicionar(_cx, 7, "019.1616.2026.0000016-16", "SEI-SESAB")
+_cx.commit()
+checar("o processo da ficha cheia é respondido pela carteira",
+       ac.reaproveitar(_cx, 7, "SEI-SESAB") == 1)
+_cx.commit()
+
+_fichas = {x["protocolo"]: x for x in ac.listar(_cx, 7)}
+_f = _fichas["019.1616.2026.0000016-16"]
+checar("tipo e especificação chegam à ficha",
+       _f["tipo_processo"] == "Administrativo: Contratação de Serviços"
+       and _f["especificacao"] == _ESPEC, str(_f["tipo_processo"]))
+checar("autuação e quem gerou também",
+       (_f["autuacao"], _f["gerador_unidade"], _f["gerador_usuario"])
+       == ("12/03/2026", "SESAB/DGESS", "ana.souza"), str(_f["autuacao"]))
+checar("nível de acesso com a hipótese legal",
+       _f["nivel_acesso"] == "Restrito" and "12.527" in (_f["hipotese_legal"] or ""),
+       str(_f["nivel_acesso"]))
+# JSON volta como LISTA, como `aberto_em` e `ultimo_movimento` já voltavam: a
+# tela não pode receber string de JSON para iterar caractere por caractere.
+checar("assuntos, interessados e anexados voltam como lista",
+       _f["assuntos"] == ["Contratação de serviços", "Saúde"]
+       and _f["interessados"] == ["Hospital & Cia", "Maria <M> Silva"]
+       and _f["anexados"] == ["019.9.2026.1-10"],
+       f"{_f['assuntos']!r} / {_f['interessados']!r} / {_f['anexados']!r}")
+checar("as contagens do processo chegam",
+       (_f["emails_enviados"], _f["assinatura_externa"]) == (4, 1),
+       f"{_f['emails_enviados']} / {_f['assinatura_externa']}")
+# OS CAMPOS DA MESA: aqui eles EXISTEM, porque o processo está numa mesa desta
+# conta. É a diferença que a ficha tem de dizer.
+checar("o marcador da mesa chega", _f["marcador"] == "Urgente <b>", str(_f["marcador"]))
+checar("a anotação chega com autor e data",
+       (_f["anotacao"], _f["anotacao_autor"], _f["anotacao_data"])
+       == ("cobrar a nota <b>hoje</b>", "ana.souza", "26/08/2026"),
+       str(_f["anotacao"]))
+checar("o responsável atribuído chega", _f["atribuido_nome"] == "Ana <Souza>")
+checar("visualizado chega como 0, e 0 não é ausência", _f["visualizado"] == 0,
+       repr(_f["visualizado"]))
+checar("os cinco de custódia chegam",
+       (_f["marco_unidade"], _f["recebimento_por"], _f["unidade_envio"])
+       == ("15/08/2026", "carlos.lima", "SESAB/CIR-IBOT"), str(_f["marco_unidade"]))
+# A FRONTEIRA NÃO MUDOU. O texto de mesa alheia está no banco e não pode entrar.
+_alheio = _fichas["019.2222.2026.0000002-22"]
+checar("o texto da mesa ALHEIA não entra na ficha",
+       (_alheio.get("especificacao") or "") != "SEGREDO DA MESA ALHEIA",
+       str(_alheio.get("especificacao")))
+
+# UMA CONSULTA, não 101. O comentário de `listar()` se orgulha disso, e a ficha
+# inteira é justamente o que tentaria virar uma consulta por item.
+_sqls = []
+_cx.set_trace_callback(_sqls.append)
+ac.listar(_cx, 7)
+_cx.set_trace_callback(None)
+checar("a ficha inteira continua saindo de UMA consulta",
+       len(_sqls) == 1, f"{len(_sqls)}: {[s[:50] for s in _sqls]}")
+
+# ---- o item DE FORA: a mesa não existe, e isso não é "não tem marcador".
+ac.adicionar(_cx, 7, "019.1515.2026.0000015-15", "SEI-SESAB")
+_cx.commit()
+ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": "019.1515.2026.0000015-15", "aberto_em": ["SESAB/CIR-IBOT"],
+     "aberto_em_fonte": "arvore", "documentos": 7, "movimentos": 9}]})
+_cx.commit()
+_fora = {x["protocolo"]: x for x in ac.listar(_cx, 7)}["019.1515.2026.0000015-15"]
+checar("o item de fora foi lido pelo SEI", _fora["fonte"] == "sei", str(_fora["fonte"]))
+checar("e a ficha dele diz que a MESA não existe, em vez de campo vazio",
+       "NÃO existem" in ac.texto_sem_mesa(_fora), repr(ac.texto_sem_mesa(_fora)))
+checar("já o da carteira não diz isso — ali vazio é vazio mesmo",
+       ac.texto_sem_mesa(_f) == "", repr(ac.texto_sem_mesa(_f)))
+# A PROCEDÊNCIA VALE PARA A FICHA INTEIRA, não só para as unidades: se a linha é
+# da coleta de 27/08, o MARCADOR também é de 27/08.
+checar("a procedência da ficha da carteira é a da medição, e cobre tudo",
+       "27/08" in ac.texto_da_ficha(_f) and "campos" in ac.texto_da_ficha(_f),
+       repr(ac.texto_da_ficha(_f)))
+checar("e a do item lido no SEI diz que foi lido no SEI",
+       "SEI" in ac.texto_da_ficha(_fora), repr(ac.texto_da_ficha(_fora)))
+# Leitura sem data de medição NÃO pode render ficha sem carimbo: a coluna aceita
+# nulo, e ficha sem procedência passa por ficha de agora.
+checar("ficha sem data de medição diz que não sabe de quando é",
+       "de quando" in ac.texto_da_ficha(
+           {"fonte": "carteira", "estado": "lido", "medido_em": None}),
+       repr(ac.texto_da_ficha({"fonte": "carteira", "estado": "lido"})))
+_cx.commit(); _cx.close()
+
+# ---- a tela: linha enxuta, ficha no expandir, e nenhum texto de gente cru.
+_r = _c.get("/acompanhamento")
+_csrf = _csrf_do(_r, _csrf)
+_corpo = _r.data.decode("utf-8", "replace")
+checar("a tela com ficha abre", _r.status_code == 200, str(_r.status_code))
+_cheio = cartao(_corpo, "019.1616.2026.0000016-16")
+_sem_mesa = cartao(_corpo, "019.1515.2026.0000015-15")
+_magro = cartao(_corpo, "019.1111.2026.0000001-11")
+checar("o cartão da ficha cheia existe", bool(_cheio))
+# A LINHA FECHADA tem de dizer QUAL processo é, que era o pedido: a especificação
+# entra nela, não só no expandir. Quem varre 100 números precisa reconhecer o
+# processo sem abrir cada um.
+_i_det = _cheio.find("<details")
+checar("a linha fechada já diz qual processo é",
+       0 < _cheio.find("Contratação de lavanderia") < _i_det,
+       f"{_cheio.find('Contratação de lavanderia')} vs {_i_det}")
+checar("e a ficha completa fica atrás de um expandir na própria linha",
+       "<details" in _cheio and "ficha completa" in _cheio, _cheio[:200])
+checar("a ficha traz os campos do processo",
+       all(t in _cheio for t in ("Autuação", "12/03/2026", "SESAB/DGESS",
+                                 "Nível de acesso", "Restrito")), "faltou campo")
+checar("e os campos da mesa, que para este processo existem",
+       all(t in _cheio for t in ("Marcador", "Anotação", "ana.souza",
+                                 "15/08/2026")), "faltou campo da mesa")
+checar("a procedência carimba a FICHA INTEIRA, não só as unidades",
+       "27/08" in _cheio and "campos desta ficha" in _cheio, _cheio[-400:])
+# TEXTO DE GENTE ESCAPADO. Sem isto a especificação que um servidor escreveu
+# executa no navegador de quem abre a lista.
+checar("texto de gente sai escapado, nunca cru",
+       "<script>alert(1)</script>" not in _cheio
+       and "&lt;script&gt;" in _cheio, "o texto saiu cru")
+checar("o marcador e a anotação também",
+       "Urgente <b>" not in _cheio and "Urgente &lt;b&gt;" in _cheio)
+checar("e o interessado também",
+       "Maria <M> Silva" not in _cheio and "Maria &lt;M&gt; Silva" in _cheio)
+# TEXTO LONGO NÃO ARREBENTA A LINHA: a linha fechada corta em uma linha só (CSS)
+# e guarda o texto inteiro no `title`.
+checar("a especificação longa é cortada na linha fechada, com o todo no title",
+       'class="acomp-titulo"' in _cheio and _ESPEC[:30] in _cheio, _cheio[:400])
+# O ITEM DE FORA: a ficha diz que a mesa não existe, e NÃO imprime um marcador
+# vazio como se o processo não tivesse marcador.
+checar("o cartão de fora da carteira diz que a mesa não existe",
+       "NÃO existem" in _sem_mesa, _sem_mesa[:400])
+checar("e não imprime campo de mesa em branco",
+       "Marcador" not in _sem_mesa, _sem_mesa[:400])
+# O ITEM DA CARTEIRA SEM MARCADOR NEM ANOTAÇÃO: ali o branco é branco de
+# verdade, e a ficha o mostra como ausente — sem a frase do item de fora.
+checar("o cartão da carteira sem marcador mostra o campo vazio, não a frase de fora",
+       "Marcador" in _magro and "NÃO existem" not in _magro, _magro[:400])
+# SEM OS COMENTÁRIOS do próprio template: eles falam de `|safe` para dizer que
+# ele não está aqui, e a checagem crua dava vermelho por causa da explicação.
+import re as _re                                                 # noqa: E402
+_tpl = Path(__file__).resolve().parent / "templates" / "acompanhamento.html"
+_tpl_sem_comentario = _re.sub(r"\{#.*?#\}", "", _tpl.read_text("utf-8"), flags=_re.S)
+checar("nenhum `|safe` no caminho do texto de gente",
+       "safe" not in _tpl_sem_comentario,
+       "alguém desligou o escape do Jinja")
+
 print("\n8. o que a estação pega")
 import hashlib as _hash                                          # noqa: E402
 import json as _json                                             # noqa: E402

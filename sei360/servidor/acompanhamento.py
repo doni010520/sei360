@@ -112,6 +112,80 @@ _SQL_DIGITOS = ("REPLACE(REPLACE(REPLACE(REPLACE(p.protocolo,'.',''),'-',''),"
                 "'/',''),' ','')")
 
 
+# ------------------------------------------------------------------ a ficha
+#
+# A FICHA COMPLETA, campo a campo e em UMA lista só. É a mesma escolha de
+# `relatorios.COLUNAS`, e pelo mesmo motivo: a lista paralela envelhece no
+# primeiro dia em que alguém acrescenta um campo e esquece de atualizar a outra
+# ponta — e aqui há TRÊS pontas (o SELECT da carteira, o INSERT da leitura e o
+# SELECT da tela). Derivadas da mesma tupla, elas não têm como divergir.
+#
+# A ORDEM É A DO INSERT, e por isso `_DE_PROCESSO + _DE_TEXTO`: os nomes são
+# iguais aos das colunas de `acompanhado_leitura` de propósito, para o SELECT da
+# carteira, o INSERT e o SELECT da tela serem a MESMA lista com prefixo
+# diferente.
+#
+# ONDE O CAMPO MORA NA CARTEIRA. `processo` e `processo_texto` são tabelas
+# separadas de propósito — a segunda é "onde estão os campos que podem citar
+# paciente" —, e é essa separação que decide o prefixo de cada um no SELECT.
+_DE_PROCESSO = ("tipo_processo", "autuacao", "gerador_unidade", "gerador_usuario",
+                "nivel_acesso", "hipotese_legal", "assuntos", "anexados",
+                "emails_enviados", "assinatura_externa",
+                "marcador", "marcador_cor", "atribuido_nome", "atribuido_login",
+                "visualizado", "marco_unidade", "recebimento", "recebimento_por",
+                "envio", "unidade_envio", "mesa_indeterminada")
+_DE_TEXTO = ("especificacao", "interessados", "anotacao", "anotacao_autor",
+             "anotacao_data")
+CAMPOS_FICHA = _DE_PROCESSO + _DE_TEXTO
+
+# QUAIS SÓ EXISTEM DENTRO DA MESA — classificação por DISPONIBILIDADE, que não é
+# a mesma coisa que por tabela: `anotacao` mora em `processo_texto` e é da mesa;
+# `nivel_acesso` mora em `processo` e vale em qualquer lugar. Medido no coletor:
+# `linha5`/`linha4` tiram estes campos da LINHA da tabela de Controle de
+# Processos daquela mesa, e para processo fora das mesas da conta essa linha não
+# existe. Esta tupla é o que permite a tela dizer "não existe" em vez de imprimir
+# um marcador em branco — a diferença que o pedido de 11/09/2026 exige.
+CAMPOS_DA_MESA = ("marcador", "marcador_cor", "atribuido_nome", "atribuido_login",
+                  "visualizado", "marco_unidade", "recebimento", "recebimento_por",
+                  "envio", "unidade_envio", "mesa_indeterminada",
+                  "anotacao", "anotacao_autor", "anotacao_data")
+
+# OS QUE SÃO JSON. Entram e saem como LISTA, como `aberto_em` e
+# `ultimo_movimento` já faziam: a tela que recebesse a string crua iteraria
+# caractere por caractere — o mesmo defeito que `_unidades()` documenta ter
+# transformado "SESAB/X" em seis unidades chamadas 'S','E','A','B','/','X'.
+CAMPOS_JSON = ("assuntos", "anexados", "interessados")
+
+# As colunas da LEITURA que a tela lê. Montadas da tupla acima para o SELECT de
+# `listar()` não virar uma segunda lista de nomes escrita à mão.
+_COLUNAS_LEITURA = ("fonte", "medido_em", "aberto_em", "aberto_em_fonte",
+                    "ultimo_movimento", "documentos", "movimentos", "mudou",
+                    "comparacao") + CAMPOS_FICHA
+_SQL_LEITURA = ("l.lido_em AS leitura_em, "
+                + ", ".join(f"l.{c}" for c in _COLUNAS_LEITURA))
+
+
+def _lista_json(bruto):
+    """JSON que era para ser lista -> lista, ou None quando não deu.
+
+    None e `[]` são coisas diferentes aqui, como em `aberto_em`: `[]` é "a coleta
+    leu e não havia assunto nenhum", None é "não observado".
+
+    NÃO LEVANTA. `reaproveitar` roda dentro de `pendentes`, que é o corpo de uma
+    rota do agente — e ali uma exceção é 500, que a estação responde tentando o
+    mesmo envelope para sempre. A carteira grava estes campos com `json.dumps`,
+    então JSON quebrado aqui é improvável; improvável não é impossível, e o preço
+    do engano é a fila do agente parar.
+    """
+    if not bruto:
+        return None
+    try:
+        v = json.loads(bruto)
+    except (TypeError, ValueError):
+        return None
+    return v if isinstance(v, list) else None
+
+
 def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
     """Uma ou várias linhas -> (aceitos, recusados, sem_espaco).
 
@@ -185,11 +259,16 @@ def listar(cx, usuario_id):
 
     Uma consulta, não N+1: a tela mostra lista com ficha, e uma consulta por item
     transformaria 100 processos em 101 idas ao banco a cada abertura.
+
+    CONTINUA SENDO UMA depois da ficha completa, e isso não é acaso: a ficha foi
+    guardada em `acompanhado_leitura`, coluna a coluna, em vez de ser buscada em
+    `processo` na hora de pintar. Ir buscar custaria um JOIN por item — ou, pior,
+    um SELECT por item — e devolveria o marcador de HOJE numa ficha carimbada
+    "pela sua coleta de 27/08". Guardar custa colunas; não guardar custaria as
+    duas coisas que este módulo mais defende, o custo e a procedência.
     """
-    linhas = cx.execute("""
-        SELECT a.*, l.lido_em AS leitura_em, l.fonte, l.medido_em, l.aberto_em,
-               l.aberto_em_fonte, l.ultimo_movimento, l.documentos, l.movimentos,
-               l.mudou, l.comparacao
+    linhas = cx.execute(f"""
+        SELECT a.*, {_SQL_LEITURA}
         FROM acompanhado a
         LEFT JOIN acompanhado_leitura l ON l.id = (
             SELECT id FROM acompanhado_leitura
@@ -203,6 +282,8 @@ def listar(cx, usuario_id):
         d = dict(r)
         for campo in ("aberto_em", "ultimo_movimento", "mudou"):
             d[campo] = json.loads(d[campo]) if d.get(campo) else None
+        for campo in CAMPOS_JSON:
+            d[campo] = _lista_json(d.get(campo))
         saida.append(d)
     return saida
 
@@ -287,34 +368,101 @@ def texto_do_delta(d):
     return " · ".join(partes)
 
 
-def texto_da_procedencia(item, ano=None):
-    """De ONDE e de QUANDO é o dado desta linha, em português. Gerado do dado.
+def _dia_da_medicao(item, ano=None):
+    """(fonte, dia) desta linha, ou (None, None) quando não há o que declarar.
 
-    Fica VAZIO em estado de recusa: o cartão dizia "Nada foi lido" e, embaixo,
+    Extraído de `texto_da_procedencia` quando a ficha completa passou a precisar
+    da MESMA régua com outra frase: duas funções fatiando a data por conta
+    própria são duas regras de ano e de recusa que divergem no primeiro remendo.
+
+    Fica vazio em estado de recusa: o cartão dizia "Nada foi lido" e, embaixo,
     "pela sua coleta de 11/09" — duas afirmações contrárias na mesma linha.
 
     O ANO aparece quando não é o corrente. `11/09` de 2025 renderizava idêntico
     ao de hoje, e com uma coleta parada isso não é hipótese remota: é o mesmo
     cuidado de sempre neste módulo, não deixar dado velho passar por recente.
 
-    Sem data não há procedência a declarar — `medido_em` é coluna que aceita
-    nulo, e fatiar nulo no template derrubava a tela INTEIRA, não a linha.
+    Sem data não há dia a declarar — `medido_em` é coluna que aceita nulo, e
+    fatiar nulo no template derrubava a tela INTEIRA, não a linha. A fonte volta
+    mesmo assim, porque quem chama precisa distinguir "não houve leitura" de
+    "houve leitura e ela não diz de quando é".
     """
     if item.get("estado") in ("sem_acesso", "nao_encontrado"):
-        return ""
+        return None, None
     fonte = item.get("fonte")
     if not fonte:
-        return ""
+        return None, None
     # A carteira fala da MEDIÇÃO (que pode ser de dias atrás); a leitura no SEI
     # fala da LEITURA, porque ali as duas são o mesmo instante.
     quando = item.get("medido_em") if fonte == "carteira" else item.get("leitura_em")
     if not quando or len(quando) < 10:
-        return ""
+        return fonte, None
     dia = f"{quando[8:10]}/{quando[5:7]}"
     if quando[:4] != (ano or agora()[:4]):
         dia += f"/{quando[:4]}"
+    return fonte, dia
+
+
+def texto_da_procedencia(item, ano=None):
+    """De ONDE e de QUANDO é o dado desta linha, em português. Gerado do dado."""
+    fonte, dia = _dia_da_medicao(item, ano)
+    if not dia:
+        return ""
     return (f"pela sua coleta de {dia}" if fonte == "carteira"
             else f"lido no SEI em {dia}")
+
+
+def texto_da_ficha(item, ano=None):
+    """A procedência que vale para a FICHA INTEIRA, e não só para as unidades.
+
+    Existe porque a ficha completa mudou o alcance da afirmação. Enquanto o
+    cartão mostrava unidades e contagens, "pela sua coleta de 27/08" no rodapé
+    bastava. Com marcador, anotação, responsável e dias na unidade dentro dele, a
+    mesma frase discreta deixa a ficha inteira parecendo de agora — e o marcador
+    de nove dias atrás é exatamente o campo que alguém lê para decidir o que
+    fazer hoje. Se a linha é de 27/08, TODO campo dela é de 27/08.
+
+    NUNCA VAZIA quando houve leitura, mesmo sem data: `medido_em` aceita nulo, e
+    ficha sem carimbo nenhum passa por ficha de agora — que é a afirmação falsa
+    que esta função existe para impedir.
+    """
+    fonte, dia = _dia_da_medicao(item, ano)
+    if not fonte:
+        return ""
+    if not dia:
+        return ("esta ficha não diz de quando é: a leitura foi gravada sem data "
+                "de medição")
+    if fonte == "carteira":
+        return (f"todos os campos desta ficha são da sua coleta de {dia} — não do "
+                "momento em que você abriu esta tela")
+    # "TODOS OS CAMPOS FORAM LIDOS" seria falso do lado do SEI: a leitura direta
+    # ainda não traz a ficha inteira (é outra tarefa), e com essa frase os vinte
+    # traços da ficha passariam a afirmar que o SEI não tem aqueles campos. A
+    # frase diz o que a ficha é — uma leitura — e o que o vazio significa nela.
+    return (f"esta ficha é a leitura feita no SEI em {dia}: o que está vazio é o "
+            "que ela não trouxe")
+
+
+def texto_sem_mesa(item):
+    """Por que a ficha não traz os campos da mesa. Vazio quando ela traz.
+
+    O DEFEITO QUE ESTA FUNÇÃO IMPEDE: imprimir "Marcador —" para processo que
+    não está em mesa nenhuma da conta. Ali o traço diria "este processo não tem
+    marcador", e a verdade é outra — o SEI não tem LINHA DE MESA para ele, então
+    marcador, anotação, responsável e dias na unidade não têm onde ser lidos. As
+    duas coisas se parecem na tela e levam a decisões opostas.
+
+    A régua é `fonte`, e não uma coluna nova: `reaproveitar` só responde o que
+    está numa mesa da conta (`snapshots_de`), e o que sobra para a estação ler no
+    SEI é, por construção, o que não está em mesa nenhuma. Uma coluna que
+    repetisse isso seria uma segunda verdade para manter — e a primeira a ficar
+    velha. Ver `CAMPOS_DA_MESA`, no topo.
+    """
+    if item.get("fonte") != "sei":
+        return ""
+    return ("fora das suas mesas: marcador, anotação, responsável e dias na "
+            "unidade NÃO existem para este processo — não estão em branco, é o "
+            "SEI que não tem linha de mesa para ele")
 
 
 def _medicao_avancou(nova, anterior):
@@ -391,16 +539,30 @@ def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte, medido_em
                 "documentos": anterior["documentos"],
                 "movimentos": anterior["movimentos"]}
     d = delta(prev, dados)
-    cx.execute("""INSERT INTO acompanhado_leitura(usuario_id,instancia,protocolo,
+    # A FICHA ENTRA PELA TUPLA, não por uma segunda lista de nomes escrita aqui.
+    # São 26 campos; escrevê-los à mão nas três pontas (colunas, `?` e valores)
+    # é o tipo de lista que fica desalinhada num remendo de sexta e grava o
+    # marcador na coluna do responsável sem erro nenhum.
+    #
+    # `dados.get` E NÃO `dados[...]`: quem lê no SEI ainda não preenche estes
+    # campos (é outra tarefa), e ausência aqui é o caso NORMAL — não erro.
+    ficha = [json.dumps(dados.get(c), ensure_ascii=False) if c in CAMPOS_JSON
+             and dados.get(c) is not None else dados.get(c)
+             for c in CAMPOS_FICHA]
+    colunas = ",".join(CAMPOS_FICHA)
+    marcas = ",".join("?" * len(CAMPOS_FICHA))
+    cx.execute(f"""INSERT INTO acompanhado_leitura(usuario_id,instancia,protocolo,
                   lido_em,fonte,medido_em,aberto_em,aberto_em_fonte,
-                  ultimo_movimento,documentos,movimentos,mudou,comparacao)
-                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-               (usuario_id, instancia, protocolo, agora(), fonte, medido_em,
+                  ultimo_movimento,documentos,movimentos,mudou,comparacao,
+                  {colunas})
+                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,{marcas})""",
+               [usuario_id, instancia, protocolo, agora(), fonte, medido_em,
                 json.dumps(dados.get("aberto_em"), ensure_ascii=False),
                 dados.get("aberto_em_fonte"),
                 json.dumps(dados.get("ultimo_movimento"), ensure_ascii=False),
                 dados.get("documentos"), dados.get("movimentos"),
-                json.dumps(d, ensure_ascii=False) if d else None, comparacao))
+                json.dumps(d, ensure_ascii=False) if d else None, comparacao]
+               + ficha)
     # `tentativas=0`: CHEGOU LEITURA, de qualquer fonte. O contador existe para
     # medir entregas SEM resposta, e esta é a resposta. Zerar aqui cobre as duas
     # fontes de uma vez — a carteira (`reaproveitar`) e o SEI (`receber`) —
@@ -476,9 +638,27 @@ def reaproveitar(cx, usuario_id, instancia):
     linhas = cx.execute(f"""
         SELECT p.protocolo, p.id_sei, p.ultimo_movimento, p.documentos, p.movimentos,
                p.medido_em, p.mesas_fonte, s.coletado_em,
+               {", ".join(f"p.{c}" for c in _DE_PROCESSO)},
+               {", ".join(f"t.{c}" for c in _DE_TEXTO)},
                (SELECT GROUP_CONCAT(m.mesa, char(31)) FROM processo_mesa m
                  WHERE m.snapshot_id=p.snapshot_id AND m.id_sei=p.id_sei) AS mesas
         FROM processo p JOIN snapshot s ON s.id=p.snapshot_id
+        -- O TEXTO LIVRE ENTRA POR JOIN NOS MESMOS `snapshot_id`, nunca por uma
+        -- consulta própria por protocolo. Um `SELECT ... FROM processo_texto
+        -- WHERE id_sei=?` acharia o texto de QUALQUER unidade do banco,
+        -- inclusive de mesa que esta conta não alcança — e seria a porta lateral
+        -- que a docstring desta função promete não abrir, aberta pelo campo
+        -- justamente mais sensível. Aqui o recorte é o mesmo `p.snapshot_id IN
+        -- (...)`, que já saiu de `snapshots_de`; a junção é pela chave primária
+        -- de `processo_texto`, e não alarga nada.
+        --
+        -- `relatorios.py` TIROU este JOIN com motivo medido (11,8 ms contra 3,6,
+        -- e 137 KB de texto livre atravessando o processo à toa) — e o motivo
+        -- não vale aqui: lá são 1.165 linhas por requisição e nenhuma tela lê o
+        -- texto; aqui são as linhas dos <=100 protocolos da lista, e o texto É o
+        -- produto do pedido (é ele que responde "qual é esse processo").
+        LEFT JOIN processo_texto t
+               ON t.snapshot_id=p.snapshot_id AND t.id_sei=p.id_sei
         WHERE p.snapshot_id IN ({marc_s})
           -- POR DÍGITOS nas duas pontas, não pelo texto. A carteira guarda a
           -- forma pontuada que o SEI imprime, e a lista guarda a forma que a
@@ -562,6 +742,14 @@ def reaproveitar(cx, usuario_id, instancia):
             "ultimo_movimento": json.loads(r["ultimo_movimento"] or "null"),
             "documentos": r["documentos"], "movimentos": r["movimentos"],
         }
+        # A FICHA SAI DA MESMA LINHA que deu as mesas, a contagem e a régua. É a
+        # regra "um momento, um quadro" do comentário acima, e ela vale para o
+        # marcador tanto quanto para as unidades: juntar o marcador de uma linha
+        # com a contagem de outra produz um retrato que não existiu em momento
+        # nenhum — e a tela o carimba com UMA data de medição.
+        for campo in CAMPOS_FICHA:
+            dados[campo] = (_lista_json(r[campo]) if campo in CAMPOS_JSON
+                            else r[campo])
         # O PROTOCOLO DA LISTA, nunca o da carteira. A chave de `acompanhado` é a
         # forma que a pessoa colou; gravar a leitura sob a forma pontuada da
         # carteira faria a FK composta recusar — e com razão, porque não existe
@@ -752,6 +940,16 @@ def _quadro_relatado(leitura):
     Campo deformado vira None, e a leitura é gravada com o que sobrou. Recusar a
     leitura inteira por causa de um campo custaria a observação toda — e ausência,
     aqui, já tem significado próprio e honesto: não observado.
+
+    A FICHA COMPLETA (`CAMPOS_FICHA`) NÃO ENTRA AQUI AINDA, e a ausência é o
+    contrato, não esquecimento: quem lê no SEI é a estação, e a leitura dos
+    campos novos é tarefa própria — enquanto ela não chega, item de fora da
+    carteira grava a ficha vazia, o que é a verdade. É AQUI que ela se pluga:
+    cada campo novo ganha uma linha com o conferidor do tipo dele, como as cinco
+    abaixo. Não vale espalhar `leitura` no dicionário — a lista é explícita de
+    propósito, para a estação não conseguir gravar o que não tinha por que mandar
+    (os cinco de custódia derivados da mesa ERRADA, por exemplo, que fora da mesa
+    não têm referente nenhum).
     """
     mov = leitura.get("ultimo_movimento")
     return {
