@@ -1867,6 +1867,112 @@ checar("mas a falha é dita em voz alta, não engolida",
 
 _ag.chamar = _chamar_real
 
+print("\n9-quater. o acompanhamento NÃO pode impedir a coleta do dia")
+# OS DOIS DEFEITOS são a mesma família, e os dois foram herdados de `buscar()` —
+# o que os tornou perigosos foi o acompanhamento ter ficado na FRENTE da coleta,
+# rodando sozinho a cada 30 min. Em `buscar()` isso só acontecia depois de alguém
+# clicar em "pesquisar".
+#
+#   C1 — `json.loads` da linha-marca levantava `ValueError` e a exceção subia por
+#        `rodar()`: a coleta nunca chegava a ser pedida. O gatilho é real —
+#        stdout e stderr fundidos, sem buffer, e envelope de dezenas de KB: uma
+#        linha do Chromium no meio do `ACOMP_OK` basta.
+#   C2 — o teto de relógio só é avaliado quando CHEGA uma linha; filho que
+#        emudece nunca é morto. Com o acompanhamento na frente, isso segurava a
+#        Trava e a coleta jamais era pedida.
+#
+# A ASSERÇÃO QUE IMPORTA, nos dois cenários: a coleta é pedida mesmo assim.
+_ag.TRAVA = _tmp / "agente.lock"
+_ag.cfg_ler = lambda: {"servidor": "http://x", "token": "t"}
+
+
+class _Args:
+    simular = False
+    atender = False
+    ignorar_teto = True          # a suíte pode rodar fora da faixa 5h-22h
+    minutos = 1
+
+
+def _servidor_do_ciclo(coletar=False):
+    """Um servidor que oferece acompanhamento e NÃO oferece coleta.
+
+    "Sem coleta devida" é o caminho mais curto até o fim do ciclo — e era
+    justamente um dos dois `return 0` no meio de `rodar()` que faziam o
+    acompanhamento, quando estava na frente, ficar antes de tudo.
+    """
+    def _f(cfg, caminho, corpo=None, metodo=None, timeout=120):
+        _visto.setdefault("chamadas", []).append((caminho, metodo, corpo))
+        if caminho == "/api/agente/busca":
+            return 200, {"buscar": False}
+        if caminho == "/api/agente/acompanhamento" and metodo == "GET":
+            return 200, _TAREFA
+        if caminho == "/api/agente/tarefa":
+            return 200, {"coletar": coletar, "motivo": "fora da janela"}
+        return 200, {"gravadas": 0, "ignoradas": 0}
+    return _f
+
+
+def _caminhos():
+    return [c[0] for c in _visto.get("chamadas", [])]
+
+
+# C1 — a linha-marca chega truncada no meio do JSON.
+_visto["chamadas"] = []
+_ag.chamar = _servidor_do_ciclo()
+_coletor_falso(
+    "import sys\n"
+    "sys.stdin.readline()\n"
+    "print('ACOMP_OK {\\\"instancia\\\": \\\"SEI-SESAB\\\", \\\"leitur')\n")
+checar("marca ilegível não levanta: o ajudante devolve None",
+       _ag._rodar_coletor({}, "--modo-falso", "ACOMP_OK ", 30) is None)
+_visto["chamadas"] = []
+_log = io.StringIO()
+with contextlib.redirect_stdout(_log):
+    _saiu = _ag.rodar(_Args())
+checar("o ciclo termina em vez de estourar", _saiu == 0, str(_saiu))
+checar("C1: A COLETA É PEDIDA mesmo com o envelope corrompido",
+       "/api/agente/tarefa" in _caminhos(), str(_caminhos()))
+checar("e a linha ilegível fica dita no log, não engolida",
+       "ilegível" in _log.getvalue(), _log.getvalue()[-200:])
+
+# C2 — o filho imprime o envelope e PENDURA (é o `ctx.close()` que não volta).
+#      O laço só olha o relógio quando chega linha, então ele espera o EOF.
+_visto["chamadas"] = []
+_ag.chamar = _servidor_do_ciclo()
+_coletor_falso(
+    "import json, sys, time\n"
+    "sys.stdin.readline()\n"
+    "print('ACOMP_OK ' + json.dumps({'instancia': 'SEI-SESAB', 'leituras': []}))\n"
+    "sys.stdout.flush()\n"
+    "time.sleep(2)\n")                # o pendurado de verdade nunca volta
+_t0 = time.time()
+with contextlib.redirect_stdout(io.StringIO()):
+    _ag.rodar(_Args())
+_gasto = time.time() - _t0
+_cam = _caminhos()
+checar("o filho pendurado de fato segurou o agente", _gasto >= 1.5, f"{_gasto:.1f}s")
+checar("C2: a coleta foi PEDIDA antes de o acompanhamento pendurar",
+       "/api/agente/tarefa" in _cam
+       and _cam.index("/api/agente/tarefa") < _cam.index("/api/agente/acompanhamento"),
+       str(_cam))
+checar("e o acompanhamento ainda rodou — atrás, não em vez de",
+       "/api/agente/acompanhamento" in _cam, str(_cam))
+
+# E uma exceção qualquer do acompanhamento não troca o código de saída da coleta
+# que já rodou por um traceback.
+_visto["chamadas"] = []
+_ag.chamar = _servidor_do_ciclo()
+_ag_acomp_real = _ag.acompanhar
+_ag.acompanhar = lambda cfg: (_ for _ in ()).throw(RuntimeError("disco cheio"))
+_log = io.StringIO()
+with contextlib.redirect_stdout(_log):
+    _saiu = _ag.rodar(_Args())
+_ag.acompanhar = _ag_acomp_real
+checar("acompanhamento que explode não derruba o ciclo", _saiu == 0, str(_saiu))
+checar("e a explosão fica registrada, dizendo que a coleta não foi afetada",
+       "não foi afetada" in _log.getvalue(), _log.getvalue()[-220:])
+
+_ag.chamar = _chamar_real
 import shutil                                                    # noqa: E402
 shutil.rmtree(_tmp, ignore_errors=True)
 

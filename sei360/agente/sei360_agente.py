@@ -258,7 +258,23 @@ def _rodar_coletor(pedido, modo, marca, teto):
         for linha in proc.stdout:
             linha = linha.rstrip()
             if linha.startswith(marca):
-                envelope = json.loads(linha[len(marca):])
+                # LINHA DE MARCA ILEGÍVEL NÃO DERRUBA O CICLO. `JSONDecodeError`
+                # é `ValueError`, o `except` abaixo só pega timeout, e a exceção
+                # subia por `rodar()` — a coleta do dia nunca chegava a ser
+                # pedida. E o gatilho é real: `stderr=subprocess.STDOUT` funde os
+                # dois fluxos, `PYTHONUNBUFFERED=1` manda cada escrita direto ao
+                # pipe, e escrita de dezenas de KB (um envelope de 100 leituras)
+                # não é atômica — uma linha de stderr do Chromium caindo no meio
+                # do envelope produz exatamente isto.
+                #
+                # Descartar é o certo: envelope pela metade não é envelope, e
+                # `None` já significa "a estação não devolveu resultado", que é a
+                # verdade. Quem chama trata isso, e o item continua pendente.
+                try:
+                    envelope = json.loads(linha[len(marca):])
+                except ValueError:
+                    print(f"     (linha {marca.strip()} ilegível — descartada, "
+                          f"{len(linha)} bytes)")
             else:
                 print("   ", linha)
             if time.time() - inicio > teto:
@@ -305,10 +321,10 @@ def buscar(cfg):
 def acompanhar(cfg):
     """Os processos acompanhados fora da carteira, se houver algum.
 
-    VEM DEPOIS DE `buscar` E ANTES DA COLETA, pelo mesmo argumento que o
-    comentário de `buscar()` faz: a lista é curta e alguém pode estar olhando
-    para ela. Uma coleta de 13 minutos na frente transformaria "acompanhar" em
-    "acompanhar amanhã".
+    VEM POR ÚLTIMO NO CICLO, atrás da coleta — e o porquê está em `rodar()`, que
+    é quem decide a ordem. Em resumo: estar na frente não comprava latência
+    nenhuma (quem marca o compasso é o agendador, de 30 em 30 min, e não existe
+    plantão de acompanhamento) e arriscava a janela da coleta diária.
 
     O QUE DESCE é só o que a estação precisa para procurar no SEI: a instalação e
     os números. A nota que a pessoa escreveu fica no servidor — é texto de gente,
@@ -374,23 +390,50 @@ def rodar(args):
         if buscar(cfg):
             return 0
 
-    # O ACOMPANHAMENTO VEM EM SEGUIDA, e antes da coleta, pelo mesmo argumento:
-    # lista curta, e alguém pode estar olhando. Uma coleta de 13 minutos na
-    # frente transformaria "acompanhar" em "acompanhar amanhã".
+    code = coletar(cfg, args)
+
+    # O ACOMPANHAMENTO VEM POR ÚLTIMO, E ISSO É O CONSERTO DE UM DEFEITO.
     #
-    # NÃO devolve 0 como a busca: ler três processos leva segundos, e sair aqui
-    # empurraria a coleta do dia para a batida seguinte do agendador toda vez que
-    # alguém colasse um número. A busca sai porque quem pesquisou está na tela
-    # esperando a próxima pergunta ao servidor; aqui não há ninguém esperando uma
-    # segunda volta.
+    # Ele esteve na frente da coleta, pelo argumento que `buscar()` faz: lista
+    # curta, alguém pode estar olhando. O argumento não se sustenta aqui, e a
+    # medição desmontou: não existe plantão de acompanhamento (`atender()` só
+    # chama `buscar`), a latência é de 0 a 30 min de qualquer jeito porque quem
+    # marca o compasso é o agendador, e há trava de uma leitura por dia por item.
+    # A posição na frente comprava ZERO latência e arriscava a janela da coleta.
+    #
+    # O QUE ELA ARRISCAVA, medido: o laço do coletor só olha o relógio de parede
+    # quando chega uma linha, então filho que emudece — um `ctx.close()` pendurado
+    # depois de já ter impresso `ACOMP_OK`, por exemplo — nunca é morto. Com o
+    # acompanhamento na frente, isso deixava o agente esperando EOF com a Trava na
+    # mão e a coleta diária jamais pedida; a batida seguinte do agendador via o
+    # PID vivo e ia embora. A coleta parava até alguém reparar.
+    #
+    # Aqui atrás, o pior caso é o acompanhamento do dia se perder. A coleta já foi.
+    #
+    # `except Exception` de propósito, e não uma lista de tipos: o que este bloco
+    # protege não é o acompanhamento, é o CÓDIGO DE SAÍDA da coleta que já rodou.
+    # Qualquer exceção daqui que subisse trocaria "coleta ok" por traceback.
     #
     # A TRAVA É OUTRA, e de propósito: duas execuções sobre o mesmo perfil do
     # Chromium o corrompem, então cada etapa toma e devolve a trava em vez de
     # segurá-la pelo ciclo inteiro — é o que deixa um plantão de busca entrar
     # entre elas.
     with Trava():
-        acompanhar(cfg)
+        try:
+            acompanhar(cfg)
+        except Exception as e:                                    # noqa: BLE001
+            print(f"acompanhamento falhou ({type(e).__name__}: {str(e)[:120]}) — "
+                  "os itens continuam pendentes; a coleta acima não foi afetada")
+    return code
 
+
+def coletar(cfg, args):
+    """A coleta do dia, se houver janela devida. Devolve o código de saída.
+
+    SAIU DE `rodar()` para o acompanhamento poder rodar DEPOIS dela em todos os
+    caminhos — inclusive nos dois que saem cedo ("servidor não respondeu" e "sem
+    coleta devida"), que antes eram `return 0` no meio do ciclo.
+    """
     s, tarefa = chamar(cfg, "/api/agente/tarefa", metodo="GET")
     if s != 200:
         print(f"servidor não respondeu ({s}): {tarefa.get('erro','')}")
