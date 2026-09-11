@@ -58,6 +58,38 @@ def normalizar(texto):
     return t
 
 
+def digitos(protocolo):
+    """Só os dígitos. É a IDENTIDADE do processo; a pontuação é apresentação.
+
+    O SEI 4.0 da FESF e o 5.0.4 da SESAB imprimem o mesmo número com pontuação
+    diferente, e quem cola cola o que viu. Comparar o texto puro fazia duas
+    coisas erradas ao mesmo tempo: o número colado sem pontuação nunca casava
+    com a carteira (que guarda a forma pontuada), caindo para sempre no caminho
+    caro do SEI por um dado que já estava no banco; e a mesma pessoa colando o
+    mesmo processo em duas formas ganhava duas linhas na lista.
+
+    O `protocolo` continua GUARDADO como a pessoa colou — é a forma que ela
+    reconhece na tela, e é a chave de `acompanhado`. Isto aqui é só a régua de
+    comparação.
+    """
+    return "".join(c for c in (protocolo or "") if c.isdigit())
+
+
+# O espelho de `digitos()` em SQL, que é o que permite casar a lista com a
+# carteira sem coluna nova nem mudança de esquema. Remove a pontuação que
+# `_SO_NUMERO` aceita, mais o espaço — que a pessoa não consegue colar (o regex
+# recusa), mas que pode vir no texto que o SEI imprime.
+#
+# NÃO HÁ ÍNDICE NISSO, e não precisa: `p.snapshot_id IN (...)` já restringe pelo
+# PREFIXO da chave primária de `processo` — `(snapshot_id, id_sei)` —, então a
+# expressão só é avaliada sobre as linhas da carteira daquela pessoa, ordem de
+# 1.200 por coleta, nunca sobre a tabela inteira. Índice em expressão aqui seria
+# custo de escrita em toda ingestão para economizar microssegundo em consulta que
+# já está restrita.
+_SQL_DIGITOS = ("REPLACE(REPLACE(REPLACE(REPLACE(p.protocolo,'.',''),'-',''),"
+                "'/',''),' ','')")
+
+
 def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
     """Uma ou várias linhas -> (aceitos, recusados).
 
@@ -74,7 +106,11 @@ def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
     # Sem `IN (...)` em lotes porque aqui o universo já é o da PESSOA inteira,
     # sempre <= TETO — não uma lista de candidatos que pode passar dos limites
     # de variável por statement do SQLite.
-    ja_seguidos = {r["protocolo"] for r in cx.execute(
+    # O CONJUNTO É DE DÍGITOS, não do texto do protocolo. A pontuação é
+    # apresentação: colar `019.5120.2026.0161681-50` e depois o mesmo número
+    # corrido é seguir o MESMO processo duas vezes, e a chave primária — que é o
+    # texto — não tem como impedir. Quem impede é esta comparação.
+    ja_seguidos = {digitos(r["protocolo"]) for r in cx.execute(
         "SELECT protocolo FROM acompanhado WHERE usuario_id=? AND instancia=?",
         (usuario_id, instancia))}
     aceitos, recusados = [], []
@@ -85,7 +121,7 @@ def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
         if not p:
             recusados.append(linha.strip())
             continue
-        if p in ja_seguidos:
+        if digitos(p) in ja_seguidos:
             continue
         if quantos >= TETO:
             recusados.append(linha.strip())
@@ -94,7 +130,7 @@ def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
                       nota,adicionado_em,estado) VALUES(?,?,?,?,?,?,'novo')""",
                    (usuario_id, instancia, p, origem, nota, agora()))
         quantos += 1
-        ja_seguidos.add(p)
+        ja_seguidos.add(digitos(p))
         aceitos.append(p)
     return aceitos, recusados
 
@@ -259,6 +295,14 @@ def reaproveitar(cx, usuario_id, instancia):
         (usuario_id, instancia, agora()))]
     if not pendentes:
         return 0
+    # DÍGITO -> as formas em que a pessoa colou aquele número. É por ele que a
+    # lista casa com a carteira, e é LISTA de formas porque a chave primária de
+    # `acompanhado` é o texto: linha anterior a esta regra, ou inserida fora de
+    # `adicionar`, pode ter as duas formas do mesmo processo. Quando tem, as duas
+    # são respondidas — ficar com uma deixaria a outra 'novo' para sempre.
+    por_digitos = {}
+    for p in pendentes:
+        por_digitos.setdefault(digitos(p), []).append(p)
     unidades = unidades_do(usuario_id)
     if not unidades:
         return 0
@@ -278,21 +322,28 @@ def reaproveitar(cx, usuario_id, instancia):
     if not ids:
         return 0
     marc_s = ",".join("?" * len(ids))
-    marc_p = ",".join("?" * len(pendentes))
+    marc_p = ",".join("?" * len(por_digitos))
     linhas = cx.execute(f"""
         SELECT p.protocolo, p.id_sei, p.ultimo_movimento, p.documentos, p.movimentos,
                p.medido_em, p.mesas_fonte, s.coletado_em,
                (SELECT GROUP_CONCAT(m.mesa, char(31)) FROM processo_mesa m
                  WHERE m.snapshot_id=p.snapshot_id AND m.id_sei=p.id_sei) AS mesas
         FROM processo p JOIN snapshot s ON s.id=p.snapshot_id
-        WHERE p.snapshot_id IN ({marc_s}) AND p.protocolo IN ({marc_p})
+        WHERE p.snapshot_id IN ({marc_s})
+          -- POR DÍGITOS nas duas pontas, não pelo texto. A carteira guarda a
+          -- forma pontuada que o SEI imprime, e a lista guarda a forma que a
+          -- pessoa colou; casar texto com texto deixava o número corrido
+          -- eternamente no caminho caro do SEI por um dado que já estava aqui.
+          -- `_SQL_DIGITOS` é o espelho de `digitos()`, e o comentário dele diz
+          -- por que não há índice nisso.
+          AND {_SQL_DIGITOS} IN ({marc_p})
         -- DA MEDIÇÃO MAIS FRESCA PARA A MAIS VELHA, porque o mesmo processo pode
         -- vir de duas mesas desta conta, com uma coleta de cada dia. A régua é
         -- `medido_em or coletado_em`, a MESMA com que o painel e
         -- `relatorios.carregar` medem cada linha; ordenar pela hora do snapshot
         -- daria a linha de detalhe velho de uma coleta de lista nova.
         ORDER BY COALESCE(p.medido_em, s.coletado_em) DESC, s.id DESC""",
-        ids + pendentes).fetchall()
+        ids + list(por_digitos)).fetchall()
     # UMA LEITURA POR PROTOCOLO, ainda que o processo esteja em DUAS mesas desta
     # conta — situação corrente, a mesma que `relatorios.carregar` trata na dedup.
     # Uma leitura por linha gravaria duas na mesma passada, e a segunda mediria o
@@ -306,9 +357,12 @@ def reaproveitar(cx, usuario_id, instancia):
     # primeiro é exatamente o falso "mudou" que `delta` existe para não inventar.
     juntos = {}
     for r in linhas:
-        d = juntos.get(r["protocolo"])
+        # A CHAVE É O DÍGITO, não o texto: é ele que liga a linha da carteira
+        # (pontuada, como o SEI imprime) ao item da lista (como a pessoa colou).
+        chave = digitos(r["protocolo"])
+        d = juntos.get(chave)
         if d is None:
-            d = juntos[r["protocolo"]] = {
+            d = juntos[chave] = {
                 "mesas": set(), "fontes": set(),
                 "ultimo_movimento": json.loads(r["ultimo_movimento"] or "null"),
                 "documentos": r["documentos"], "movimentos": r["movimentos"],
@@ -323,7 +377,7 @@ def reaproveitar(cx, usuario_id, instancia):
             # unidade nenhuma não tem procedência a declarar sobre a lista.
             d["fontes"].add(r["mesas_fonte"] or "andamento")
     feitos = 0
-    for protocolo, d in juntos.items():
+    for chave, d in juntos.items():
         # `mesas_fonte` vem da coleta e pode valer 'andamento', que a medição de
         # 10/09/2026 mostrou errar em 100% dos 1.278 casos observáveis. Não se
         # relê por isso — seria uma requisição por dia para trocar dado velho por
@@ -352,14 +406,21 @@ def reaproveitar(cx, usuario_id, instancia):
             "ultimo_movimento": d["ultimo_movimento"],
             "documentos": d["documentos"], "movimentos": d["movimentos"],
         }
-        gravar_leitura(cx, usuario_id, instancia, protocolo, dados,
-                       fonte="carteira",
-                       # A DATA DA MEDIÇÃO, nunca `agora()`: em 10/09/2026 as 12
-                       # unidades estavam com coleta de nove dias úteis antes, e
-                       # carimbar "lido hoje" sobre dado de 27/08 é mentir na
-                       # procedência. `coletado_em` é a reserva porque
-                       # `medido_em` é nulo em linha de coleta anterior à régua.
-                       medido_em=d["medido_em"],
-                       id_sei=d["id_sei"])
-        feitos += 1
+        # O PROTOCOLO DA LISTA, nunca o da carteira. A chave de `acompanhado` é a
+        # forma que a pessoa colou; gravar a leitura sob a forma pontuada da
+        # carteira faria a FK composta recusar — e com razão, porque não existe
+        # leitura sem a linha da lista. São VÁRIAS formas só quando a lista já
+        # tinha as duas (ver `por_digitos`); no caso normal, uma.
+        for protocolo in por_digitos.get(chave, ()):
+            gravar_leitura(cx, usuario_id, instancia, protocolo, dados,
+                           fonte="carteira",
+                           # A DATA DA MEDIÇÃO, nunca `agora()`: em 10/09/2026 as
+                           # 12 unidades estavam com coleta de nove dias úteis
+                           # antes, e carimbar "lido hoje" sobre dado de 27/08 é
+                           # mentir na procedência. `coletado_em` é a reserva
+                           # porque `medido_em` é nulo em linha de coleta
+                           # anterior à régua.
+                           medido_em=d["medido_em"],
+                           id_sei=d["id_sei"])
+            feitos += 1
     return feitos

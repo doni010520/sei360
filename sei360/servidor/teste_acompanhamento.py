@@ -120,6 +120,13 @@ checar("ponto final colado é recusado, não aceito com o ponto dentro",
 checar("e o mesmo número sem o ponto continua passando",
        ac.normalizar("019.5120.2026.0161681-50") == "019.5120.2026.0161681-50")
 
+# A PONTUAÇÃO É APRESENTAÇÃO, A IDENTIDADE É O DÍGITO. Os dois SEIs imprimem o
+# mesmo número com pontuação diferente, e quem cola, cola o que viu.
+checar("dígitos são a identidade: pontuação diferente, mesmo processo",
+       ac.digitos("019.1111.2026.0000001-11")
+       == ac.digitos("01911112026000000111") == "01911112026000000111")
+checar("a barra também é pontuação", ac.digitos("019/2403-24") == "019240324")
+
 print("\n3. adicionar, listar, remover")
 _cx = conectar()
 _cx.execute("INSERT INTO usuarios(id,email,papel,criado_em,ativo) "
@@ -140,6 +147,13 @@ checar("e a inválida volta com o texto que a pessoa colou",
 
 _aceitos, _ = ac.adicionar(_cx, 7, "019.5120.2026.0161681-50", "SEI-SESAB")
 checar("repetido não duplica nem estoura", _aceitos == [], str(_aceitos))
+
+# O MESMO processo em forma diferente é o mesmo processo. A chave primária é o
+# texto do protocolo e não tem como impedir as duas formas de coexistirem; quem
+# impede é `adicionar`, comparando os dígitos.
+_aceitos, _ = ac.adicionar(_cx, 7, ac.digitos("019.9393.2026.0163871-16"), "SEI-SESAB")
+checar("o mesmo número colado sem pontuação não duplica a linha",
+       _aceitos == [], str(_aceitos))
 
 _lista = ac.listar(_cx, 7)
 checar(f"a lista tem os três ({len(_lista)})", len(_lista) == 3)
@@ -366,6 +380,80 @@ _na_fesf = [x for x in ac.listar(_cx, 7)
             and x["instancia"] == "SEI-FESF"][0]
 checar("com a mesa da FESF, não a da SESAB",
        _na_fesf["aberto_em"] == ["FESF/GABINETE"], str(_na_fesf["aberto_em"]))
+_cx.commit(); _cx.close()
+
+print("\n5-quater. colado sem pontuação, respondido pela carteira")
+_cx = conectar()
+# A carteira guarda a forma PONTUADA que o SEI imprime; a pessoa colou o número
+# corrido, que é o que ela tinha na mão. Casar por texto puro deixava este item
+# para sempre no caminho caro do SEI — três requisições por dia — por um dado que
+# já estava no banco, medido na coleta da própria mesa dela.
+#
+# ESTA CENA TEM SÓ A FORMA CORRIDA NA LISTA, de propósito: com a forma pontuada
+# também lá, a linha da carteira casaria pelo texto e a comparação por dígitos
+# passaria sem ser exercida — foi o que aconteceu na primeira versão deste teste.
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(900,'666','019.6666.2026.0000006-66',
+               2,3,'2026-08-27T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'666','SESAB/MINHA',NULL)""")
+_cx.commit()
+
+_corrido = "01966662026000000666"
+checar("é o mesmo número da carteira, sem a pontuação",
+       ac.digitos("019.6666.2026.0000006-66") == _corrido, _corrido)
+_aceitos, _ = ac.adicionar(_cx, 7, _corrido, "SEI-SESAB")
+checar("o número corrido entra na lista", _aceitos == [_corrido], str(_aceitos))
+
+_n = ac.reaproveitar(_cx, 7, "SEI-SESAB")
+_cx.commit()
+checar("a carteira responde, apesar de guardar a forma pontuada", _n == 1, str(_n))
+
+_itens = {x["protocolo"]: x for x in ac.listar(_cx, 7)}
+_sem_ponto = _itens[_corrido]
+checar("o corrido é respondido pela CARTEIRA, não pelo caminho do SEI",
+       _sem_ponto["fonte"] == "carteira" and _sem_ponto["estado"] == "lido",
+       f"{_sem_ponto['fonte']} / {_sem_ponto['estado']}")
+checar("com a mesa e as contagens da linha pontuada",
+       _sem_ponto["aberto_em"] == ["SESAB/MINHA"]
+       and (_sem_ponto["documentos"], _sem_ponto["movimentos"]) == (2, 3),
+       f"{_sem_ponto['aberto_em']} / {_sem_ponto['documentos']}")
+# O protocolo guardado continua sendo o que a pessoa colou: é a forma que ela
+# reconhece na tela, e é a chave de `acompanhado` — gravar a leitura sob a forma
+# da CARTEIRA faria a FK composta recusar, e com razão.
+checar("e a lista segue guardando a forma que a pessoa colou",
+       _sem_ponto["protocolo"] == _corrido, str(_sem_ponto["protocolo"]))
+checar("o id_sei da carteira chega à linha da lista",
+       _sem_ponto["id_sei"] == "666", str(_sem_ponto["id_sei"]))
+_cx.commit(); _cx.close()
+
+print("\n5-quinquies. as duas formas na mesma lista")
+_cx = conectar()
+# `adicionar` impede as duas formas de entrarem, mas a chave primária é o TEXTO:
+# linha anterior a esta regra, ou inserida fora de `adicionar` (expurgo, shell,
+# semeadura), ainda consegue coexistir com a outra forma. Quando coexistem, as
+# DUAS são respondidas — ficar com uma deixaria a outra 'novo' para sempre, que é
+# justamente o silêncio que este módulo existe para não produzir.
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,movimentos,
+               medido_em,mesas_fonte) VALUES(900,'777','019.7777.2026.0000007-77',
+               4,4,'2026-08-27T07:45:00-03:00','arvore')""")
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'777','SESAB/MINHA',NULL)""")
+_pontuado = "019.7777.2026.0000007-77"
+ac.adicionar(_cx, 7, ac.digitos(_pontuado), "SEI-SESAB")
+_cx.execute("""INSERT INTO acompanhado(usuario_id,instancia,protocolo,origem,
+               adicionado_em,estado) VALUES(7,'SEI-SESAB',?,'manual',?,'novo')""",
+            (_pontuado, agora()))
+_cx.commit()
+
+_n = ac.reaproveitar(_cx, 7, "SEI-SESAB")
+_cx.commit()
+checar("as duas formas da mesma linha da carteira são respondidas", _n == 2, str(_n))
+_itens = {x["protocolo"]: x for x in ac.listar(_cx, 7)}
+checar("e nenhuma das duas fica esperando leitura",
+       all(_itens[f]["fonte"] == "carteira" and _itens[f]["estado"] == "lido"
+           for f in (_pontuado, ac.digitos(_pontuado))),
+       str({f: _itens[f]["estado"] for f in (_pontuado, ac.digitos(_pontuado))}))
 _cx.commit(); _cx.close()
 
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
