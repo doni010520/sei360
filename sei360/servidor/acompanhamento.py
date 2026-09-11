@@ -910,6 +910,21 @@ def _contagem(v):
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
+def _lista_texto(v):
+    """Lista de textos, ou None. A mecânica que `_unidades` e a ficha dividem.
+
+    Lista VAZIA passa e é DIFERENTE de None. `[]` é "a tela existia e não havia
+    assunto nenhum"; None é "não observado" — e para `assuntos`/`interessados`
+    isso acontece de verdade, porque a tela Consultar/Alterar pode não existir
+    para aquele processo (o coletor já distingue os dois na coleta, com
+    `alterar_disponivel`). Sem os dois valores, "processo sem interessado" e
+    "não deu para olhar" ficariam idênticos na ficha.
+    """
+    if not isinstance(v, list) or not all(isinstance(u, str) for u in v):
+        return None
+    return v
+
+
 def _unidades(v):
     """Lista de unidades, ou None quando não veio em forma de lista de unidades.
 
@@ -924,9 +939,7 @@ def _unidades(v):
     None é "não observado". A tela distingue as duas, e é para isso que `delta()`
     guarda `is not None` em vez de `or []`.
     """
-    if not isinstance(v, list) or not all(isinstance(u, str) for u in v):
-        return None
-    return v
+    return _lista_texto(v)
 
 
 def _quadro_relatado(leitura):
@@ -941,15 +954,27 @@ def _quadro_relatado(leitura):
     leitura inteira por causa de um campo custaria a observação toda — e ausência,
     aqui, já tem significado próprio e honesto: não observado.
 
-    A FICHA COMPLETA (`CAMPOS_FICHA`) NÃO ENTRA AQUI AINDA, e a ausência é o
-    contrato, não esquecimento: quem lê no SEI é a estação, e a leitura dos
-    campos novos é tarefa própria — enquanto ela não chega, item de fora da
-    carteira grava a ficha vazia, o que é a verdade. É AQUI que ela se pluga:
-    cada campo novo ganha uma linha com o conferidor do tipo dele, como as cinco
-    abaixo. Não vale espalhar `leitura` no dicionário — a lista é explícita de
-    propósito, para a estação não conseguir gravar o que não tinha por que mandar
-    (os cinco de custódia derivados da mesa ERRADA, por exemplo, que fora da mesa
-    não têm referente nenhum).
+    A FICHA DO PROCESSO ENTRA; A FICHA DA MESA, NÃO — e a segunda metade é o
+    ponto. Cada campo abaixo tem uma linha e um conferidor de tipo, e os
+    `CAMPOS_DA_MESA` simplesmente NÃO ESTÃO AQUI. Não por esquecimento: eles saem
+    da LINHA da tabela de Controle de Processos daquela mesa (`linha5` por
+    `aria-label`, `linha4` por tooltip), e para processo que não está em mesa
+    nenhuma da conta essa linha não existe. O que a estação mandasse com esses
+    nomes seria o dado da mesa em que ELA está parada — em particular os cinco de
+    custódia, que `derivar()` calcula por `camposDaMesa(mov, UNIDADE)`. Gravar
+    isso seria gravar o dado de outra mesa com o nome deste processo.
+    `gravar_leitura` faz `dados.get(c)` sobre `CAMPOS_FICHA`, então campo que não
+    está nesta lista vira NULL na coluna — e a tela diz "não existe fora da mesa"
+    em vez de imprimir um marcador em branco.
+
+    NÃO VALE espalhar `leitura` no dicionário, nem montar isto por compreensão
+    sobre `CAMPOS_FICHA`: as duas formas deixariam a estação escrever em qualquer
+    coluna da ficha, e é justamente essa porta que a lista escrita à mão fecha.
+
+    `especificacao` e `interessados` são TEXTO LIVRE, que pode citar paciente, e
+    estão aqui por decisão explícita do usuário em 11/09/2026 — registrada na
+    seção 11.2 do plano e em `SPECS.md` §5-quindecies, com data e autor. O alcance
+    é só deste módulo: a exclusão que a busca avançada faz continua valendo.
     """
     mov = leitura.get("ultimo_movimento")
     return {
@@ -958,6 +983,20 @@ def _quadro_relatado(leitura):
         "ultimo_movimento": mov if isinstance(mov, dict) else None,
         "documentos": _contagem(leitura.get("documentos")),
         "movimentos": _contagem(leitura.get("movimentos")),
+        # --- do PROCESSO: vale dentro e fora da mesa ---
+        "tipo_processo": _texto(leitura.get("tipo_processo")),
+        "autuacao": _texto(leitura.get("autuacao")),
+        "gerador_unidade": _texto(leitura.get("gerador_unidade")),
+        "gerador_usuario": _texto(leitura.get("gerador_usuario")),
+        "nivel_acesso": _texto(leitura.get("nivel_acesso")),
+        "hipotese_legal": _texto(leitura.get("hipotese_legal")),
+        "assuntos": _lista_texto(leitura.get("assuntos")),
+        "anexados": _lista_texto(leitura.get("anexados")),
+        "emails_enviados": _contagem(leitura.get("emails_enviados")),
+        "assinatura_externa": _contagem(leitura.get("assinatura_externa")),
+        # --- texto livre, autorizado em 11/09/2026 (ver a docstring) ---
+        "especificacao": _texto(leitura.get("especificacao")),
+        "interessados": _lista_texto(leitura.get("interessados")),
     }
 
 

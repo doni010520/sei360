@@ -1889,6 +1889,103 @@ checar("mas o delta continua gravado na série, porque foi medido",
            conectar(), 7)}["019.2020.2026.0000020-20"]["mudou"] or {}
         ).get("documentos") == 5)
 
+print("\n8-decies. a ficha que a estação pode relatar — e a que ela não pode")
+# AS TRÊS CAMADAS da seção 11 do plano, agora no conferidor do envelope:
+#   * campo DO PROCESSO — vale dentro e fora da mesa, e a estação preenche;
+#   * campo DA MESA — sai da LINHA do Controle de Processos daquela mesa, que para
+#     processo fora das mesas da conta NÃO EXISTE. A estação não tem de onde tirar,
+#     e o que ela mandasse seria da mesa em que ela está parada, não deste
+#     processo;
+#   * texto livre (`especificacao`, `interessados`) — existe, e o usuário
+#     autorizou explicitamente em 11/09/2026 (seção 11.2).
+_FICHA_DO_SEI = {
+    "protocolo": "019.2222.2026.0000002-22",
+    "tipo_processo": "Contratação Direta", "especificacao": "compra de insumos",
+    "autuacao": "01/08/2026 10:00", "gerador_unidade": "SESAB/SUPERH",
+    "gerador_usuario": "beltrana.dois", "nivel_acesso": "Público",
+    "hipotese_legal": "Nenhuma", "assuntos": ["Compras"],
+    "interessados": ["FESF-SUS"], "anexados": ["019.9.2026.9-99"],
+    "emails_enviados": 2, "assinatura_externa": 1,
+    "aberto_em": ["SESAB/ALHEIA"], "aberto_em_fonte": "arvore",
+    "documentos": 7, "movimentos": 9,
+}
+_quadro = ac._quadro_relatado(_FICHA_DO_SEI)
+for _campo, _esperado in (("tipo_processo", "Contratação Direta"),
+                          ("especificacao", "compra de insumos"),
+                          ("autuacao", "01/08/2026 10:00"),
+                          ("gerador_unidade", "SESAB/SUPERH"),
+                          ("gerador_usuario", "beltrana.dois"),
+                          ("nivel_acesso", "Público"),
+                          ("hipotese_legal", "Nenhuma"),
+                          ("emails_enviados", 2),
+                          ("assinatura_externa", 1)):
+    checar(f"  {_campo} do processo chega", _quadro.get(_campo) == _esperado,
+           repr(_quadro.get(_campo)))
+for _campo in ("assuntos", "interessados", "anexados"):
+    checar(f"  {_campo} chega como LISTA", isinstance(_quadro.get(_campo), list),
+           repr(_quadro.get(_campo)))
+# O QUE NÃO PODE ENTRAR, nem que a estação mande. `derivar()` calcula os cinco de
+# custódia para a mesa em que a estação está parada — que não é a mesa deste
+# processo —, e o marcador/anotação/atribuído saem de uma linha que não existe
+# fora da mesa. Aceitar qualquer um deles seria gravar o dado de outra mesa com o
+# nome deste processo.
+_MENTIRA = dict(_FICHA_DO_SEI)
+for _da_mesa in ac.CAMPOS_DA_MESA:
+    _MENTIRA[_da_mesa] = "DA MESA ERRADA"
+_quadro_mentira = ac._quadro_relatado(_MENTIRA)
+checar("nenhum campo DA MESA entra pelo envelope",
+       not [c for c in ac.CAMPOS_DA_MESA if _quadro_mentira.get(c) is not None],
+       str([c for c in ac.CAMPOS_DA_MESA if _quadro_mentira.get(c) is not None]))
+checar("e o texto da mesa errada não aparece em lugar nenhum do quadro",
+       "DA MESA ERRADA" not in str(_quadro_mentira), str(_quadro_mentira)[:200])
+
+# TIPO ERRADO VIRA None, e a leitura é gravada com o que sobrou — a mesma
+# doutrina dos cinco campos antigos. Lista com elemento que não é texto não passa:
+# a tela faz `u.split('/')` sobre cada item.
+_torto = ac._quadro_relatado({
+    "tipo_processo": {"x": 1}, "emails_enviados": "2", "assuntos": "Compras",
+    "interessados": [{"nome": "alguém"}], "anexados": ["ok"], "autuacao": 7})
+for _campo in ("tipo_processo", "emails_enviados", "assuntos", "interessados",
+               "autuacao"):
+    checar(f"  {_campo} com tipo errado vira None", _torto.get(_campo) is None,
+           repr(_torto.get(_campo)))
+checar("  e o campo bem formado ao lado sobrevive", _torto.get("anexados") == ["ok"],
+       repr(_torto.get("anexados")))
+
+# LISTA VAZIA NÃO É AUSÊNCIA. `[]` é "a tela existia e não tinha assunto nenhum";
+# None é "não observado" — a tela Consultar/Alterar pode não existir para aquele
+# processo, e o coletor já distingue os dois na coleta com `alterar_disponivel`.
+_vazio = ac._quadro_relatado({"assuntos": [], "interessados": []})
+checar("lista vazia passa, e é diferente de não observado",
+       _vazio.get("assuntos") == [] and _vazio.get("interessados") == [],
+       str(_vazio))
+_ausente = ac._quadro_relatado({})
+checar("campo que a estação não mandou fica None, não []",
+       _ausente.get("assuntos") is None and _ausente.get("especificacao") is None,
+       str(_ausente))
+
+# E A FICHA CHEGA AO BANCO, pela ponta de verdade: `receber` -> `gravar_leitura`
+# -> `listar`. Sem isto, o conferidor poderia estar certo e a coluna errada.
+_cx = conectar()
+_cx.execute("UPDATE acompanhado SET lido_em=NULL, tentativas=0, tentativa_em=NULL")
+_cx.commit()
+ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [_FICHA_DO_SEI]})
+_cx.commit()
+_ficha_gravada = {x["protocolo"]: x for x in ac.listar(_cx, 7)}[
+    "019.2222.2026.0000002-22"]
+checar("a ficha do processo fica gravada na leitura",
+       _ficha_gravada["tipo_processo"] == "Contratação Direta"
+       and _ficha_gravada["gerador_unidade"] == "SESAB/SUPERH",
+       str({k: _ficha_gravada.get(k) for k in ("tipo_processo", "gerador_unidade")}))
+checar("as listas voltam como lista, não como string de JSON",
+       _ficha_gravada["assuntos"] == ["Compras"]
+       and _ficha_gravada["interessados"] == ["FESF-SUS"],
+       repr(_ficha_gravada.get("assuntos")))
+checar("e os campos da mesa ficam NULOS para item de fora",
+       not [c for c in ac.CAMPOS_DA_MESA if _ficha_gravada.get(c) is not None],
+       str([c for c in ac.CAMPOS_DA_MESA if _ficha_gravada.get(c) is not None]))
+_cx.commit(); _cx.close()
+
 print("\n8-nonies. falha técnica repetida recua, em vez de insistir 34x por dia")
 # O QUE ESTE BLOCO DEFENDE, em número: falha técnica não carimba `lido_em` — de
 # propósito, para o item continuar pendente —, e sem recuo `pendentes` reoferecia
