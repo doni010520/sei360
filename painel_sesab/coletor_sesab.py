@@ -223,6 +223,19 @@ if ACOMPANHAR and not PEDIDO_ACOMP.get("protocolos"):
     # logar no SEI para ler zero processo custa o mesmo que ler um.
     print("--acompanhar exige {\"acompanhamento\": {\"protocolos\": [...]}} em stdin")
     sys.exit(4)
+if ACOMPANHAR and not (PERFIL_SEI.get("campos_busca") or {}).get("numero_sei"):
+    # SEM O MAPA DO CAMPO DO NUMERO NAO HA LEITURA POSSIVEL, e o `or {}` que ficava
+    # la embaixo transformava isso em coisa pior que erro. Medido em 11/09/2026:
+    # `montar()` recusa em silencio o campo que nao acha, o POST sai com
+    # `txtProtocoloPesquisa=` vazio, o SEI devolve a mesa inteira e a estacao
+    # relatava a ficha do PRIMEIRO processo dela carimbada com o numero pedido.
+    #
+    # O `.js` agora recusa isso do lado de la (ver `acompanhar`), e esta guarda e
+    # a outra ponta: recusar ANTES de abrir o Chromium e de logar no SEI. Uma
+    # leitura que nao pode dar certo nao vale uma sessao.
+    print("--acompanhar exige perfil com campos_busca.numero_sei em stdin "
+          "(sem ele a pesquisa sai sem filtro e devolve outro processo)")
+    sys.exit(4)
 # O ENVELOPE DO PLANO NAO E CREDENCIAL. Sem esta linha, `CREDENCIAL` ficava truthy
 # com {"plano": {...}} e o caminho de login (`if CREDENCIAL:`) lia CREDENCIAL
 # ["usuario"] -> KeyError -> exit 4. Como o agente e o unico que passa --plano e
@@ -538,11 +551,13 @@ try:
             carregar_motor_da_busca()
             _protos = PEDIDO_ACOMP.get("protocolos") or []
             log(f"acompanhando {len(_protos)} processo(s) por numero…")
-            # OS CAMPOS DA PESQUISA SAEM DO PERFIL. Sem eles `montar()` não acha
-            # o campo do número, a pesquisa volta cheia (ou vazia) e a estação
-            # relataria "não encontrado" sobre TODO processo — afirmando sobre os
-            # processos uma coisa que é verdade sobre a instalação. É a mesma
-            # trava que a rota do servidor já aplica com `disponivel_busca`.
+            # OS CAMPOS DA PESQUISA SAEM DO PERFIL, e sem eles esta execução nem
+            # começa — a recusa está lá em cima, junto da leitura do pedido, e é
+            # anterior ao Chromium. O que se mediu sem ela em 11/09/2026 foi pior
+            # que "não encontrado em tudo": `montar()` recusa em silêncio o campo
+            # que não acha, o POST sai sem filtro, o SEI devolve a mesa inteira e a
+            # estação relatava a ficha do PRIMEIRO processo dela com o número
+            # pedido carimbado. O `.js` recusa isso do lado de lá também.
             #
             # REGISTRADO, E DE PROPÓSITO NÃO MUDADO: aqui os campos vêm do perfil
             # que chegou em `stdin` (`PERFIL_SEI["campos_busca"]`), e no

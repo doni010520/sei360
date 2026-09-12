@@ -12,7 +12,11 @@
    nao. Que a tela Consultar/Alterar ausente da `null` e a tela vazia da `[]`. Que
    a queda da sexta requisicao nao leva a leitura inteira junto. Que sem
    `aria-label` a especificacao fica ausente em vez de inventada. Que o protocolo
-   volta literalmente igual ao que entrou. Que a
+   volta literalmente igual ao que entrou. QUE A FICHA QUE SOBE E A DO PROCESSO
+   PEDIDO: busca que saiu sem o filtro do numero e recusada, e a linha escolhida
+   entre varias e a que casa por DIGITOS — nao `itens[0]`, que era o que estava
+   escrito e o que deixava a ficha de outro processo entrar com o numero certo,
+   marcada 'lido'. Que a
    lista e lida em SERIE, com a mesma pausa curta do resto do coletor. Que um
    processo que estoura nao derruba os outros, e que ele nao ganha estado
    inventado. Que a queda de sessao para o laco em vez de carimbar 'sem_acesso'
@@ -75,7 +79,7 @@ const checar = (nome, cond, viu) => {
    `urlHistorico` e `derivar`, e provar isso com um `SEIBusca` de mentira provaria
    a mentira. O que e de mentira aqui e a REDE, e so ela. */
 function ambiente(resolver, opc = {}) {
-  const guardado = {}, saida = [], pedidos = [], pausas = [];
+  const guardado = {}, saida = [], pedidos = [], pausas = [], corpos = [];
   const caixa = {
     console: { log: (...a) => saida.push(a.join(' ')), table: () => {} },
     TextDecoder: function () { this.decode = x => x; },
@@ -97,6 +101,13 @@ function ambiente(resolver, opc = {}) {
     },
     async fetch(url, o) {
       pedidos.push(url);
+      // O CORPO DO POST E GUARDADO porque e nele que se ve se o numero pedido
+      // chegou mesmo ao SEI. Medido em 11/09/2026 com o mapa de campos vazio:
+      // `hdnFlag=1&txtProtocoloPesquisa=` — o campo existe no formulario e vai
+      // VAZIO, entao o SEI responde a busca sem filtro nenhum e a primeira linha
+      // e um processo qualquer. Sem olhar o corpo, o caso passaria so por olhar o
+      // resultado, que e onde o defeito NAO aparece.
+      if (o && o.method === 'POST') corpos.push(String(o.body || ''));
       const r = resolver(url, o);
       if (r == null) throw new Error('fixture sem resposta para ' + url);
       // O SEI nao responde "sessao caiu": ele REDIRECIONA para o login, e e a URL
@@ -114,7 +125,7 @@ function ambiente(resolver, opc = {}) {
   vm.runInContext(SRC_BUSCA, caixa);
   caixa.SEIAuto.perfil({ instancia: 'SEI-SESAB', versao: '5.0.4',
                          raiz: 'https://seibahia.ba.gov.br/' });
-  return { caixa, saida, pedidos, pausas };
+  return { caixa, saida, pedidos, pausas, corpos };
 }
 
 const LOGIN = { paraLogin: true };
@@ -167,6 +178,42 @@ function RESULTADO(protocolo, idProc) {
   </table>
 </div>`;
 }
+
+/* Uma pagina de resultado com VARIAS linhas. Duas maneiras de chegar nela, e as
+   duas acontecem: a busca sem o filtro do numero (o mapa de campos do perfil nao
+   veio, e o POST sai com `txtProtocoloPesquisa=` vazio) devolve a mesa inteira; e
+   a busca COM o filtro pode casar mais de um processo, porque o campo de numero
+   do SEI nao promete linha unica. Nos dois casos, `itens[0]` e um processo
+   qualquer — nao o pedido. */
+function RESULTADO_VARIOS(linhas) {
+  const tr = linhas.map(l => `
+    <tr>
+      <td><a href="/sei/controlador.php?acao=procedimento_trabalhar&id_procedimento=${l.id}&infra_hash=res"
+             aria-label="${l.tipo} / ${l.espec}">${l.protocolo}</a></td>
+      <td>${l.tipo}</td>
+      <td>SESAB/SUPERH</td>
+      <td>12/08/2026</td>
+    </tr>`).join('');
+  return `
+<div id="__body__">
+  <p>Lista de Processos (${linhas.length} registros):</p>
+  <table id="tblResultado">
+    <tr><th>Processo</th><th>Tipo</th><th>Unidade</th><th>Data</th></tr>${tr}
+  </table>
+</div>`;
+}
+
+/* O PROCESSO DE OUTRA GENTE que a busca sem filtro devolve em primeiro lugar. Os
+   valores sao os medidos na auditoria de 11/09/2026: id 777, uma especificacao
+   que fala de apuracao sobre servidor e um interessado com nome de pessoa. Sao
+   TEXTO LIVRE de um processo de unidade nenhuma de quem pediu — o que atravessou
+   para a tela quando `itens[0]` foi tomado como resposta. */
+const OUTRO = { protocolo: '019.7777.2026.0000777-77', id: '777',
+                tipo: 'Apuração Preliminar', espec: 'apuracao sobre servidor' };
+const OUTRO_AINDA = { protocolo: '019.8888.2026.0000888-88', id: '888',
+                      tipo: 'Sindicância', espec: 'outra apuracao qualquer' };
+const PEDIDO_NA_LISTA = { protocolo: '019.5120.2026.0161681-50', id: '91',
+                          tipo: 'Contratação Direta', espec: 'compra de insumos' };
 
 const SEM_LINHA = `<div id="__body__"><p>Lista de Processos (0 registros):</p>
   <table id="tblResultado"><tr><th>Processo</th></tr></table></div>`;
@@ -485,6 +532,103 @@ console.log('\nFALHA TECNICA NAO VIRA "SEM ACESSO"');
   checar('historico que nao respondeu nao ganha estado nenhum', !r.estado,
          JSON.stringify(r));
   checar('e a falha e nomeada', !!r.falha, JSON.stringify(r));
+}
+
+console.log('\nA FICHA DE OUTRO PROCESSO NAO ENTRA COM O NUMERO PEDIDO');
+{
+  /* O DEFEITO MEDIDO EM 11/09/2026, e o mais caro do modulo: `montar()` recusa em
+     silencio o campo `numero_sei` quando o mapa de ids nao casa, e o coletor
+     entrega `PERFIL_SEI.get("campos_busca") or {}` — vazio quando o perfil nao
+     traz o mapa. O POST entao sai com `txtProtocoloPesquisa=` VAZIO, o SEI
+     devolve a mesa inteira, e `itens[0]` era tomado como resposta:
+
+       corpo do POST : hdnFlag=1&txtProtocoloPesquisa=
+       estado        : lido
+       protocolo     : 019.5120.2026.0161681-50   (o pedido, carimbado)
+       id_sei        : 777   ("apuracao sobre servidor")
+
+     Ficha falsa com o numero certo, `lido_em` queimado, e TEXTO LIVRE de um
+     processo de unidade nenhuma da pessoa atravessando para a tela dela. */
+  const OUTRO_CADASTRO = `<div id="__body__">
+    <select id="selAssuntos" multiple><option value="1">024.2 - Sindicância</option></select>
+    <select id="selInteressadosProcedimento" multiple>
+      <option value="9">PACIENTE FULANO DE TAL</option></select></div>`;
+  const comCadastroDoOutro = opc => (url, o) => {
+    if (/acao=procedimento_alterar/.test(url) && /id_procedimento=777/.test(url)) {
+      return OUTRO_CADASTRO;
+    }
+    return redeComResultado([RESULTADO_VARIOS([OUTRO, PEDIDO_NA_LISTA, OUTRO_AINDA])],
+                            opc || {})(url, o);
+  };
+
+  const amb = ambiente(comCadastroDoOutro());
+  const r = await amb.caixa.SEIAuto.acompanhar(PROTOCOLO, {});   // o mapa nao veio
+  checar('o numero NAO foi ao SEI (e o corpo do POST prova)',
+         amb.corpos.length === 1 && /txtProtocoloPesquisa=(&|$)/.test(amb.corpos[0]),
+         JSON.stringify(amb.corpos));
+  checar('sem o filtro do numero, a leitura RECUSA em vez de carimbar', !r.estado,
+         JSON.stringify(r));
+  checar('e a falha diz que foi o filtro, nao o processo',
+         /filtro/i.test(r.falha || ''), String(r.falha));
+  // FALHA TECNICA NAO E ESTADO, e este e o caso mais tentador de errar: a busca
+  // respondeu, so que a outra pergunta. 'nao_encontrado' aqui manda a pessoa
+  // conferir um digito que esta certo E queima a chance do dia.
+  checar('nao vira "nao_encontrado" — isso seria afirmar sobre o SEI',
+         r.estado !== 'nao_encontrado', String(r.estado));
+  const texto = JSON.stringify(r);
+  checar('nenhum campo do outro processo atravessa',
+         !texto.includes('777') && !texto.includes('apuracao sobre servidor')
+         && !texto.includes('PACIENTE FULANO'), texto.slice(0, 240));
+  // Seis requisicoes por processo e o orcamento; recusar na primeira poupa cinco.
+  checar('e a leitura para na busca, sem gastar as outras cinco requisicoes',
+         !amb.pedidos.some(u => /arvore_visualizar|consultar_historico/.test(u)),
+         JSON.stringify(amb.pedidos));
+
+  /* COM O FILTRO APLICADO, a busca ainda pode devolver mais de uma linha — o
+     campo de numero do SEI nao promete linha unica. A linha certa e escolhida
+     por DIGITOS, que e a regua de identidade do projeto (`digitos()`, em
+     `acompanhamento.py`): as duas instalacoes imprimem o mesmo numero com
+     pontuacao diferente. */
+  const amb2 = ambiente(comCadastroDoOutro());
+  const r2 = await amb2.caixa.SEIAuto.acompanhar(PROTOCOLO, CAMPOS);
+  checar('com varias linhas, a escolhida e a do numero pedido, nao a primeira',
+         r2.id_sei === '91', `${r2.id_sei} / ${r2.especificacao}`);
+  checar('e a ficha lida e a dela', r2.estado === 'lido'
+         && r2.especificacao === 'compra de insumos'
+         && r2.tipo_processo === 'Contratação Direta', JSON.stringify(r2));
+  checar('nem a primeira nem a ultima linha foram abertas',
+         !amb2.pedidos.some(u => /id_procedimento=777|id_procedimento=888/.test(u)),
+         JSON.stringify(amb2.pedidos));
+  checar('e o texto livre das outras duas nao atravessa',
+         !JSON.stringify(r2).includes('apuracao') && !JSON.stringify(r2).includes('PACIENTE'),
+         JSON.stringify(r2).slice(0, 240));
+
+  // O QUE A PESSOA COLOU nao tem a pontuacao que o SEI imprime, e a comparacao e
+  // por digitos exatamente por isso. Sem ela, este caso — que e o caso comum de
+  // quem digita — cairia na recusa por "nenhuma linha e a pedida".
+  const COLADO = '01951202026016168150';
+  const amb3 = ambiente(comCadastroDoOutro());
+  const r3 = await amb3.caixa.SEIAuto.acompanhar(COLADO, CAMPOS);
+  checar('a pontuacao nao decide: colado sem ponto casa com a linha pontuada',
+         r3.id_sei === '91' && r3.estado === 'lido', JSON.stringify(r3));
+  checar('e o protocolo volta como a pessoa colou', r3.protocolo === COLADO, r3.protocolo);
+
+  // Linhas vieram, nenhuma e a pedida. A busca respondeu OUTRA coisa — e dizer
+  // "nao encontrado" seria afirmar, sobre o SEI, o que so se sabe sobre a nossa
+  // pergunta. O item continua pendente, que e a verdade.
+  const amb4 = ambiente(redeComResultado([RESULTADO_VARIOS([OUTRO, OUTRO_AINDA])]));
+  const r4 = await amb4.caixa.SEIAuto.acompanhar(PROTOCOLO, CAMPOS);
+  checar('linhas que nao sao a pedida nao viram estado nenhum', !r4.estado,
+         JSON.stringify(r4));
+  checar('e a falha conta quantas vieram', /2 linha/.test(r4.falha || ''),
+         String(r4.falha));
+
+  // Sem linha nenhuma o estado CONTINUA sendo `nao_encontrado`: ai a busca
+  // respondeu a pergunta certa, e a resposta foi "nao ha".
+  const amb5 = ambiente(redeComResultado([SEM_LINHA]));
+  const r5 = await amb5.caixa.SEIAuto.acompanhar(PROTOCOLO, CAMPOS);
+  checar('zero linha com o filtro aplicado continua sendo "nao_encontrado"',
+         r5.estado === 'nao_encontrado', JSON.stringify(r5));
 }
 
 console.log('\nA LISTA E LIDA EM SERIE, COM A PAUSA DO RESTO DO COLETOR');

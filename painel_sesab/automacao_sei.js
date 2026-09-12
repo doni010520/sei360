@@ -1834,6 +1834,18 @@ function limparCache() {
 }
 
 // ------------------------------------------------------------ acompanhamento
+/* A REGUA DE IDENTIDADE DO PROCESSO: so os digitos; a pontuacao e apresentacao.
+
+   E o espelho de `digitos()`, em `acompanhamento.py`, e tem de continuar sendo:
+   as duas pontas comparam o MESMO numero, e regua diferente de cada lado e como
+   a lista deixa de casar com a carteira.
+
+   `[^0-9]` E ASCII de proposito, como o `'0' <= c <= '9'` de la, e nao `\D` — que
+   em JavaScript tambem e ASCII, mas nao diz que e. Numero que a regua nao
+   representa vira string vazia, e string vazia nao casa com protocolo nenhum:
+   duas linhas exoticas nunca passam a ser "o mesmo processo". */
+const soDigitos = s => String(s == null ? '' : s).replace(/[^0-9]/g, '');
+
 /* ACOMPANHAMENTO — ler UM processo por numero, fora de qualquer mesa.
 
    E COMPOSICAO, nao leitura nova: a pesquisa por numero (`SEIBusca.pesquisar`)
@@ -1886,7 +1898,8 @@ function limparCache() {
 
    OS ESTADOS, E NENHUM SILENCIOSO
      'lido'           — leu, e a ficha do processo vai junto;
-     'nao_encontrado' — a pesquisa por numero nao devolveu linha;
+     'nao_encontrado' — a pesquisa por numero, COM o filtro do numero aplicado,
+                        nao devolveu linha nenhuma;
      'sem_acesso'     — o SEI devolveu a pagina SEM o conteudo que so aparece
                         para quem pode ver o processo. E o que os `throw` de
                         `urlHistorico` significam aqui.
@@ -1897,7 +1910,33 @@ function limparCache() {
    estado, e quem monta o envelope o deixa de fora — o servidor grava zero para
    ele e ele continua pendente. Carimbar 'sem_acesso' numa falha de rede mentiria
    na tela ("o SEI recusou") E queimaria a chance do dia, porque o servidor
-   atualiza `lido_em` em toda recusa. */
+   atualiza `lido_em` em toda recusa.
+
+   E A BUSCA TEM DE TER PERGUNTADO O QUE SE QUER SABER. Duas conferencias antes
+   de olhar o resultado, as duas de defeito MEDIDO em 11/09/2026:
+
+     1. O FILTRO DO NUMERO FOI APLICADO? `montar()` (em `pesquisa_sei.js`) recusa
+        em silencio o campo `numero_sei` quando o mapa de ids nao casa, e o
+        coletor entrega `PERFIL_SEI.get("campos_busca") or {}` — vazio quando o
+        perfil nao traz o mapa. O POST entao sai com `txtProtocoloPesquisa=`
+        VAZIO (medido, literal), o SEI devolve a mesa inteira, e a primeira linha
+        e um processo qualquer. Sem esta conferencia, a ficha DE OUTRO PROCESSO
+        entrava com o numero pedido, marcada 'lido': id 777, "apuracao sobre
+        servidor", interessado com nome de paciente — texto livre de processo de
+        unidade nenhuma da pessoa, na tela dela, com `lido_em` queimado.
+     2. A LINHA E A PEDIDA? Comparada por DIGITOS, nunca por texto: o 4.0 da FESF
+        e o 5.0.4 da SESAB imprimem o mesmo numero com pontuacao diferente, e
+        quem cola cola o que viu. E a mesma regua de `digitos()`, em
+        `acompanhamento.py`, dos dois lados do fio. O campo de numero do SEI nao
+        promete linha unica, entao a escolha e por casamento, e nao `itens[0]` —
+        que era o que estava escrito, e que a mutacao `[0]` -> `[length-1]`
+        atravessava sem matar teste nenhum.
+
+   NENHUMA DAS DUAS E 'nao_encontrado'. Sao falha NOSSA — perfil defasado,
+   implantacao velha, pergunta mal feita —, e 'nao_encontrado' e afirmacao sobre
+   o SEI: a tela a imprime como "numero nao encontrado neste SEI, confira o
+   digito". Mandar conferir um digito que esta certo, e queimar a chance do dia
+   para dizer isso, e pior que o item ficar pendente. */
 async function acompanhar(protocolo, campos) {
   if (!window.SEIBusca) return { protocolo, falha: 'pesquisa_sei.js nao carregado' };
   // `pesquisar` NAO lanca: ele devolve `motivo` preenchido. Tratar excecao aqui e
@@ -1914,8 +1953,31 @@ async function acompanhar(protocolo, campos) {
     com_reservados: true,
   });
   if (env.motivo) return { protocolo, falha: 'busca: ' + env.motivo };
-  const item = (env.itens || [])[0];
-  if (!item || !item.link) return { protocolo, estado: 'nao_encontrado' };
+  /* 1. O FILTRO DO NUMERO FOI APLICADO? `filtros_recusados` e onde `montar()`
+     declara o que nao pegou — ler so o resultado e nao ver a diferenca entre
+     "este processo" e "a mesa inteira". A segunda metade da condicao cobre o
+     campo que sumiu do `aplicados` por outro caminho: ausencia tambem e recusa. */
+  const recusado = (env.filtros_recusados || []).find(f => f && f.campo === 'numero_sei');
+  const pedidoAoSei = (env.filtros_aplicados || {}).numero_sei;
+  // `alvo` vazio e numero sem digito nenhum — nao ha o que casar, e sem esta
+  // guarda ele casaria com QUALQUER linha cujo protocolo tambem nao tenha digito.
+  const alvo = soDigitos(protocolo);
+  if (recusado || !alvo || soDigitos(pedidoAoSei) !== alvo) {
+    return { protocolo, falha: 'a busca saiu SEM o filtro do numero ('
+      + ((recusado && recusado.motivo) || 'o campo nao foi preenchido')
+      + '): o resultado seria de outro processo' };
+  }
+  /* 2. A LINHA E A PEDIDA? Zero linha com o filtro aplicado e resposta do SEI, e
+     ai sim 'nao_encontrado'. Linha que veio e nao casa e OUTRA pergunta
+     respondida: nao da para afirmar nada sobre o numero pedido a partir dela. */
+  const itens = env.itens || [];
+  if (!itens.length) return { protocolo, estado: 'nao_encontrado' };
+  const item = itens.find(x => soDigitos(x.protocolo) === alvo);
+  if (!item) {
+    return { protocolo, falha: `a busca devolveu ${itens.length} linha(s), `
+      + 'nenhuma com este numero' };
+  }
+  if (!item.link) return { protocolo, estado: 'nao_encontrado' };
   let url, arvore, acoes;
   try {
     ({ url, arvore, acoes } = await urlHistorico(item.link));
