@@ -2087,6 +2087,20 @@ import sei360_agente as _ag                                      # noqa: E402
 _tmp = Path(tempfile.mkdtemp(prefix="sei360_coletor_"))
 
 
+# O APERTO DE MÃO, que veio depois desta suíte: `_rodar_coletor` pergunta ao
+# coletor quais modos ele conhece (`--modos` -> `MODOS_OK {...}`) e recusa
+# trabalhar com quem não responde. O coletor de mentira aqui existe para provar o
+# LAÇO, não o contrato — então ele passa o aperto de mão e o resto da cena
+# continua sendo sobre o que sempre foi. É o mesmo `coletor_que_conhece` que
+# `_teste_agente.py` monta do outro lado.
+_APERTO_DE_MAO = (
+    "import json, sys\n"
+    "if '--modos' in sys.argv:\n"
+    "    print('MODOS_OK ' + json.dumps({'versao': 'falso', 'modos': "
+    "['--modo-falso', '--buscar', '--acompanhar']}))\n"
+    "    sys.exit(0)\n")
+
+
 def _coletor_falso(corpo):
     """Grava um coletor de mentira e aponta o agente para ele.
 
@@ -2094,8 +2108,12 @@ def _coletor_falso(corpo):
     só isso que precisa ser verdade para o laço ser exercitado.
     """
     arq = _tmp / "coletor_falso.py"
-    arq.write_text(corpo, encoding="utf-8")
+    arq.write_text(_APERTO_DE_MAO + corpo, encoding="utf-8")
     _ag.COLETOR = arq
+    # O CAMINHO É O MESMO A CADA CENA, e a resposta do aperto de mão fica em
+    # cache POR CAMINHO: sem limpar, o coletor da cena seguinte herdaria o que o
+    # anterior respondeu.
+    _ag._MODOS_DO_COLETOR.clear()
     return arq
 
 
@@ -2738,6 +2756,98 @@ checar("mas o conjunto vazio não cala a contagem que mudou",
        ac.delta(_com_unidade, dict(_sem_unidade, documentos=6))
        == {"documentos": 2},
        str(ac.delta(_com_unidade, dict(_sem_unidade, documentos=6))))
+
+print("\n13. a ficha que sobrevive à recusa do SEI tem de dizer de quando é")
+# O CENÁRIO MEDIDO EM 11/09/2026: item lido pela carteira, e HOJE o SEI recusa o
+# processo àquele login. A recusa não insere leitura (certo — recusa não é
+# observação), mas `listar()` traz a leitura ANTERIOR pelo LEFT JOIN, `fonte`
+# fica preenchida e o expandir abre a ficha inteira: marcador URGENTE, anotação,
+# responsável — sem uma palavra dizendo de quando é. `texto_da_ficha` devolvia
+# "" porque `_dia_da_medicao` cala em estado de recusa, e a docstring dela promete
+# o contrário: "NUNCA VAZIA quando houve leitura... ficha sem carimbo passa por
+# ficha de agora".
+#
+# As duas frases têm alcances OPOSTOS e por isso a regra de recusa não pode viver
+# na função que fatia a data: o rodapé do cartão TEM de calar (senão sai "Nada foi
+# lido" e, embaixo, "pela sua coleta de 09/09") e a ficha TEM de carimbar.
+_cx = conectar()
+_ALVO_I1 = "019.2525.2026.0000025-25"
+_DIA_I1 = f"{_ANTEONTEM[8:10]}/{_ANTEONTEM[5:7]}"
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,
+               movimentos,medido_em,mesas_fonte,tipo_processo,marcador,
+               marcador_cor,atribuido_nome,visualizado)
+               VALUES(900,'2525',?,3,3,?,'arvore','Administrativo: Pagamento',
+               'URGENTE','vermelho','Ana Souza',1)""", (_ALVO_I1, _ANTEONTEM))
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'2525','SESAB/MINHA',NULL)""")
+_cx.execute("""INSERT INTO processo_texto(snapshot_id,id_sei,anotacao,anotacao_autor)
+               VALUES(900,'2525','cobrar a nota','ana.souza')""")
+_cx.commit()
+ac.adicionar(_cx, 7, _ALVO_I1, "SEI-SESAB")
+_cx.commit()
+checar("(cena) a carteira responde a ficha inteira",
+       ac.reaproveitar(_cx, 7, "SEI-SESAB") >= 1)
+_cx.commit()
+# E HOJE O SEI RECUSA. A leitura não entra na série; o estado do item, sim.
+ac.receber(_cx, 7, "SEI-SESAB",
+           {"leituras": [{"protocolo": _ALVO_I1, "estado": "sem_acesso"}]})
+_cx.commit()
+_i1 = {x["protocolo"]: x for x in ac.listar(_cx, 7)}[_ALVO_I1]
+checar("(cena) o item está em recusa e ainda tem a ficha da leitura anterior",
+       _i1["estado"] == "sem_acesso" and _i1["marcador"] == "URGENTE",
+       f"{_i1['estado']} / {_i1['marcador']}")
+checar("a ficha em recusa NÃO fica sem carimbo — é a promessa da docstring",
+       ac.texto_da_ficha(_i1) != "", repr(ac.texto_da_ficha(_i1)))
+checar("e o carimbo diz de QUANDO ela é",
+       _DIA_I1 in ac.texto_da_ficha(_i1), ac.texto_da_ficha(_i1))
+checar("e diz que a leitura de hoje não aconteceu",
+       "hoje nada foi lido" in ac.texto_da_ficha(_i1), ac.texto_da_ficha(_i1))
+# OS CAMPOS DA MESA são os que alguém lê para decidir o que fazer HOJE — o
+# carimbo tem de alcançá-los pelo nome, porque é sob o título "da sua mesa" que
+# eles aparecem para um processo que já não está em mesa nenhuma da conta.
+checar("o carimbo alcança também os campos da mesa, pelo nome",
+       "marcador" in ac.texto_da_ficha(_i1), ac.texto_da_ficha(_i1))
+# O RODAPÉ DO CARTÃO CONTINUA CALADO: é a outra metade da mesma regra, e ela não
+# pode ter mudado de lado no caminho.
+checar("o rodapé do cartão continua sem procedência em recusa",
+       ac.texto_da_procedencia(_i1) == "", repr(ac.texto_da_procedencia(_i1)))
+# E a régua normal, fora de recusa, não mudou.
+checar("fora de recusa a ficha continua dizendo o que sempre disse",
+       "campos desta ficha" in ac.texto_da_ficha(
+           {"fonte": "carteira", "estado": "lido", "medido_em": _ANTEONTEM}),
+       ac.texto_da_ficha({"fonte": "carteira", "estado": "lido",
+                          "medido_em": _ANTEONTEM}))
+checar("e item nunca lido continua sem ficha nenhuma",
+       ac.texto_da_ficha({"estado": "novo"}) == "",
+       repr(ac.texto_da_ficha({"estado": "novo"})))
+# RECUSA SEM DATA DE MEDIÇÃO: a coluna aceita nulo, e ficha sem carimbo passa por
+# ficha de agora — que é exatamente o que esta função existe para impedir.
+_i1_sem_data = {"fonte": "carteira", "estado": "sem_acesso", "medido_em": None}
+checar("recusa sem data de medição também não fica sem carimbo",
+       "de quando" in ac.texto_da_ficha(_i1_sem_data),
+       repr(ac.texto_da_ficha(_i1_sem_data)))
+# `texto_sem_mesa` falava no PRESENTE a partir da linha VELHA: em recusa, o que a
+# leitura anterior viu não é o que vale hoje.
+checar("em recusa, a frase da mesa fala da leitura anterior, não do hoje",
+       "leitura anterior" in ac.texto_sem_mesa({"fonte": "sei",
+                                                "estado": "sem_acesso"})
+       and "NÃO existem" not in ac.texto_sem_mesa({"fonte": "sei",
+                                                   "estado": "sem_acesso"}),
+       repr(ac.texto_sem_mesa({"fonte": "sei", "estado": "sem_acesso"})))
+checar("fora de recusa ela continua a mesma",
+       "NÃO existem" in ac.texto_sem_mesa({"fonte": "sei", "estado": "lido"}),
+       repr(ac.texto_sem_mesa({"fonte": "sei", "estado": "lido"})))
+_cx.commit(); _cx.close()
+
+_r = _c.get("/acompanhamento")
+_csrf = _csrf_do(_r, _csrf)
+_cart_i1 = cartao(_r.data.decode("utf-8", "replace"), _ALVO_I1)
+checar("o cartão em recusa diz que nada foi lido", "Nada foi lido" in _cart_i1,
+       _cart_i1[:200])
+checar("a ficha continua aberta com o que já se sabia", "URGENTE" in _cart_i1,
+       _cart_i1[:300])
+checar("mas agora ela sai carimbada com o dia da leitura anterior",
+       _DIA_I1 in _cart_i1 and "hoje nada foi lido" in _cart_i1, _cart_i1[:600])
 
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:

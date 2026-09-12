@@ -390,15 +390,28 @@ def texto_do_delta(d):
     return " · ".join(partes)
 
 
+# OS DOIS ESTADOS EM QUE O SEI RESPONDEU "NÃO". Não há leitura de hoje neles — e
+# a leitura que a tela mostra é a ANTERIOR, o que muda o que cada frase pode
+# afirmar. Ver `texto_da_procedencia` (que cala) e `texto_da_ficha` (que carimba).
+_ESTADOS_DE_RECUSA = ("sem_acesso", "nao_encontrado")
+
+
 def _dia_da_medicao(item, ano=None):
     """(fonte, dia) desta linha, ou (None, None) quando não há o que declarar.
 
     Extraído de `texto_da_procedencia` quando a ficha completa passou a precisar
     da MESMA régua com outra frase: duas funções fatiando a data por conta
-    própria são duas regras de ano e de recusa que divergem no primeiro remendo.
+    própria são duas regras de ano que divergem no primeiro remendo.
 
-    Fica vazio em estado de recusa: o cartão dizia "Nada foi lido" e, embaixo,
-    "pela sua coleta de 11/09" — duas afirmações contrárias na mesma linha.
+    A REGRA DE RECUSA NÃO MORA MAIS AQUI, e a mudança foi medida em 11/09/2026:
+    os dois chamadores precisam de políticas OPOSTAS sobre o mesmo estado. O
+    rodapé do cartão tem de calar (senão sai "Nada foi lido" e, embaixo, "pela
+    sua coleta de 11/09", duas afirmações contrárias na mesma linha) e a ficha
+    tem de CARIMBAR — a recusa não apaga a leitura anterior, que continua aberta
+    no expandir com marcador, anotação e responsável de nove dias atrás. Sem
+    carimbo, aquilo passa por ficha de agora, e o marcador é justamente o campo
+    que alguém lê para decidir o que fazer hoje. Uma régua de data, duas
+    políticas de recusa, cada uma na função que faz a afirmação.
 
     O ANO aparece quando não é o corrente. `11/09` de 2025 renderizava idêntico
     ao de hoje, e com uma coleta parada isso não é hipótese remota: é o mesmo
@@ -409,8 +422,6 @@ def _dia_da_medicao(item, ano=None):
     mesmo assim, porque quem chama precisa distinguir "não houve leitura" de
     "houve leitura e ela não diz de quando é".
     """
-    if item.get("estado") in ("sem_acesso", "nao_encontrado"):
-        return None, None
     fonte = item.get("fonte")
     if not fonte:
         return None, None
@@ -426,7 +437,15 @@ def _dia_da_medicao(item, ano=None):
 
 
 def texto_da_procedencia(item, ano=None):
-    """De ONDE e de QUANDO é o dado desta linha, em português. Gerado do dado."""
+    """De ONDE e de QUANDO é o dado desta linha, em português. Gerado do dado.
+
+    CALA EM ESTADO DE RECUSA, e é o único lugar onde essa regra vive: esta frase
+    fica logo abaixo de "Nada foi lido", e ali "pela sua coleta de 11/09" são
+    duas afirmações contrárias na mesma linha. A ficha, que fala do que está
+    ABERTO no expandir, faz o contrário — ver `texto_da_ficha`.
+    """
+    if item.get("estado") in _ESTADOS_DE_RECUSA:
+        return ""
     fonte, dia = _dia_da_medicao(item, ano)
     if not dia:
         return ""
@@ -447,10 +466,24 @@ def texto_da_ficha(item, ano=None):
     NUNCA VAZIA quando houve leitura, mesmo sem data: `medido_em` aceita nulo, e
     ficha sem carimbo nenhum passa por ficha de agora — que é a afirmação falsa
     que esta função existe para impedir.
+
+    E NEM EM RECUSA, que era onde a promessa acima estava sendo quebrada. Medido
+    em 11/09/2026: cartão `sem_acesso` dizendo "Nada foi lido" e, no expandir, a
+    ficha inteira da coleta anterior — marcador URGENTE, anotação, responsável —
+    sem uma palavra dizendo de quando era. A recusa não insere leitura (certo:
+    recusa não é observação), mas `listar()` traz a ANTERIOR pelo LEFT JOIN e o
+    expandir abre com ela. Aqui o carimbo NOMEIA os campos da mesa, porque é sob
+    o título "da sua mesa" que eles aparecem — para um processo que, tendo ido
+    parar na fila da estação, já não está em mesa nenhuma da conta.
     """
     fonte, dia = _dia_da_medicao(item, ano)
     if not fonte:
         return ""
+    if item.get("estado") in _ESTADOS_DE_RECUSA:
+        quando = f", de {dia}" if dia else " e não diz de quando é"
+        return (f"esta ficha é a leitura ANTERIOR{quando} — inclusive o marcador, "
+                "a anotação e o responsável: hoje nada foi lido (o motivo está no "
+                "alto do cartão)")
     if not dia:
         return ("esta ficha não diz de quando é: a leitura foi gravada sem data "
                 "de medição")
@@ -482,6 +515,15 @@ def texto_sem_mesa(item):
     """
     if item.get("fonte") != "sei":
         return ""
+    # EM RECUSA A FRASE MUDA DE TEMPO, porque a linha é velha. Esta função fala
+    # da `fonte` da ÚLTIMA leitura, e em estado de recusa essa leitura é a de
+    # ontem: afirmar no presente ("o SEI não tem linha de mesa para ele") é dizer
+    # de hoje o que se observou antes — no dia em que o SEI recusou o processo e
+    # não se observou nada. É a mesma correção que o carimbo da ficha recebeu.
+    if item.get("estado") in _ESTADOS_DE_RECUSA:
+        return ("na leitura anterior este processo estava fora das suas mesas: "
+                "marcador, anotação, responsável e dias na unidade não existiam "
+                "para ele — e hoje nada foi lido")
     return ("fora das suas mesas: marcador, anotação, responsável e dias na "
             "unidade NÃO existem para este processo — não estão em branco, é o "
             "SEI que não tem linha de mesa para ele")
