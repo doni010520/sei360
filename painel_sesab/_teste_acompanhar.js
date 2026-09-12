@@ -785,6 +785,29 @@ console.log('\nO MOTIVO DA FALHA NAO LEVA infra_hash PELA REDE');
          env.falhas[0].motivo);
 }
 
+console.log('\nO MOTIVO DA BUSCA TAMBEM NAO LEVA infra_hash — NEM NO LOG');
+{
+  /* SEM GATILHO CONHECIDO, e fechado assim mesmo. `saida.motivo`, em
+     `pesquisar()`, e mensagem de excecao truncada — e excecao de `fetch` pode
+     carregar a URL que falhou. Dali ele vai para DOIS lugares: o envelope, que
+     o servidor guarda, e o `console.log`, que o coletor ecoa para o stdout da
+     estacao (`on_console`), que vira log e anexo. Hash de sessao morto nao
+     devolve erro: ele DERRUBA a sessao de quem esta trabalhando. */
+  const amb = ambiente(url =>
+    (/acao=protocolo_pesquisar/.test(url)
+      ? { erro: 'caiu em /sei/x?infra_hash=SEGREDO123&id=9' }
+      : rede()(url)));
+  const env = await amb.caixa.SEIBusca.pesquisar(
+    { filtros: { numero_sei: PROTOCOLO }, campos: CAMPOS, paginas_teto: 1 });
+  checar('a busca falhou, e disse por que', !!env.motivo, String(env.motivo));
+  checar('o hash de sessao nao entra no envelope',
+         !JSON.stringify(env).includes('SEGREDO123'), String(env.motivo));
+  checar('nem no que o console imprime — que o coletor ecoa para o stdout',
+         !amb.saida.join(' ').includes('SEGREDO123'), amb.saida.join(' ').slice(0, 200));
+  checar('e o resto do motivo continua legivel', /caiu em/.test(env.motivo || ''),
+         String(env.motivo));
+}
+
 console.log('\nOS RESERVADOS SO EXISTEM PARA QUEM PEDIU — E NAO ENTRAM NA BUSCA');
 {
   /* `linhas()` esconde DUAS coisas de proposito, e por razoes diferentes que dao

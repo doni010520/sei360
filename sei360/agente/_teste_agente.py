@@ -446,6 +446,57 @@ checar("sem perda nenhuma, a reconciliacao nao imprime nada",
        "reconcilia" not in tela, tela[:400])
 
 
+# ======================================= o residuo: infra_hash no eco do console
+print("\n10. o eco do console da pagina nao carrega infra_hash")
+# SEM GATILHO CONHECIDO, e fechado assim mesmo: `on_console` ecoa TODO console da
+# pagina para o stdout, e stdout da estacao vira log, arquivo e anexo. Hash de
+# sessao morto nao devolve erro — ele DERRUBA a sessao de quem esta trabalhando —,
+# entao ele nao pode ficar em lugar nenhum onde alguem possa copia-lo de volta.
+
+
+def _do_coletor(nomes, espaco):
+    """Levanta funcoes e constantes do coletor real, sem executar o script.
+
+    Inclui as CONSTANTES de que a funcao depende (a regra de mascaramento, aqui)
+    pelo mesmo motivo de `fatiar`: um teste que reescreve a regra prova a copia.
+    """
+    arvore = ast.parse(COLETOR_REAL.read_text(encoding="utf-8"))
+    corpo = []
+    for n in arvore.body:
+        if isinstance(n, ast.FunctionDef) and n.name in nomes:
+            corpo.append(n)
+        elif isinstance(n, ast.Assign) and any(
+                isinstance(a, ast.Name) and a.id in nomes for a in n.targets):
+            corpo.append(n)
+    exec(compile(ast.Module(body=corpo, type_ignores=[]),
+                 str(COLETOR_REAL), "exec"), espaco)
+    return espaco
+
+
+import re                                                          # noqa: E402
+
+
+class _Msg:
+    def __init__(self, texto):
+        self.text = texto
+
+
+ecoado, guardadas = [], []
+espaco = {"log": ecoado.append, "ALERTAS": ("sessao",),
+          "FALHAS_N": re.compile(r"\((?!0\s)\d+\s+falhas?\)", re.IGNORECASE),
+          "alertas": guardadas, "re": re}
+on_console = _do_coletor(("on_console", "SEM_HASH"), espaco)["on_console"]
+on_console(_Msg("[BUSCA] falhou: caiu em /sei/x?infra_hash=SEGREDO123&id=9"))
+checar("o hash nao vai para o stdout da estacao",
+       not any("SEGREDO123" in l for l in ecoado), repr(ecoado))
+checar("mas o resto da mensagem continua legivel",
+       any("caiu em" in l and "infra_hash" in l for l in ecoado), repr(ecoado))
+on_console(_Msg("[SEI] sessao caiu em /sei/x?infra_hash=SEGREDO123"))
+checar("nem para a lista de alertas, que vira anexo",
+       guardadas and "SEGREDO123" not in guardadas[0], repr(guardadas))
+checar("e o alerta continua sendo detectado", len(guardadas) == 1, repr(guardadas))
+
+
 print(f"\n{ok_total} verificacao(oes), {len(falhas)} falha(s)")
 if falhas:
     print("FALHOU: " + "; ".join(falhas))

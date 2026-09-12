@@ -433,8 +433,18 @@ def _esquecer_credencial(pg):
         log(f"NAO CONSEGUI apagar a credencial do perfil: {type(e).__name__}")
 
 
+# O HASH DE SESSAO NAO ATRAVESSA O ECO DO CONSOLE. `on_console` copia TODO
+# console da pagina para o stdout da estacao — que vira log, arquivo e anexo — e
+# para a lista de alertas. Hash morto nao devolve erro: ele DERRUBA a sessao de
+# quem esta trabalhando, entao ele nao pode ficar guardado em lugar de onde alguem
+# possa copia-lo de volta. Nao ha caminho conhecido em que uma URL com
+# `infra_hash` chegue aqui; a porta e que nao fica aberta. E o espelho do
+# `semHash` de `acompanharLista`, em `automacao_sei.js`.
+SEM_HASH = re.compile(r"infra_hash=[^&\s'\"]*", re.IGNORECASE)
+
+
 def on_console(msg):
-    t = msg.text
+    t = SEM_HASH.sub("infra_hash=...", msg.text)
     log(f"  page> {t}")
     baixo = t.lower()
     if any(k in baixo for k in ALERTAS) or FALHAS_N.search(t):

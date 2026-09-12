@@ -35,6 +35,16 @@
   if (window.SEIBusca) return;
 
   const N = s => (s || '').replace(/\s+/g, ' ').trim();
+  /* O HASH DE SESSÃO NÃO SAI DAQUI POR NENHUMA PORTA, nem pela do erro. Mensagem
+     de exceção de `fetch` pode carregar a URL que falhou, e `saida.motivo` vai
+     para DOIS lugares: o envelope, que o servidor guarda, e o `console.log`, que
+     o coletor ecoa para o stdout da estação. Hash morto não devolve erro — ele
+     DERRUBA a sessão de quem está trabalhando —, então ele não pode ficar em log,
+     em anexo nem em banco. Não há caminho conhecido em que isto aconteça hoje; a
+     porta é que não fica aberta. O mesmo `semHash` de `acompanharLista`, em
+     `automacao_sei.js`. */
+  const semHash = m => String(m == null ? '' : m)
+    .replace(/infra_hash=[^&\s'"]*/gi, 'infra_hash=…');
   const log = (m, cor = '#0f5257') =>
     console.log('%c[BUSCA] ' + m, `color:${cor};font-weight:bold`);
   const dorme = ms => new Promise(r => setTimeout(r, ms));
@@ -339,7 +349,9 @@
       }
       log(`${saida.itens.length} item(ns) em ${saida.paginas_lidas} pagina(s)`);
     } catch (e) {
-      saida.motivo = String(e && e.message ? e.message : e).slice(0, 200);
+      // `semHash` ANTES do corte, e não depois: cortar primeiro poderia deixar
+      // meio hash de pé, e meio hash ainda é hash o bastante para quem o coletou.
+      saida.motivo = semHash(e && e.message ? e.message : e).slice(0, 200);
       log('falhou: ' + saida.motivo, '#a3391f');
     }
     saida.duracao_s = Math.round((Date.now() - t0) / 1000);
