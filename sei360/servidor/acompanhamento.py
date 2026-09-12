@@ -572,9 +572,29 @@ def texto_sem_mesa(item):
             "SEI que não tem linha de mesa para ele")
 
 
+# O QUE O SERVIDOR RESPONDE POR ESTA CONTA, dito em código e não em prosa: o
+# motivo chega aqui como rótulo e a FRASE é montada neste módulo, junto das
+# outras. Fato é de quem administra o container (`acompanhamento_servidor`);
+# palavra é de quem escreve a tela.
+MOTOR_DESLIGADO = "motor_desligado"
+SEM_BUSCA = "sem_busca"
+
+
 def texto_fora_da_fila(item, instancia_ativa, rotulo_do_item=None,
-                       rotulo_ativa=None):
+                       rotulo_ativa=None, servidor_le=(), servidor_parado=None):
     """Por que este item NÃO vai ser lido no SEI hoje. Vazio quando vai.
+
+    `servidor_le` são as instalações que ESTE container lê por esta conta hoje, e
+    `servidor_parado` um mapa {instalação: motivo} das que ele deveria ler e não
+    lê. Os dois entram por parâmetro porque são fato de implantação — quem os
+    conhece é `acompanhamento_servidor.cobertura`.
+
+    SEM ELES ESTA FUNÇÃO PASSOU A MENTIR, em 12/09/2026: no dia em que o
+    container ganhou motor próprio de acompanhamento, a frase "hoje, só a sua
+    própria coleta pode respondê-lo" continuou sendo impressa sobre item que o
+    motor lê dois minutos depois. Aviso falso é pior que silêncio — ele ensina a
+    não ler o aviso, e o aviso existia justamente para o item parado não se
+    parecer com o item na fila.
 
     O DEFEITO QUE ESTA FUNÇÃO IMPEDE, medido em 11/09/2026: a rota do agente pede
     `instancia_do_agente`, que é a configuração ATIVA do dono, e a estação entra
@@ -597,13 +617,36 @@ def texto_fora_da_fila(item, instancia_ativa, rotulo_do_item=None,
     módulo é regra pura, e quem pinta a tela já resolve rótulo (`app.py`).
     """
     instancia = item.get("instancia")
-    if not instancia_ativa or instancia == instancia_ativa:
-        return ""
     # LIDO HOJE, de qualquer fonte, é item em dia: `lido_em` é a mesma coluna que
     # `reaproveitar` e `pendentes` usam para a trava de uma leitura por dia.
     if (item.get("lido_em") or "")[:10] == agora()[:10]:
         return ""
     dele = rotulo_do_item or instancia
+    # O SERVIDOR LÊ ESTA INSTALAÇÃO: não há o que avisar. Vem antes de tudo
+    # porque o motor do container não depende da configuração ATIVA da pessoa —
+    # ele lê as duas instalações no mesmo ciclo, que é justamente o que a
+    # estação não consegue.
+    if instancia in set(servidor_le or ()):
+        return ""
+    parado = (servidor_parado or {}).get(instancia)
+    if parado == MOTOR_DESLIGADO:
+        # A FALHA DE IMPLANTAÇÃO MAIS SILENCIOSA QUE ESTE MÓDULO TEM: a senha
+        # está no servidor, ninguém precisa de estação nenhuma, e o interruptor
+        # do motor está desligado. Sem esta frase o sintoma é o de sempre —
+        # "aguardando primeira leitura", para sempre, e verdadeiro.
+        return (f"não entra na fila: a senha desta conta para o {dele} está neste "
+                "servidor, mas o motor de acompanhamento dele não está ligado — "
+                "quem administra o SEI360 precisa ligá-lo "
+                "(SEI360_COLETA_SERVIDOR)")
+    if parado == SEM_BUSCA:
+        # A leitura começa por uma pesquisa por número; sem busca provada na
+        # instalação, ela devolveria "não encontrado" para TODO processo — e a
+        # tela afirmaria sobre os processos o que é verdade sobre a instalação.
+        return (f"não entra na fila: a busca por número ainda não roda no {dele}, "
+                "e é por ela que a leitura de processo fora da carteira começa — "
+                f"hoje, só a sua própria coleta do {dele} pode respondê-lo")
+    if not instancia_ativa or instancia == instancia_ativa:
+        return ""
     return (f"não entra na fila da estação: ela lê na instalação da sua "
             f"configuração ativa ({rotulo_ativa or instancia_ativa}), e este item "
             f"é do {dele} — hoje, só a sua própria coleta do {dele} pode "
@@ -981,6 +1024,58 @@ def reaproveitar(cx, usuario_id, instancia):
 TENTATIVAS_ATE_DESCANSAR = 3
 
 
+# A FILA, ESCRITA UMA VEZ.
+#
+# `pendentes` ESCREVE: cada item que ela devolve sai com `tentativas`
+# incrementado. Logo, quem só quer saber SE há trabalho — o motor do VPS, antes
+# de gastar um Chromium de 450 MB — não pode chamá-la, e precisa da MESMA
+# condição. Duas cópias divergiriam no primeiro ajuste, e a divergência seria
+# silenciosa nos dois sentidos: o motor acordando para fila vazia, ou dormindo
+# com fila cheia.
+#
+# As duas metades da condição:
+#   * UMA LEITURA POR DIA — a mesma guarda que `reaproveitar` aplica, e pelo
+#     mesmo motivo: sem ela o mesmo processo seria relido a cada ciclo;
+#   * O RECUO — três entregas sem resposta HOJE e o item sai da fila até amanhã.
+#     A comparação de DATA é o que torna isso recuo e não desistência:
+#     `tentativas` alto de ontem não barra nada.
+_FILA_ONDE = """FROM acompanhado
+           WHERE usuario_id=? AND instancia=?
+             AND (lido_em IS NULL OR substr(lido_em,1,10) <> substr(?,1,10))
+             AND NOT (tentativas >= ?
+                      AND substr(COALESCE(tentativa_em,''),1,10) = substr(?,1,10))"""
+
+
+def _fila_params(usuario_id, instancia, hoje):
+    """Os cinco parâmetros de `_FILA_ONDE`, na ordem. Tupla para somar com o
+    resto sem quem chama ter de saber quantos são."""
+    return (usuario_id, instancia, hoje, TENTATIVAS_ATE_DESCANSAR, hoje)
+
+
+def quantos_pendentes(cx, usuario_id, instancia, so_novos=False):
+    """Quantos itens a fila entregaria agora. NÃO ESCREVE NADA.
+
+    Existe para o motor do servidor (`acompanhamento_servidor.py`) decidir se
+    vale subir um Chromium, sem pagar o preço de perguntar com `pendentes` —
+    que incrementaria o contador de entregas de itens que talvez nem sejam
+    lidos.
+
+    PODE CONTAR PARA MAIS, e é de propósito. Ao contrário de `pendentes`, não
+    chama `reaproveitar`: itens que a coleta do dia responderia de graça ainda
+    aparecem aqui. Quem chama trata isso na ordem certa — pega a vaga de
+    memória, chama `pendentes` (que reaproveita), e se sobrar lista vazia
+    devolve a vaga sem ter aberto navegador nenhum. Reaproveitar aqui tornaria
+    esta função uma escritora, e ela deixaria de servir para a pergunta que
+    motivou a sua existência.
+
+    `so_novos` responde ao gatilho "ao adicionar": item `novo` é o que ninguém
+    leu nem uma vez, e ele não espera a coleta do dia.
+    """
+    return cx.execute(
+        "SELECT COUNT(*) " + _FILA_ONDE + (" AND estado='novo'" if so_novos else ""),
+        _fila_params(usuario_id, instancia, agora())).fetchone()[0]
+
+
 def descansando(cx, usuario_id, instancia, na_fila=()):
     """Os itens que o servidor parou de oferecer HOJE, e quantas vezes falharam.
 
@@ -1043,21 +1138,11 @@ def pendentes(cx, usuario_id, instancia):
     reaproveitar(cx, usuario_id, instancia)
     hoje = agora()
     lista = [r["protocolo"] for r in cx.execute(
-        # A MESMA GUARDA DE UMA LEITURA POR DIA que `reaproveitar` aplica, e pelo
-        # mesmo motivo: sem ela a estação releria o mesmo processo a cada ciclo do
-        # agente. O 'novo' na frente para a primeira leitura de um item recém
-        # colado não ficar atrás de 99 releituras quando o orçamento apertar.
-        """SELECT protocolo FROM acompanhado
-           WHERE usuario_id=? AND instancia=?
-             AND (lido_em IS NULL OR substr(lido_em,1,10) <> substr(?,1,10))
-             -- O RECUO. Três entregas sem resposta HOJE e o item sai da fila até
-             -- amanhã. A comparação de data é o que torna isso recuo e não
-             -- desistência: `tentativas` alto de ontem não barra nada.
-             AND NOT (tentativas >= ?
-                      AND substr(COALESCE(tentativa_em,''),1,10) = substr(?,1,10))
-           ORDER BY estado='novo' DESC, adicionado_em
-           LIMIT ?""",
-        (usuario_id, instancia, hoje, TENTATIVAS_ATE_DESCANSAR, hoje, TETO))]
+        "SELECT protocolo " + _FILA_ONDE
+        # O 'novo' na frente para a primeira leitura de um item recém colado não
+        # ficar atrás de 99 releituras quando o orçamento apertar.
+        + " ORDER BY estado='novo' DESC, adicionado_em LIMIT ?",
+        _fila_params(usuario_id, instancia, hoje) + (TETO,))]
     if lista:
         # CONTA HOJE, NÃO DESDE SEMPRE. Entrega de ontem que falhou não soma com a
         # de hoje: o `CASE` reinicia a contagem quando o dia vira, senão um item

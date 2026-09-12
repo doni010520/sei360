@@ -224,7 +224,285 @@ finally:
     for p in (velho, anterior, novo):
         p.unlink(missing_ok=True)
 
+# ===========================================================================
+# O MOTOR DO ACOMPANHAMENTO NO SERVIDOR
+#
+# Até 12/09/2026 não havia motor nenhum: `acompanhamento.pendentes` e
+# `.receber` tinham UM chamador cada — as duas rotas `/api/agente/acompanhamento`,
+# que existem para uma ESTAÇÃO buscar trabalho por HTTP. O sistema roda no VPS.
+# Consequência: processo acompanhado fora da mesa entrava na lista, ficava
+# 'novo' e NUNCA era lido; a tela dizia "aguardando primeira leitura" para
+# sempre, e a frase era verdadeira.
+#
+# Estas cenas provam a DECISÃO (quem é candidato, quando é devido, quanto custa
+# perguntar) e o CAMINHO COMPLETO de publicação com um coletor de mentira — o
+# que elas não provam é o Chromium contra o SEI real, e isso fica dito, como o
+# cabeçalho desta suíte já faz para a coleta.
+# ===========================================================================
+import acompanhamento as acmod                                   # noqa: E402
+import acompanhamento_servidor as asv                            # noqa: E402
+import atendente                                                 # noqa: E402
+import cofre                                                     # noqa: E402
+
+print("\nK. QUEM É CANDIDATO — o cruzamento lista x custódia da senha")
+uidA = novo_usuario("acomp.servidor@sei360.local")
+uidB = novo_usuario("acomp.estacao@sei360.local")
+config_servidor(uidA, "SEI-SESAB")
+config_servidor(uidA, "SEI-FESF")
+cx.execute("""INSERT INTO config_usuario(usuario_id,sistema,modo_coleta,sei_login,
+              atualizado_em) VALUES(?,'SEI-SESAB','estacao',?,?)""",
+           (uidB, "fulano.dois", agora()))
+acmod.adicionar(cx, uidA, "019.5001.2026.0000001-11", "SEI-SESAB")
+acmod.adicionar(cx, uidA, "019.5002.2026.0000002-22", "SEI-FESF")
+acmod.adicionar(cx, uidB, "019.5003.2026.0000003-33", "SEI-SESAB")
+cx.commit()
+_cand = asv._candidatos(cx)
+checar("a conta em modo SERVIDOR entra", (uidA, "SEI-SESAB") in _cand, _cand)
+# O QUE A ESTAÇÃO NÃO CONSEGUE: a rota do agente entrega UMA instalação por
+# ciclo (a estação faz login em uma por vez), e o item da outra ficava 'novo'
+# para sempre. No container o cofre guarda credencial POR instalação.
+checar("e as DUAS instalações dela, no mesmo ciclo",
+       (uidA, "SEI-FESF") in _cand, _cand)
+# A senha de quem escolheu modo estação NÃO está aqui — tentar abrir o cofre
+# dela seria desfazer uma decisão de custódia que não é deste módulo.
+checar("a conta em modo ESTAÇÃO fica de fora",
+       not any(u == uidB for u, _ in _cand), _cand)
+
+print("\nL. PERGUNTAR É BARATO — e por isso a pergunta não pode escrever")
+_antes = cx.execute("SELECT tentativas FROM acompanhado WHERE usuario_id=? AND protocolo=?",
+                    (uidA, "019.5001.2026.0000001-11")).fetchone()["tentativas"]
+_n = acmod.quantos_pendentes(cx, uidA, "SEI-SESAB")
+_depois = cx.execute("SELECT tentativas FROM acompanhado WHERE usuario_id=? AND protocolo=?",
+                     (uidA, "019.5001.2026.0000001-11")).fetchone()["tentativas"]
+checar("quantos_pendentes conta o que há", _n == 1, _n)
+checar("e NÃO incrementa o contador de entregas", _depois == _antes, (_antes, _depois))
+checar("só os novos, quando se pede só os novos",
+       acmod.quantos_pendentes(cx, uidA, "SEI-SESAB", so_novos=True) == 1)
+# E a diferença importa porque `pendentes` ESCREVE: é ela que gasta a tentativa.
+_lista = acmod.pendentes(cx, uidA, "SEI-SESAB")
+_gastou = cx.execute("SELECT tentativas FROM acompanhado WHERE usuario_id=? AND protocolo=?",
+                     (uidA, "019.5001.2026.0000001-11")).fetchone()["tentativas"]
+checar("pendentes, sim, gasta a tentativa — é a diferença entre as duas",
+       _lista and _gastou == _antes + 1, (_lista, _antes, _gastou))
+cx.commit()
+
+print("\nM. A CADÊNCIA — 'ao adicionar' agora, releitura DEPOIS da coleta do dia")
+_manha = datetime.now(banco.TZ).replace(hour=8, minute=0, second=0, microsecond=0)
+_tarde = _manha.replace(hour=asv.HORA_SEM_ESPERAR)
+uidC = novo_usuario("acomp.cadencia@sei360.local")
+config_servidor(uidC, "SEI-SESAB")
+agC = novo_agente_servidor(uidC)
+novo_agendamento(agC, ativo=1, horario="07:30")
+acmod.adicionar(cx, uidC, "019.5004.2026.0000004-44", "SEI-SESAB")
+cx.commit()
+_pode, _mot = asv._devido(cx, uidC, "SEI-SESAB", _manha)
+checar("item recém colado ('novo') não espera a coleta de amanhã",
+       _pode and "novo" in _mot, (_pode, _mot))
+# Agora ele deixa de ser novo: foi lido ontem. A releitura espera a coleta,
+# porque é ela que responde de graça o que está na mesa (`reaproveitar`).
+_ontem = (datetime.now(banco.TZ) - timedelta(days=1)).isoformat(timespec="seconds")
+cx.execute("UPDATE acompanhado SET estado='lido', lido_em=? WHERE usuario_id=?",
+           (_ontem, uidC))
+cx.commit()
+_pode, _mot = asv._devido(cx, uidC, "SEI-SESAB", _manha)
+checar("releitura ESPERA a coleta do dia — senão paga seis requisições por nada",
+       not _pode and "coleta do dia" in _mot, (_pode, _mot))
+cx.execute("""INSERT INTO execucao(agente_id,janela,estado,gatilho,entregue_em)
+              VALUES(?,?,'concluida','servidor',?)""",
+           (agC, datetime.now(banco.TZ).date().isoformat() + "T07:30", agora()))
+cx.commit()
+_pode, _mot = asv._devido(cx, uidC, "SEI-SESAB", _manha)
+checar("com a coleta do dia concluída, pode ir", _pode and "já concluiu" in _mot,
+       (_pode, _mot))
+# E a espera tem fim: se ao meio-dia a coleta não veio, ou falhou ou está
+# desarmada — esperar mais trocaria requisição economizada por um dia sem ler.
+cx.execute("DELETE FROM execucao WHERE agente_id=?", (agC,))
+cx.commit()
+_pode, _mot = asv._devido(cx, uidC, "SEI-SESAB", _tarde)
+checar(f"depois das {asv.HORA_SEM_ESPERAR}h ninguém espera mais a coleta",
+       _pode and "não se espera" in _mot, (_pode, _mot))
+# Quem não tem coleta agendada não tem o que esperar.
+uidD = novo_usuario("acomp.semcoleta@sei360.local")
+config_servidor(uidD, "SEI-SESAB")
+acmod.adicionar(cx, uidD, "019.5005.2026.0000005-55", "SEI-SESAB")
+cx.execute("UPDATE acompanhado SET estado='lido', lido_em=? WHERE usuario_id=?",
+           (_ontem, uidD))
+cx.commit()
+_pode, _mot = asv._devido(cx, uidD, "SEI-SESAB", _manha)
+checar("sem coleta agendada, não há o que esperar",
+       _pode and "sem coleta agendada" in _mot, (_pode, _mot))
+
+print("\nN. O ENVELOPE EM PEDAÇOS — o que chegou inteiro fica, o corrompido não")
+_saida = ("log qualquer\n"
+          'ACOMP_OK {"instancia": "SEI-SESAB", "leituras": [{"protocolo": "A"}]}\n'
+          'ACOMP_OK {"instancia": "SEI-SESAB", "leitur\n'
+          'ACOMP_OK {"instancia": "SEI-SESAB", "leituras": [{"protocolo": "B"}]}\n')
+_envs, _ruins = asv._ler_envelopes(_saida)
+checar("os dois pedaços legíveis ficam", len(_envs) == 2, _envs)
+checar("na ordem em que saíram",
+       [e["leituras"][0]["protocolo"] for e in _envs] == ["A", "B"], _envs)
+checar("e o corrompido é contado, não engolido", _ruins == 1, _ruins)
+checar("saída sem marca nenhuma devolve lista vazia",
+       asv._ler_envelopes("nada aqui") == ([], 0))
+
+print("\nO. NENHUM CHROMIUM QUANDO A CARTEIRA JÁ RESPONDEU")
+# A asserção central de eficiência: `rodada` só chama `_executar` — que é quem
+# sobe navegador — quando sobra fila DEPOIS do reaproveitamento. Sem isto, o
+# laço pagaria seis requisições ao SEI por processo para reler o que está no
+# banco, que é a economia inteira do desenho.
+_chamadas = []
+_executar_real = asv._executar
+asv._executar = lambda uid, inst, protos: (_chamadas.append((uid, inst, protos))
+                                           or (len(protos), 0, None))
+os.environ["SEI360_COLETA_SERVIDOR"] = "1"
+try:
+    # Tudo lido HOJE: a fila está vazia e ninguém sobe nada.
+    _hoje = agora()
+    cx.execute("UPDATE acompanhado SET estado='lido', lido_em=?", (_hoje,))
+    cx.commit()
+    asv.rodada(cx)
+    checar("fila vazia: `_executar` não é chamado uma única vez",
+           _chamadas == [], _chamadas)
+    # Agora há um item por ler, e ele é 'novo' (não espera coleta).
+    cx.execute("""UPDATE acompanhado SET estado='novo', lido_em=NULL, tentativas=0,
+                  tentativa_em=NULL WHERE usuario_id=? AND instancia='SEI-SESAB'""",
+               (uidA,))
+    cx.commit()
+    asv.rodada(cx)
+    checar("com item por ler, `_executar` é chamado uma vez", len(_chamadas) == 1,
+           _chamadas)
+    checar("para a conta e a instalação certas, com os números da fila",
+           _chamadas and _chamadas[0][0] == uidA
+           and _chamadas[0][1] == "SEI-SESAB"
+           and _chamadas[0][2] == ["019.5001.2026.0000001-11"], _chamadas)
+    # UMA POR PASSADA: o teto de memória é o motivo, e ele não é negociável
+    # num VPS de 2 GB onde um Chromium são ~450 MB.
+    _chamadas.clear()
+    cx.execute("""UPDATE acompanhado SET estado='novo', lido_em=NULL, tentativas=0,
+                  tentativa_em=NULL""")
+    cx.commit()
+    asv.rodada(cx)
+    checar("no máximo uma leitura por passada, mesmo com vários candidatos",
+           len(_chamadas) == 1, _chamadas)
+    # E COM A MEMÓRIA OCUPADA, NADA COMEÇA — o semáforo é o do atendente, não
+    # um teto paralelo que finge não saber do outro.
+    _chamadas.clear()
+    cx.execute("""UPDATE acompanhado SET estado='novo', lido_em=NULL, tentativas=0,
+                  tentativa_em=NULL""")
+    cx.commit()
+    atendente._vagas.acquire()
+    try:
+        asv.rodada(cx)
+        checar("vaga de memória tomada: nenhuma leitura começa",
+               _chamadas == [], _chamadas)
+    finally:
+        atendente._vagas.release()
+finally:
+    asv._executar = _executar_real
+
+print("\nP. O CAMINHO COMPLETO, com coletor de mentira — cofre, stdin, publicação")
+# O que esta cena NÃO prova, e fica dito: o Chromium contra o SEI real. O que
+# ela prova é tudo o resto — a senha sai do cofre, desce por STDIN (nunca em
+# argv), os pedaços do envelope são publicados um a um, e o item sai de 'novo'.
+_falso = Path(cs.COLETOR.parent / "_coletor_falso_acomp.py")
+_falso.write_text(
+    "import json, sys\n"
+    "p = json.loads(sys.stdin.readline())\n"
+    "protos = p['acompanhamento']['protocolos']\n"
+    "print('argv sem senha:', ' '.join(sys.argv[1:]))\n"
+    "print('recebi senha por stdin:', bool(p.get('senha')))\n"
+    "for x in protos:\n"
+    "    print('ACOMP_OK ' + json.dumps({'instancia': p['acompanhamento']['instancia'],\n"
+    "                                    'leituras': [{'protocolo': x, 'estado': 'lido',\n"
+    "                                                  'aberto_em': ['SESAB/UMA'],\n"
+    "                                                  'documentos': 3, 'movimentos': 7}]}))\n",
+    encoding="utf-8")
+_coletor_real = asv.COLETOR
+asv.COLETOR = _falso
+try:
+    if not cofre.disponivel():
+        checar("cofre disponível para a cena completa", False, "sem chave mestra")
+    else:
+        cofre.guardar(cx, uidA, "SEI-SESAB", "fulano.um", "senha-de-teste")
+        cx.commit()
+        cx.execute("""UPDATE acompanhado SET estado='novo', lido_em=NULL, tentativas=0,
+                      tentativa_em=NULL WHERE usuario_id=? AND instancia='SEI-SESAB'""",
+                   (uidA,))
+        cx.commit()
+        _g, _ig, _mot = asv._executar(uidA, "SEI-SESAB", ["019.5001.2026.0000001-11"])
+        checar("a leitura é publicada", _g == 1, (_g, _ig, _mot))
+        _linha = cx.execute("""SELECT estado, lido_em FROM acompanhado
+                               WHERE usuario_id=? AND protocolo=?""",
+                            (uidA, "019.5001.2026.0000001-11")).fetchone()
+        checar("e o item deixa de estar 'novo' no banco",
+               _linha["estado"] == "lido" and _linha["lido_em"], dict(_linha))
+        _leitura = cx.execute("""SELECT fonte, documentos, movimentos
+                                 FROM acompanhado_leitura WHERE usuario_id=?
+                                 AND protocolo=? ORDER BY id DESC LIMIT 1""",
+                              (uidA, "019.5001.2026.0000001-11")).fetchone()
+        checar("com a leitura gravada na série, e a fonte dizendo que veio do SEI",
+               _leitura and _leitura["documentos"] == 3
+               and _leitura["movimentos"] == 7, dict(_leitura) if _leitura else None)
+        # SEM CREDENCIAL não se inventa leitura: a recusa é dita e nada é gravado.
+        _g2, _ig2, _mot2 = asv._executar(uidA, "SEI-FESF", ["019.5002.2026.0000002-22"])
+        checar("sem credencial para a instalação, recusa com o motivo e grava nada",
+               _g2 == 0 and _mot2 and "credencial" in _mot2, (_g2, _mot2))
+finally:
+    asv.COLETOR = _coletor_real
+    _falso.unlink(missing_ok=True)
+
+print("\nQ. O INTERRUPTOR — um só, e é o da coleta")
+os.environ["SEI360_COLETA_SERVIDOR"] = "0"
+checar("com a coleta desligada, o acompanhamento também está", asv.ligado() is False)
+os.environ["SEI360_COLETA_SERVIDOR"] = "1"
+checar("com ela ligada, este sobe junto — é a MESMA decisão de custódia",
+       asv.ligado() is True)
+os.environ["SEI360_ACOMPANHAMENTO_SERVIDOR"] = "0"
+checar("e há como desligar SÓ este, sem derrubar a coleta", asv.ligado() is False)
+del os.environ["SEI360_ACOMPANHAMENTO_SERVIDOR"]
+checar("sem a variável, volta a seguir a coleta", asv.ligado() is True)
+checar("sem thread própria neste teste, vivo() é False", asv.vivo() is False)
+# `iniciar()` NÃO sobe thread sem o atendente vivo: o semáforo de memória é um
+# `threading.Semaphore`, e ele não atravessa processo do gunicorn.
+checar("iniciar() recusa subir fora do processo que venceu a eleição da busca",
+       asv.iniciar() is False and asv.vivo() is False)
+
+print("\nR. COBERTURA — o que este container responde, dito para a tela")
+# A tela precisa saber QUEM lê cada item, senão volta a mentir: até 12/09/2026
+# o cartão dizia "hoje, só a sua própria coleta pode respondê-lo" sobre todo
+# item que não fosse da instalação ATIVA da pessoa. Era verdade enquanto quem
+# lia era uma estação; virou falso no minuto em que este motor existiu.
+os.environ["SEI360_COLETA_SERVIDOR"] = "1"
+_le, _parado = asv.cobertura(cx, uidA)
+checar("com o motor ligado, as duas instalações em modo servidor são lidas",
+       sorted(_le) == ["SEI-FESF", "SEI-SESAB"] and _parado == {}, (_le, _parado))
+# A FALHA DE IMPLANTAÇÃO MAIS SILENCIOSA: senha no servidor, motor desligado.
+os.environ["SEI360_COLETA_SERVIDOR"] = "0"
+_le, _parado = asv.cobertura(cx, uidA)
+checar("com o motor desligado, nada é lido e o motivo é NOMEADO",
+       _le == [] and set(_parado.values()) == {acmod.MOTOR_DESLIGADO},
+       (_le, _parado))
+os.environ["SEI360_COLETA_SERVIDOR"] = "1"
+# Instalação sem busca provada: a leitura começa por uma pesquisa por número.
+_orig = perfil_sei.INSTANCIAS["SEI-FESF"]["disponivel_busca"]
+perfil_sei.INSTANCIAS["SEI-FESF"]["disponivel_busca"] = False
+try:
+    _le, _parado = asv.cobertura(cx, uidA)
+    checar("instalação sem busca fica parada, com motivo próprio",
+           _le == ["SEI-SESAB"] and _parado == {"SEI-FESF": acmod.SEM_BUSCA},
+           (_le, _parado))
+finally:
+    perfil_sei.INSTANCIAS["SEI-FESF"]["disponivel_busca"] = _orig
+# Quem está em modo ESTAÇÃO não entra em nenhuma das duas listas: a senha não
+# está aqui, e quem responde é o agente da pessoa.
+_le, _parado = asv.cobertura(cx, uidB)
+checar("conta em modo estação não aparece nem como lida nem como parada",
+       _le == [] and _parado == {}, (_le, _parado))
+
 cx.close()
 print("\n" + "=" * 62)
-print(f"{ok} ok, {mau} falha(s)")
+# O FORMATO E CONTRATO: rodar_testes.py casa a frase exata e conta como
+# FALHA a suite que nao a imprime. Era a TERCEIRA suite deste repositorio
+# com resumo proprio, e a unica delas que cobre o que roda em producao.
+print(f"{ok} verificações OK, {mau} falha(s)")
 sys.exit(1 if mau else 0)

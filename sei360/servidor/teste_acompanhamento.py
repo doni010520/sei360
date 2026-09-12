@@ -3366,6 +3366,44 @@ else:
     checar("o coletor do acompanhamento foi conferido", False,
            f"node={_node} arquivo={_js_acomp}")
 
+print("\n23. o cartão diz QUEM lê o item — e para de mentir quando é o servidor")
+# Até 12/09/2026 `texto_fora_da_fila` respondia a uma pergunta só: "a estação
+# está logada na outra instalação?". Era a verdade enquanto quem lia era uma
+# estação. No dia em que o container ganhou motor próprio
+# (`acompanhamento_servidor.py`), a MESMA frase passou a ser impressa sobre item
+# que o motor lê dois minutos depois — e aviso falso é pior que silêncio: ele
+# ensina a não ler o aviso, que era exatamente o que o aviso vinha corrigir.
+_fesf = {"instancia": "SEI-FESF", "estado": "novo", "lido_em": None}
+checar("item que ESTE servidor lê não recebe aviso nenhum",
+       ac.texto_fora_da_fila(_fesf, "SEI-SESAB",
+                             servidor_le=("SEI-FESF",)) == "",
+       repr(ac.texto_fora_da_fila(_fesf, "SEI-SESAB", servidor_le=("SEI-FESF",))))
+# E O CONTRÁRIO TAMBÉM PRECISA SER DITO. Senha no servidor com o motor
+# desligado é a falha de implantação mais silenciosa deste módulo: ninguém
+# precisa de estação nenhuma, e o sintoma é "aguardando primeira leitura" para
+# sempre — frase verdadeira, e por isso mesmo inútil.
+_t = ac.texto_fora_da_fila(_fesf, "SEI-SESAB", rotulo_do_item="FESF",
+                           servidor_parado={"SEI-FESF": ac.MOTOR_DESLIGADO})
+checar("motor desligado: o cartão diz que a senha está aqui e o motor não está",
+       "motor de acompanhamento" in _t and "SEI360_COLETA_SERVIDOR" in _t, repr(_t))
+checar("e manda a pessoa certa agir — quem administra, não ela",
+       "administra" in _t, repr(_t))
+_t2 = ac.texto_fora_da_fila(_fesf, "SEI-SESAB", rotulo_do_item="FESF",
+                            servidor_parado={"SEI-FESF": ac.SEM_BUSCA})
+checar("instalação sem busca: diz que é por ela que a leitura começa",
+       "busca por número" in _t2 and "FESF" in _t2, repr(_t2))
+# A REGRA VELHA CONTINUA, para quem é atendido por estação: sem nada do
+# servidor, a frase é a da instalação ativa.
+checar("sem servidor nenhum no quadro, volta a frase da estação",
+       "configuração ativa" in ac.texto_fora_da_fila(_fesf, "SEI-SESAB"),
+       repr(ac.texto_fora_da_fila(_fesf, "SEI-SESAB")))
+# LIDO HOJE CALA ANTES DE TUDO: item em dia não recebe aviso, nem quando o
+# motor está desligado — ele já foi respondido.
+checar("item lido hoje cala, mesmo com o motor parado",
+       ac.texto_fora_da_fila(
+           {"instancia": "SEI-FESF", "estado": "lido", "lido_em": agora()},
+           "SEI-SESAB", servidor_parado={"SEI-FESF": ac.MOTOR_DESLIGADO}) == "")
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)

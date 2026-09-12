@@ -139,6 +139,7 @@ SEI360_CHAVE_MESTRA=<32B base64>         # AES-256-GCM do cofre — SEM ELA não
 SEI360_BUSCAS_SIMULTANEAS=2              # teto de MEMÓRIA: ~0,45 GB por busca
 SEI360_ATENDENTE=1                       # 0 desliga o executor de busca neste container
 SEI360_COLETA_SERVIDOR=0                 # 1 liga a coleta diária p/ modo servidor (nasce OFF — §3.7)
+SEI360_ACOMPANHAMENTO_SERVIDOR=1         # 0 desliga SÓ o acompanhamento; por padrão segue a linha acima
 SEI360_COLETOR=/app/painel_sesab/coletor_sesab.py
 SEI_PERFIL_DIR=/dados/_perfil_sei        # perfil do navegador, no volume
 SEI_SEM_SANDBOX=1                        # so em container (ver abaixo)
@@ -365,7 +366,19 @@ Este parágrafo dizia "NÃO implementar agora" e condicionava tudo a uma conta d
 
 **Desde 08/09/2026, também a coleta diária de quem está em modo servidor** (`coleta_servidor.py`) — atrás de um interruptor que nasce **desligado** (`SEI360_COLETA_SERVIDOR`, ao contrário de `SEI360_ATENDENTE`): a busca já tinha decisão formal antes de subir; a coleta automática ainda não teve carga real medida (6 mesas × N pessoas de Chromium num VPS de 2 GB continua sem número), e ligar por padrão repetiria o erro que este próprio parágrafo já registrou uma vez. Duas defesas herdadas do atendente, não inventadas de novo: a coleta só começa com a busca ociosa, e enquanto roda segura uma vaga do MESMO semáforo de memória — os dois moram na mesma thread de processo de propósito (ver o cabeçalho de `coleta_servidor.py`), porque o semáforo não atravessa processo do gunicorn. No máximo uma coleta por vez no container.
 
-**O que continua na estação:** modo estação inteiro (senha nunca sai da máquina da pessoa), e qualquer coleta enquanto `SEI360_COLETA_SERVIDOR` estiver desligado.
+**Desde 12/09/2026, também o ACOMPANHAMENTO** (`acompanhamento_servidor.py`), e este não é uma melhoria — é um motor que **não existia**. O módulo de Acompanhamento subiu em 11/09/2026 com um caminho só para a metade caro (ler no SEI processo que não está em mesa nenhuma da pessoa): as duas rotas `/api/agente/acompanhamento`, que existem para uma ESTAÇÃO buscar trabalho por HTTP. Medido pela leitura do código: `acompanhamento.pendentes` e `.receber` tinham **um chamador cada**, essas rotas, e `coleta_servidor.py` não conhecia o módulo. Neste container, portanto, o processo acompanhado entrava na lista, ficava `novo` e **nunca era lido** — a tela dizia "aguardando primeira leitura" para sempre, e a frase era verdadeira. Nenhuma linha vermelha em lugar nenhum.
+
+O laço novo é o de `coleta_servidor.py` com três diferenças que importam, e todas as três são ganho que a estação não tem:
+
+| | estação | container |
+|---|---|---|
+| instalações por ciclo | **uma** — ela faz login numa por vez, e o item da outra ficava `novo` para sempre (medido: três ciclos) | **as duas**, no mesmo ciclo: o cofre guarda credencial por instalação e o atendente já mantém um perfil de navegador por pessoa **e** por instalação |
+| quando lê | a cada 30 min, por relógio próprio | **depois da coleta do dia** — é ela que responde de graça o que está na carteira (`reaproveitar`); ler antes é pagar 6 requisições por processo pelo que ia chegar sozinho. Item recém colado não espera (o gatilho "ao adicionar"), e ninguém espera depois das 12h |
+| quanto custa perguntar | sobe o Chromium para descobrir | um `COUNT(*)` (`acompanhamento.quantos_pendentes`), e a vaga de memória só é tomada depois dele |
+
+**Interruptor: o mesmo da coleta.** `SEI360_COLETA_SERVIDOR` liga os dois, porque a decisão é uma — "este container lê o SEI sozinho, com senha guardada". Um segundo interruptor seria uma segunda coisa para esquecer, e a falha de esquecer é silenciosa (item parado, tela dizendo a verdade). Quem precisar desligar só o acompanhamento tem `SEI360_ACOMPANHAMENTO_SERVIDOR=0`. As defesas de memória são as de lá, não reinventadas: só começa com busca e coleta ociosas, segura uma vaga do MESMO semáforo, no máximo uma leitura por vez, e mora no processo que venceu a eleição do atendente.
+
+**O que continua na estação:** modo estação inteiro (senha nunca sai da máquina da pessoa), e qualquer coleta ou acompanhamento enquanto `SEI360_COLETA_SERVIDOR` estiver desligado. As duas rotas do agente continuam de pé e atendem essas contas — `acompanhamento_servidor._candidatos` ignora de propósito quem está em `modo_coleta='estacao'`, porque a senha dessa conta não está aqui.
 
 **O que continua verdadeiro deste parágrafo:** o único caminho que traz execução para dentro do container **sem** colocar credencial nominal de terceiro num host alugado continua sendo a **conta de serviço institucional criada formalmente pela TIC/PRODEB**, com escopo de leitura, termo de uso e log próprio. Isso deixou de ser pré-requisito e passou a ser **dívida**: enquanto não existir, cada busca feita pelo VPS é imputada, no log do SEI, à pessoa cuja credencial o cofre guardou.
 

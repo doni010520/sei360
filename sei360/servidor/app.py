@@ -3457,6 +3457,13 @@ def acompanhamento_tela(recusados=None, sem_espaco=None):
         # diz: a fila da estação é a da instalação ativa, e o item da outra não entra
         # nela (ver `texto_fora_da_fila`).
         inst_ativa = cfgmod.ler(cx, u["usuario_id"])["sistema"]
+        # E O QUE ESTE CONTAINER RESPONDE, que desde 12/09/2026 é a metade que
+        # decide a frase: o motor daqui lê as DUAS instalações no mesmo ciclo, e
+        # sem esta pergunta o cartão continuaria dizendo "só a sua própria coleta
+        # pode respondê-lo" sobre item que ele lê dois minutos depois. Uma vez
+        # por tela, fora do laço — é uma consulta por conta, não por item.
+        import acompanhamento_servidor as asvmod
+        _srv_le, _srv_parado = asvmod.cobertura(cx, u["usuario_id"])
         for x in itens:
             x["texto_mudou"] = acmod.texto_do_delta(x.get("mudou"))
             x["instancia_rotulo"] = perfil_sei.rotulo(x["instancia"])
@@ -3467,7 +3474,8 @@ def acompanhamento_tela(recusados=None, sem_espaco=None):
             # leitura" — a mesma frase de quem vai ser lido hoje à noite.
             x["fora_da_fila"] = acmod.texto_fora_da_fila(
                 x, inst_ativa, rotulo_do_item=x["instancia_rotulo"],
-                rotulo_ativa=perfil_sei.rotulo(inst_ativa))
+                rotulo_ativa=perfil_sei.rotulo(inst_ativa),
+                servidor_le=_srv_le, servidor_parado=_srv_parado)
             # A PROCEDÊNCIA É TEXTO GERADO DO DADO, como o do delta — e não fatia de
             # data no template. A coluna aceita nulo, e o template fatiando nulo
             # derrubava a tela INTEIRA (500), não a linha; além disso a regra de
@@ -3931,6 +3939,25 @@ try:
         _coleta_servidor.iniciar()
 except Exception as _ex:                                       # noqa: BLE001
     print(f"coleta em modo servidor não subiu: {type(_ex).__name__}", flush=True)
+
+# E O ACOMPANHAMENTO, pelo mesmo desenho e pelo mesmo motivo — MAIS um: sem
+# este bloco, o módulo de Acompanhamento não tinha motor nenhum neste
+# container. `pendentes` e `receber` só eram chamadas pelas duas rotas
+# `/api/agente/acompanhamento`, que existem para uma ESTAÇÃO buscar trabalho por
+# HTTP; o sistema roda no VPS. Medido em 12/09/2026 pela leitura do código:
+# processo acompanhado fora da mesa entrava na lista, ficava 'novo' e NUNCA era
+# lido — a tela dizia "aguardando primeira leitura" para sempre, e a frase era
+# verdadeira. Ver o cabeçalho de `acompanhamento_servidor.py`.
+#
+# Terceiro bloco, e não uma linha no de cima: uma falha ao subir o
+# acompanhamento não pode ser confundida com falha da coleta, nem impedi-la.
+try:
+    import acompanhamento_servidor as _acomp_servidor
+    if not (_debug and not os.environ.get("WERKZEUG_RUN_MAIN")):
+        _acomp_servidor.iniciar()
+except Exception as _ex:                                       # noqa: BLE001
+    print(f"acompanhamento em modo servidor não subiu: {type(_ex).__name__}",
+          flush=True)
 
 
 class _SemSegredoNoLog(logging.Filter):
