@@ -3277,6 +3277,63 @@ checar("o cartão diz que a leitura saiu do histórico, em vez de sair mudo",
 checar("e diz que o processo volta a ser lido, que é o que a pessoa precisa saber",
        "volta para a fila" in _cart_m3, _cart_m3[:400])
 
+print("\n21. a porta do painel — a OUTRA entrada do módulo")
+# O módulo nasceu com uma entrada só: colar números nesta tela. Mas o instante em
+# que alguém decide seguir um processo é quando está olhando para a ficha dele no
+# painel — e `origem='painel'`, documentado no esquema de `acompanhado` desde o
+# primeiro dia, era valor que caminho nenhum do sistema alcançava. O botão fecha
+# isso, e estas checagens existem para ele não sumir na próxima remontagem: o
+# `painel.html` é GERADO, e conserto feito nele morre sem diff e sem aviso.
+import montar_painel as _mp                                      # noqa: E402
+_servido, _solta = _mp.montar(), _mp.montar(solto=True)
+checar("a ficha do painel servido tem a ação de acompanhar",
+       "/acompanhamento/adicionar" in _servido)
+checar("e ela carimba a procedência como 'painel'",
+       'name="origem" value="painel"' in _servido)
+# O arquivo exportado abre de `file://`: sem servidor, sem sessão e sem cookie. Um
+# botão ali não recusaria — ele POSTaria para lugar nenhum, em silêncio.
+checar("a cópia estática NÃO tem a ação, porque não há servidor para atendê-la",
+       "/acompanhamento/adicionar" not in _solta)
+# O RÓTULO. "Acompanhar" já tem dois donos nesta mesma ficha: a etapa de triagem
+# do caso comum (a regra `ok`, que pega tudo o que nenhuma outra pegou) e o bloco
+# "Acompanhamento especial", que é o que o SEI guarda sob esse nome. Três coisas
+# diferentes com o mesmo rótulo a poucos pixels é como se ensina alguém a clicar
+# errado.
+checar("o rótulo não colide com a etapa de triagem nem com o bloco do SEI",
+       "Adicionar ao Acompanhamento</button>" in _servido
+       and ">Acompanhar</button>" not in _servido)
+
+# E A ROTA. O rótulo de procedência é da CASA, não do cliente: aceitar o campo cru
+# deixaria um formulário forjado carimbar `sei_acompanhamento` — a importação do
+# Acompanhamento Especial do SEI, que ainda não existe — e o registro afirmaria
+# uma leitura do SEI que nunca houve.
+_r = _c.get("/acompanhamento")
+_csrf = _csrf_do(_r, _csrf)
+_r = _c.post("/acompanhamento/adicionar",
+             data={"csrf": _csrf, "numeros": "019.7007.2026.0000707-07",
+                   "origem": "painel"})
+checar("adicionar pelo painel responde a tela", _r.status_code == 200,
+       str(_r.status_code))
+_cx = conectar()
+_viu = _cx.execute("SELECT origem FROM acompanhado WHERE usuario_id=7 AND protocolo=?",
+                   ("019.7007.2026.0000707-07",)).fetchone()
+_cx.close()
+checar("e a linha guarda origem='painel'", _viu and _viu["origem"] == "painel",
+       str(dict(_viu) if _viu else None))
+
+_r = _c.get("/acompanhamento")
+_csrf = _csrf_do(_r, _csrf)
+_r = _c.post("/acompanhamento/adicionar",
+             data={"csrf": _csrf, "numeros": "019.7008.2026.0000708-08",
+                   "origem": "sei_acompanhamento"})
+_cx = conectar()
+_forjado = _cx.execute("SELECT origem FROM acompanhado WHERE usuario_id=7 AND protocolo=?",
+                       ("019.7008.2026.0000708-08",)).fetchone()
+_cx.close()
+checar("origem forjada NÃO entra: vira 'manual', que é a verdade do caminho",
+       _forjado and _forjado["origem"] == "manual",
+       str(dict(_forjado) if _forjado else None))
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)

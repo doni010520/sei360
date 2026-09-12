@@ -3533,12 +3533,19 @@ def acompanhamento_adicionar():
         # há configuração, então a reserva era código morto que reencenava justamente
         # o idioma do DEFAULT que esta tabela nasceu sem. As rotas vizinhas não têm.
         inst = cfgmod.ler(cx, u["usuario_id"])["sistema"]
+        # A ORIGEM É ROTULO DE PROCEDÊNCIA, e a lista branca tem UM valor: o
+        # painel, que é a outra porta de entrada do módulo (ver `ACOMP_ACAO` em
+        # `montar_painel.py`). Aceitar o campo cru deixaria um formulário forjado
+        # carimbar `sei_acompanhamento` — a importação do Acompanhamento Especial
+        # do SEI, que ainda não existe — e o registro afirmaria uma leitura do SEI
+        # que nunca houve. Rótulo que o cliente escolhe não é procedência.
+        origem = "painel" if request.form.get("origem") == "painel" else "manual"
         aceitos, recusados, sem_espaco = acmod.adicionar(
             cx, u["usuario_id"], request.form.get("numeros"), inst,
-            nota=(request.form.get("nota") or "").strip() or None)
+            origem=origem, nota=(request.form.get("nota") or "").strip() or None)
         registrar(cx, u["usuario_id"], "acompanhar",
                   alvo=f"{inst} +{len(aceitos)} -{len(recusados)} "
-                       f"cheio:{len(sem_espaco)}",
+                       f"cheio:{len(sem_espaco)} via:{origem}",
                   ip=ip_cliente())
         cx.commit()
     finally:

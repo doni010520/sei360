@@ -359,6 +359,49 @@ LIGA_EXPORTAR = """
   };"""
 
 # ---------------------------------------------------------------------------
+# ACOMPANHAR ESTE PROCESSO — ação da ficha lateral, só no painel SERVIDO.
+#
+# É a porta que faltava. O módulo de Acompanhamento nasceu com uma entrada só —
+# colar números numa tela própria —, e o momento em que alguém decide seguir um
+# processo é justamente este: olhando para a ficha dele. Sem o botão, o caminho
+# era copiar o protocolo, abrir outra porta e colar; e `origem='painel'`, que o
+# esquema de `acompanhado` documenta desde o primeiro dia, era valor que nenhum
+# caminho do sistema alcançava.
+#
+# FORMULÁRIO, e não `fetch` com aviso próprio: a resposta é a tela do
+# Acompanhamento inteira, com as recusas renderizadas dentro dela (número
+# inválido, lista cheia). Um aviso local teria de reencenar aqui essa prestação
+# de contas — e é assim que uma tela passa a dizer que guardou o que não
+# guardou.
+#
+# `target="_blank"` porque o recorte é trabalho: os filtros, o agrupamento e a
+# gaveta são o estado que a pessoa montou para chegar até este processo, e
+# trocá-lo por uma confirmação seria cobrar o preço no lugar errado.
+#
+# O CSRF sai do cookie NA HORA de montar a ficha — mesmo idioma de
+# `acompanhamento.html`. O cookie roda a cada resposta, e um token carimbado na
+# montagem da página envelheceria dentro de uma gaveta que fica aberta.
+#
+# O RÓTULO NÃO PODE SER "Acompanhar", e esta ficha é a razão: a palavra já tem
+# DOIS outros donos a poucos pixels daqui. Logo abaixo do botão, `.acao` imprime
+# a etapa de triagem, e a etapa do caso comum — a regra `ok`, que pega tudo o que
+# nenhuma outra pegou — se chama exatamente "Acompanhar"; mais abaixo, o bloco
+# "Acompanhamento especial" mostra o que o SEI guarda sob esse nome, que é outra
+# coisa ainda. "Adicionar ao Acompanhamento" nomeia o DESTINO, que é o item do
+# menu lateral para onde a resposta leva.
+# ---------------------------------------------------------------------------
+ACOMP_ANCORA = ('      <button class="bt2" data-copy-gav="${esc(d.protocolo)}">'
+                'Copiar protocolo</button>')
+ACOMP_ACAO = """
+      <form method="post" action="/acompanhamento/adicionar" target="_blank" style="margin:0"
+            title="Passa a seguir este processo — inclusive depois que ele sair da sua mesa">
+        <input type="hidden" name="csrf" value="${esc((document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'')}">
+        <input type="hidden" name="origem" value="painel">
+        <input type="hidden" name="numeros" value="${esc(d.protocolo)}">
+        <button class="bt2" type="submit">Adicionar ao Acompanhamento</button>
+      </form>"""
+
+# ---------------------------------------------------------------------------
 # O que o modo solto TIRA do painel de origem.
 #
 # A marcação do menu de conta sai inteira, mas a função que a comanda continua no
@@ -592,10 +635,13 @@ def montar(solto=False):
         texto = texto.replace('<div class="kpis" id="kpis"></div>',
                               '<div class="kpis" id="kpis"></div>\n' + FAIXA.strip(), 1)
         # O item "Exportar painel (HTML)" só existe onde há servidor para servi-lo.
+        # "Acompanhar" entra na mesma leva: as duas ações só existem onde há
+        # servidor para atendê-las.
         for alvo, novo in ((ITEM_ANCORA, ITEM_ANCORA + ITEM_EXPORTAR),
-                           (LIGA_ANCORA, LIGA_ANCORA + LIGA_EXPORTAR)):
+                           (LIGA_ANCORA, LIGA_ANCORA + LIGA_EXPORTAR),
+                           (ACOMP_ANCORA, ACOMP_ANCORA + ACOMP_ACAO)):
             if texto.count(alvo) != 1:
-                raise SystemExit(f"âncora do menu de exportação não encontrada: {alvo!r}")
+                raise SystemExit(f"âncora de ação do painel não encontrada: {alvo!r}")
             texto = texto.replace(alvo, novo, 1)
     texto = texto.replace("</body>", (SCRIPT_SOLTO if solto else SCRIPT).strip()
                           + "\n</body>", 1)
@@ -700,6 +746,7 @@ if __name__ == "__main__":
                       ("folha da lateral", "/estatico/lateral.css"),
                       ("botão de recolher", 'id="latDobrar"'),
                       ("exportar painel em HTML", 'id="miHtml"'),
+                      ("acompanhar da ficha", 'action="/acompanhamento/adicionar"'),
                       ("painel marcado como porta ativa", "pagina_atual")):
         print(f"  {'ok     ' if alvo in s else 'AUSENTE'} {rot}")
     # A cópia estática se confere pelo AVESSO: o que nela é defeito é justamente
@@ -714,6 +761,7 @@ if __name__ == "__main__":
                             ("rail de filtros", 'id="rail"', True),
                             ("SEM moldura lateral", 'class="moldura"', False),
                             ("SEM menu de conta", 'id="contaMenu"', False),
-                            ("SEM caminho de servidor", "/estatico/", False)):
+                            ("SEM caminho de servidor", "/estatico/", False),
+                            ("SEM acao de acompanhar", "/acompanhamento/", False)):
         viu = alvo in solta
         print(f"    {'ok     ' if viu == quer else 'FALHOU '} {rot}")
