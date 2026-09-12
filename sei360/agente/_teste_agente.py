@@ -75,6 +75,17 @@ def coletor_falso(corpo):
     return arq
 
 
+def coletor_que_conhece(corpo, modos=("--acompanhar", "--buscar")):
+    """O mesmo, ja passando o aperto de mao — para o caso ser sobre outra coisa."""
+    return coletor_falso(
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        "if '--modos' in sys.argv:\n"
+        f"    print('MODOS_OK ' + json.dumps({{'modos': {list(modos)!r}, "
+        "'versao': 'falso'}))\n"
+        "    sys.exit(0)\n" + corpo)
+
+
 print("SEI360 — o lado da estacao (agente + coletor)\n")
 
 # =============================================================== C1, a 2a ponta
@@ -205,6 +216,54 @@ try:
     except ag.ColetorNaoConhece:
         recusou = True
     checar("coletor que nem conhece --modos tambem nao recebe trabalho", recusou)
+finally:
+    ag.COLETOR = guardado
+    ag._MODOS_DO_COLETOR.clear()
+
+
+# =========================================================== I1, o teto de fato
+print("\n6. o teto de relogio nao espera o filho falar")
+# O DEFEITO MEDIDO: `for linha in proc.stdout` BLOQUEIA, e o `if time.time() -
+# inicio > teto` so roda depois que uma linha chega. Com teto de 2 s e um filho
+# que emudece, `_rodar_coletor` ainda estava rodando aos 10 s. Este caso e o
+# relogio: o filho imprime UMA linha e depois cala por 30 s.
+MUDO_APOS_UMA = coletor_que_conhece(
+    "sys.stdin.readline()\n"
+    "print('comecando')\n"
+    "sys.stdout.flush()\n"
+    "time.sleep(30)\n"
+    "print('ACOMP_OK {\"leituras\": []}')\n")
+guardado, ag.COLETOR = ag.COLETOR, MUDO_APOS_UMA
+ag._MODOS_DO_COLETOR.clear()
+try:
+    t0 = time.time()
+    saida_env = ag._rodar_coletor({}, "--acompanhar", "ACOMP_OK ", 2, varios=True)
+    gasto = time.time() - t0
+    checar("com teto de 2 s, volta em menos de 6", gasto < 6, f"{gasto:.1f}s")
+    checar("e nao inventa envelope", saida_env == [], repr(saida_env))
+
+    # O MESMO CAMINHO VALE PARA A BUSCA: e a mesma funcao, e era o mesmo laco.
+    ag._MODOS_DO_COLETOR.clear()
+    t0 = time.time()
+    um = ag._rodar_coletor({}, "--buscar", "BUSCA_OK ", 2)
+    gasto = time.time() - t0
+    checar("a busca tem o mesmo teto, pelo mesmo caminho", gasto < 6, f"{gasto:.1f}s")
+    checar("e devolve None, que e o que `buscar()` ja trata", um is None, repr(um))
+
+    # A CONSEQUENCIA QUE O COMENTARIO DE `rodar()` NEGAVA. O bloco esta dentro de
+    # `with Trava():`; enquanto o laco nao voltava, o `__exit__` nao rodava, o
+    # `agente.lock` ficava com PID VIVO e a batida seguinte morria na trava de
+    # `buscar()` — que roda ANTES da coleta. Nao era "o acompanhamento do dia se
+    # perde": era TODA coleta futura parada ate alguem reparar.
+    trava_real, ag.TRAVA = ag.TRAVA, Path(tempfile.mkdtemp(prefix="sei360_trava_")) / "agente.lock"
+    try:
+        ag._MODOS_DO_COLETOR.clear()
+        with ag.Trava():
+            ag._rodar_coletor({}, "--acompanhar", "ACOMP_OK ", 2, varios=True)
+        checar("e a trava e devolvida — a coleta de amanha nao morre nela",
+               not ag.TRAVA.exists(), str(ag.TRAVA))
+    finally:
+        ag.TRAVA = trava_real
 finally:
     ag.COLETOR = guardado
     ag._MODOS_DO_COLETOR.clear()

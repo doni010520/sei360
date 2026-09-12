@@ -21,7 +21,7 @@ isso passa pelo teto local abaixo.
     python sei360_agente.py status
     python sei360_agente.py instalar-tarefa       # imprime o comando do schtasks
 """
-import argparse, hashlib, hmac, json, os, socket, subprocess, sys, threading, time
+import argparse, hashlib, hmac, json, os, queue, socket, subprocess, sys, threading, time
 import urllib.request, urllib.error
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -343,8 +343,47 @@ def _rodar_coletor(pedido, modo, marca, teto, varios=False):
     proc.stdin.close()
     envelopes = []
     inicio = time.time()
+    # O RELÓGIO É NOSSO, E NÃO O DO FILHO. `for linha in proc.stdout` BLOQUEIA:
+    # com o teto testado dentro do laço, ele só era avaliado quando uma linha
+    # chegava, e filho que emudece nunca era morto. Medido em 11/09/2026: teto de
+    # 2 s, filho calado, `_rodar_coletor` ainda rodando aos 30 s — e a linha só
+    # voltou porque o falso acordou.
+    #
+    # ISSO NÃO CUSTAVA "o acompanhamento do dia". O bloco roda dentro de `with
+    # Trava():`; enquanto a função não voltava, o `__exit__` não rodava, o
+    # `agente.lock` ficava com PID VIVO e a batida seguinte do agendador morria na
+    # trava de `buscar()` — que vem ANTES da coleta. TODA coleta futura parava,
+    # até alguém reparar. Mover o bloco para depois da coleta deslocou o
+    # incidente; o que o fecha é o laço ter relógio próprio.
+    #
+    # A leitura vai para uma THREAD e as linhas chegam por FILA: `get(timeout=…)`
+    # acorda sozinho, então o teto é avaliado mesmo no silêncio absoluto. A thread
+    # é daemon e morre com o `kill()` do filho — ela só existe para transformar
+    # uma leitura bloqueante em algo que se possa esperar com prazo.
+    fila = queue.Queue()
+
+    def _bombear(saida, fila):
+        try:
+            for linha in saida:
+                fila.put(linha)
+        finally:
+            fila.put(None)                       # EOF, explícito
+
+    leitor = threading.Thread(target=_bombear, args=(proc.stdout, fila), daemon=True)
+    leitor.start()
     try:
-        for linha in proc.stdout:
+        while True:
+            resta = teto - (time.time() - inicio)
+            if resta <= 0:
+                raise TimeoutError
+            try:
+                # 1 s de teto por espera: o que decide é `resta`, e o mínimo só
+                # garante que a fila seja reconsultada com frequência sã.
+                linha = fila.get(timeout=min(resta, 1.0))
+            except queue.Empty:
+                continue                         # nada chegou; volta a olhar o relógio
+            if linha is None:
+                break                            # o filho fechou a saída
             linha = linha.rstrip()
             if linha.startswith(marca):
                 # LINHA DE MARCA ILEGÍVEL NÃO DERRUBA O CICLO. `JSONDecodeError`
@@ -370,8 +409,6 @@ def _rodar_coletor(pedido, modo, marca, teto, varios=False):
                           f"{len(linha)} bytes)")
             else:
                 print("   ", linha)
-            if time.time() - inicio > teto:
-                raise TimeoutError
         proc.wait(timeout=max(1, teto - (time.time() - inicio)))
     except (TimeoutError, subprocess.TimeoutExpired):
         # O MESMO exit 5 sintético da coleta: `page.evaluate` não obedece o
@@ -563,14 +600,21 @@ def rodar(args):
     # marca o compasso é o agendador, e há trava de uma leitura por dia por item.
     # A posição na frente comprava ZERO latência e arriscava a janela da coleta.
     #
-    # O QUE ELA ARRISCAVA, medido: o laço do coletor só olha o relógio de parede
-    # quando chega uma linha, então filho que emudece — um `ctx.close()` pendurado
-    # depois de já ter impresso `ACOMP_OK`, por exemplo — nunca é morto. Com o
+    # O QUE ELA ARRISCAVA, medido: o laço de `_rodar_coletor` só olhava o relógio
+    # de parede quando chegava uma linha, então filho que emudece — um
+    # `ctx.close()` pendurado depois de já ter impresso `ACOMP_OK`, por exemplo —
+    # nunca era morto (teto de 2 s, filho calado, ainda rodando aos 30 s). Com o
     # acompanhamento na frente, isso deixava o agente esperando EOF com a Trava na
     # mão e a coleta diária jamais pedida; a batida seguinte do agendador via o
-    # PID vivo e ia embora. A coleta parava até alguém reparar.
+    # PID vivo e ia embora.
     #
-    # Aqui atrás, o pior caso é o acompanhamento do dia se perder. A coleta já foi.
+    # E O CUSTO DISSO NÃO ERA "o acompanhamento do dia", como esta linha já disse:
+    # a Trava ficava presa com PID VIVO, e a batida seguinte morria na trava de
+    # `buscar()` — que roda ANTES da coleta. TODA coleta futura parava. Estar
+    # atrás da coleta deslocava o incidente em vez de fechá-lo; quem o fecha é o
+    # relógio próprio do laço (ver `_rodar_coletor`), e é por isso que agora dá
+    # para dizer, sem mentir, que o pior caso aqui é o acompanhamento do dia se
+    # perder — a coleta já foi, e a trava volta.
     #
     # `except Exception` de propósito, e não uma lista de tipos: o que este bloco
     # protege não é o acompanhamento, é o CÓDIGO DE SAÍDA da coleta que já rodou.
