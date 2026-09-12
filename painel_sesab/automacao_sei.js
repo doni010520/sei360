@@ -1932,7 +1932,12 @@ const soDigitos = s => String(s == null ? '' : s).replace(/[^0-9]/g, '');
         que era o que estava escrito, e que a mutacao `[0]` -> `[length-1]`
         atravessava sem matar teste nenhum.
 
-   NENHUMA DAS DUAS E 'nao_encontrado'. Sao falha NOSSA — perfil defasado,
+     3. A LINHA TROUXE O LINK? Ele so sai de `linhas()` com `com_reservados`, e a
+        estacao pode estar com um `pesquisa_sei.js` anterior a esse parametro.
+        Medido com o arquivo de 20/08, que e o implantado: TODO processo seguido
+        voltava 'nao_encontrado'.
+
+   NENHUMA DAS TRES E 'nao_encontrado'. Sao falha NOSSA — perfil defasado,
    implantacao velha, pergunta mal feita —, e 'nao_encontrado' e afirmacao sobre
    o SEI: a tela a imprime como "numero nao encontrado neste SEI, confira o
    digito". Mandar conferir um digito que esta certo, e queimar a chance do dia
@@ -1977,7 +1982,17 @@ async function acompanhar(protocolo, campos) {
     return { protocolo, falha: `a busca devolveu ${itens.length} linha(s), `
       + 'nenhuma com este numero' };
   }
-  if (!item.link) return { protocolo, estado: 'nao_encontrado' };
+  /* O LINK E A UNICA COISA QUE NAO DA PARA RECUPERAR AQUI, e a sua falta NAO diz
+     nada sobre o processo. Ele so sai de `linhas()` com `com_reservados`, e a
+     estacao pode estar com um `pesquisa_sei.js` anterior a esse parametro — foi o
+     que se mediu: com o arquivo de 20/08 implantado, TODO processo seguido
+     voltava 'nao_encontrado', que a tela imprime como "numero nao encontrado
+     neste SEI, confira o digito". Falha de implantacao virando afirmacao
+     definitiva sobre o SEI, e mandando a pessoa conferir um digito certo. */
+  if (!item.link) {
+    return { protocolo, falha: 'a linha veio SEM o link (pesquisa_sei.js da '
+      + 'estacao nao conhece com_reservados?)' };
+  }
   let url, arvore, acoes;
   try {
     ({ url, arvore, acoes } = await urlHistorico(item.link));

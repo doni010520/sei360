@@ -16,7 +16,9 @@
    PEDIDO: busca que saiu sem o filtro do numero e recusada, e a linha escolhida
    entre varias e a que casa por DIGITOS — nao `itens[0]`, que era o que estava
    escrito e o que deixava a ficha de outro processo entrar com o numero certo,
-   marcada 'lido'. Que a
+   marcada 'lido'. Que linha SEM link — que e o que a estacao com o
+   `pesquisa_sei.js` de 20/08 produz — e falha de implantacao, e nao a afirmacao
+   'nao_encontrado' sobre o SEI. Que a
    lista e lida em SERIE, com a mesma pausa curta do resto do coletor. Que um
    processo que estoura nao derruba os outros, e que ele nao ganha estado
    inventado. Que a queda de sessao para o laco em vez de carimbar 'sem_acesso'
@@ -67,6 +69,26 @@ const { documento, elementoSolto } = require('./_dom_de_bolso');
 
 const SRC_AUTO = fs.readFileSync(path.join(__dirname, 'automacao_sei.js'), 'utf8');
 const SRC_BUSCA = fs.readFileSync(path.join(__dirname, 'pesquisa_sei.js'), 'utf8');
+
+/* O `pesquisa_sei.js` QUE ESTA IMPLANTADO NA ESTACAO, e nao o deste diretorio.
+   O de 20/08 nao conhece o parametro `comReservados`: ele monta a linha SEM o
+   href, sempre. Nao e hipotese — e o arquivo que roda hoje, e por isso a leitura
+   de todo processo seguido voltava sem link.
+
+   A defasagem e simulada apagando o efeito do parametro na fonte real, em vez de
+   guardar uma copia velha do arquivo: copia velha envelhece de novo, e um dia
+   passaria a provar outra coisa. O que se prova aqui e o comportamento do
+   `acompanhar()` diante de uma busca que nao entrega o reservado — venha ela de
+   onde vier. */
+const SRC_BUSCA_ANTIGO = SRC_BUSCA.replace(
+  'function linhas(doc, comReservados) {',
+  'function linhas(doc, comReservados) { comReservados = false;');
+if (SRC_BUSCA_ANTIGO === SRC_BUSCA) {
+  console.error('EXPLODIU: a assinatura de linhas() mudou e a simulacao da '
+              + 'estacao defasada nao pegou — o caso da linha sem link estaria '
+              + 'passando a vazio');
+  process.exit(1);
+}
 
 let ok = 0, mau = 0;
 const checar = (nome, cond, viu) => {
@@ -122,7 +144,7 @@ function ambiente(resolver, opc = {}) {
   caixa.window = caixa;
   vm.createContext(caixa);
   vm.runInContext(SRC_AUTO, caixa);
-  vm.runInContext(SRC_BUSCA, caixa);
+  vm.runInContext(opc.buscaAntiga ? SRC_BUSCA_ANTIGO : SRC_BUSCA, caixa);
   caixa.SEIAuto.perfil({ instancia: 'SEI-SESAB', versao: '5.0.4',
                          raiz: 'https://seibahia.ba.gov.br/' });
   return { caixa, saida, pedidos, pausas, corpos };
@@ -629,6 +651,23 @@ console.log('\nA FICHA DE OUTRO PROCESSO NAO ENTRA COM O NUMERO PEDIDO');
   const r5 = await amb5.caixa.SEIAuto.acompanhar(PROTOCOLO, CAMPOS);
   checar('zero linha com o filtro aplicado continua sendo "nao_encontrado"',
          r5.estado === 'nao_encontrado', JSON.stringify(r5));
+}
+
+console.log('\nLINHA SEM LINK E FALHA DE IMPLANTACAO — NAO "NUMERO NAO ENCONTRADO"');
+{
+  /* Medido com o `pesquisa_sei.js` implantado hoje na estacao (de 20/08, sem o
+     parametro reservado): TODO processo seguido voltava `nao_encontrado`, e a
+     tela imprime isso como "numero nao encontrado neste SEI — confira o digito".
+     Falha de implantacao virando afirmacao definitiva sobre o SEI, e mandando a
+     pessoa conferir um digito que esta certo. */
+  const amb = ambiente(redeComResultado([RESULTADO(PROTOCOLO, '91')]), { buscaAntiga: true });
+  const r = await amb.caixa.SEIAuto.acompanhar(PROTOCOLO, CAMPOS);
+  checar('a linha existe, entao NAO e "nao_encontrado"', r.estado !== 'nao_encontrado',
+         JSON.stringify(r));
+  checar('e nao ganha estado nenhum: o item continua pendente', !r.estado,
+         JSON.stringify(r));
+  checar('a falha aponta para a estacao, que e onde esta o defeito',
+         /link/i.test(r.falha || ''), String(r.falha));
 }
 
 console.log('\nA LISTA E LIDA EM SERIE, COM A PAUSA DO RESTO DO COLETOR');
