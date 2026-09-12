@@ -3140,6 +3140,133 @@ _cx = conectar()
 _cx.execute("UPDATE acompanhado SET tentativas=0, tentativa_em=NULL")
 _cx.commit(); _cx.close()
 
+print("\n17. o mesmo protocolo não sai na fila e no descanso da mesma resposta")
+# `pendentes` INCREMENTA e só depois `descansando` LÊ: na entrega em que o item
+# completa a terceira tentativa, ele sai nas duas listas da MESMA resposta — a
+# estação recebe "leia este" e "este descansa até amanhã" sobre o mesmo número.
+_cx = conectar()
+_cx.execute("""UPDATE acompanhado SET tentativas=0, tentativa_em=NULL, lido_em=NULL
+               WHERE usuario_id=7""")
+_cx.commit(); _cx.close()
+_voltas = [(_do_agente("/api/agente/acompanhamento", metodo="GET").get_json() or {})
+           for _ in range(3)]
+_na_fila = set(_voltas[2].get("protocolos") or [])
+_no_descanso = {p["protocolo"] for p in (_voltas[2].get("descansando") or [])}
+checar("(cena) a terceira entrega tem fila e tem descanso",
+       bool(_na_fila) and isinstance(_voltas[2].get("descansando"), list),
+       f"{sorted(_na_fila)[:3]} / {sorted(_no_descanso)[:3]}")
+checar("e nenhum número está nas duas listas ao mesmo tempo",
+       not (_na_fila & _no_descanso), str(sorted(_na_fila & _no_descanso)))
+# O RECUO CONTINUA EXISTINDO: na volta seguinte o item sai da fila e aparece no
+# descanso, que é a razão de `descansando` existir.
+_quarta = _do_agente("/api/agente/acompanhamento", metodo="GET").get_json() or {}
+_descanso4 = {p["protocolo"] for p in (_quarta.get("descansando") or [])}
+checar("na volta seguinte ele está no descanso, e fora da fila",
+       _na_fila <= _descanso4 and not (_na_fila & set(_quarta.get("protocolos") or [])),
+       f"{sorted(_descanso4)[:3]} / {_quarta.get('protocolos')}")
+_cx = conectar()
+_cx.execute("UPDATE acompanhado SET tentativas=0, tentativa_em=NULL")
+_cx.commit(); _cx.close()
+
+print("\n18. lista vazia e lista não observada não podem sair iguais na ficha")
+# `_lista_texto` se dá o trabalho de preservar a diferença — `[]` é "a tela
+# existia e não havia assunto nenhum", None é "não deu para olhar" — e o macro
+# `cel_lista` a apagava com um `{% if not itens_ %}`: os dois viravam "—".
+
+
+def _celula(html, rotulo):
+    """O pedaço da ficha daquela célula, do rótulo até o fim do VALOR dela.
+
+    Corta no `</div>` do valor, e não em N caracteres: com uma janela fixa a
+    checagem lia a célula seguinte junto e ficava verde pelo valor da vizinha —
+    é o mesmo engano que o helper `cartao()` existe para não cometer na página.
+    """
+    i = html.find(f'<div class="k">{rotulo}</div>')
+    if i < 0:
+        return ""
+    j = html.find("</div>", html.find('<div class="v', i))
+    return html[i:j if j > 0 else i + 260]
+
+
+_cx = conectar()
+_ALVO_M2 = "019.3535.2026.0000035-35"
+ac.adicionar(_cx, 7, _ALVO_M2, "SEI-SESAB")
+_cx.commit()
+# A ESTAÇÃO RELATA OS DOIS CASOS NA MESMA LEITURA: a tela Consultar/Alterar
+# existia e não trazia assunto (`[]`), e o campo de interessados não foi
+# observado (ausente no envelope).
+ac.receber(_cx, 7, "SEI-SESAB", {"leituras": [
+    {"protocolo": _ALVO_M2, "aberto_em": ["SESAB/ALHEIA"],
+     "aberto_em_fonte": "arvore", "documentos": 3, "movimentos": 3,
+     "assuntos": [], "anexados": []}]})
+_cx.commit()
+_m2 = {x["protocolo"]: x for x in ac.listar(_cx, 7)}[_ALVO_M2]
+checar("(cena) a leitura guarda os dois valores diferentes",
+       _m2["assuntos"] == [] and _m2["interessados"] is None,
+       f"{_m2['assuntos']!r} / {_m2['interessados']!r}")
+_cx.commit(); _cx.close()
+
+_r = _c.get("/acompanhamento")
+_csrf = _csrf_do(_r, _csrf)
+_cart_m2 = cartao(_r.data.decode("utf-8", "replace"), _ALVO_M2)
+checar("a ficha diz 'nenhum' para a lista que veio vazia",
+       "nenhum" in _celula(_cart_m2, "Assuntos"), _celula(_cart_m2, "Assuntos"))
+checar("e continua dizendo '—' para a que não foi observada",
+       "nenhum" not in _celula(_cart_m2, "Interessados")
+       and "—" in _celula(_cart_m2, "Interessados"),
+       _celula(_cart_m2, "Interessados"))
+
+print("\n19. o orçamento de requisição da fila é o TETO, e é ele que corta")
+# O `LIMIT` de `pendentes` é ORÇAMENTO: o teto de `adicionar` é lido uma vez por
+# chamada e sob concorrência passa (medido: 101), e linha inserida FORA de
+# `adicionar` não passa por ele — que é como esta cena semeia. Sem o corte, uma
+# lista inflada vira uma segunda coleta contra o SEI do órgão sem ninguém ter
+# decidido isso.
+_cx = conectar()
+_cx.execute("INSERT INTO usuarios(id,email,papel,criado_em,ativo) "
+            "VALUES(9,'orcamento@teste.local','servidor',?,1)", (agora(),))
+for _i in range(ac.TETO + 7):
+    _cx.execute("""INSERT INTO acompanhado(usuario_id,instancia,protocolo,origem,
+                   adicionado_em,estado) VALUES(9,'SEI-SESAB',?,'manual',?,'novo')""",
+                (f"019.9000.2026.{_i:07d}-99", agora()))
+_cx.commit()
+_fila9 = ac.pendentes(_cx, 9, "SEI-SESAB")
+_cx.commit()
+checar(f"a fila de uma volta não passa de {ac.TETO}, mesmo com a lista inflada",
+       len(_fila9) == ac.TETO, f"{len(_fila9)} de {ac.TETO + 7} na lista")
+_cx.commit(); _cx.close()
+
+print("\n20. leitura expurgada não pode deixar o cartão mudo")
+# A SÉRIE ENVELHECE EM 180 DIAS (seção 10). Item cuja ÚLTIMA leitura foi
+# expurgada fica `estado='lido'` sem nenhuma linha de leitura — e nenhum dos seis
+# ramos de etiqueta do template casava com isso: o cartão saía só com o número,
+# sem uma palavra sobre o que aconteceu.
+_cx = conectar()
+_ALVO_M3 = "019.3636.2026.0000036-36"
+ac.adicionar(_cx, 7, _ALVO_M3, "SEI-SESAB")
+_cx.execute("""INSERT INTO acompanhado_leitura(usuario_id,instancia,protocolo,
+               lido_em,fonte,medido_em,aberto_em,documentos,movimentos,comparacao)
+               VALUES(7,'SEI-SESAB',?,'2020-01-01T00:00:00-03:00','carteira',
+               '2020-01-01T00:00:00-03:00','["SESAB/MINHA"]',2,2,'primeira')""",
+            (_ALVO_M3,))
+_cx.execute("""UPDATE acompanhado SET estado='lido', lido_em='2020-01-01T00:00:00-03:00'
+               WHERE usuario_id=7 AND protocolo=?""", (_ALVO_M3,))
+_cx.commit(); _cx.close()
+expurgo.expurgar()
+_cx = conectar()
+_m3 = {x["protocolo"]: x for x in ac.listar(_cx, 7)}[_ALVO_M3]
+_cx.close()
+checar("(cena) o expurgo levou a leitura e o item continua na lista",
+       _m3["estado"] == "lido" and _m3["fonte"] is None,
+       f"{_m3['estado']} / {_m3['fonte']}")
+_r = _c.get("/acompanhamento")
+_csrf = _csrf_do(_r, _csrf)
+_cart_m3 = cartao(_r.data.decode("utf-8", "replace"), _ALVO_M3)
+checar("o cartão diz que a leitura saiu do histórico, em vez de sair mudo",
+       "fora do histórico" in _cart_m3, _cart_m3[:400])
+checar("e diz que o processo volta a ser lido, que é o que a pessoa precisa saber",
+       "volta para a fila" in _cart_m3, _cart_m3[:400])
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)

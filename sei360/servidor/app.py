@@ -3350,7 +3350,12 @@ def agente_acompanhamento():
         # O RECUO FICA VISÍVEL. Item que sai da fila por ter falhado três vezes é
         # indistinguível, para quem olha, de item que foi lido — e o custo do
         # engano é alguém achar que o processo está em dia.
-        parados = acmod.descansando(cx, ag["dono_usuario_id"], inst)
+        #
+        # `na_fila=lista` porque `pendentes` já incrementou o contador desta
+        # entrega: sem isso, o item que completa a terceira tentativa AGORA saía
+        # nas duas listas da mesma resposta — "leia este" e "este descansa até
+        # amanhã" sobre o mesmo número.
+        parados = acmod.descansando(cx, ag["dono_usuario_id"], inst, na_fila=lista)
         # COMMIT ANTES DE DECIDIR: `pendentes` chama `reaproveitar`, que ESCREVE —
         # o que a carteira respondeu de graça tem de ficar gravado mesmo quando
         # sobra zero para a estação. É justamente o caso bom.

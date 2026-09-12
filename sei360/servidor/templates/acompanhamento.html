@@ -84,12 +84,20 @@
      pronta, e marcação pronta com texto de gente dentro é o caminho para o
      `|safe` que este arquivo não tem. Aqui o laço é do Jinja, e cada item passa
      pelo escape sozinho. #}
+  {# TRÊS ESTADOS, como o `Já visualizado` logo abaixo — não dois. `[]` é "a tela
+     do SEI existia e não trazia nenhum" e None é "não observado" (a tela
+     Consultar/Alterar pode não existir para aquele processo, e o coletor já
+     distingue os dois com `alterar_disponivel`). `_lista_texto` se dá o trabalho
+     de preservar a diferença nas duas pontas, e o `{% if not itens_ %}` que
+     estava aqui a apagava na última: os dois saíam como "—", e "processo sem
+     interessado" ficava idêntico a "não deu para olhar". #}
   {% macro cel_lista(rotulo, itens_) %}
     <div class="acomp-cel acomp-largo">
       <div class="k">{{ rotulo }}</div>
-      <div class="v{% if not itens_ %} nulo{% endif %}">
+      <div class="v{% if itens_ is none %} nulo{% endif %}">
         {%- if itens_ %}{% for v in itens_ %}{{ v }}{% if not loop.last %}<br>{% endif %}{% endfor %}
-        {%- else %}—{% endif -%}
+        {%- elif itens_ is none %}—
+        {%- else %}nenhum — a tela do SEI existia e não trazia nenhum{% endif -%}
       </div>
     </div>
   {% endmacro %}
@@ -127,7 +135,16 @@
         title="é a primeira observação deste processo: o que mudou só aparece a partir da segunda">nada a comparar ainda</span>
       {% elif x.comparacao == 'sem_avanco' %}<span class="tag es"
         title="a leitura mais recente não trouxe medição mais nova que a anterior — não houve observação nova para comparar">sem dado novo</span>
+      {% elif not x.fonte %}<span class="tag es"
+        title="a série de leituras guarda 180 dias (ver o expurgo); a última leitura deste processo saiu do histórico, e o item volta para a fila na próxima leitura">leitura fora do histórico — volta para a fila</span>
       {% elif x.comparacao == 'comparada' %}<span style="color:var(--ink-3);font-size:12px">sem mudança</span>
+      {# NENHUM RAMO MUDO. Item 'lido' cuja última leitura foi expurgada (180
+         dias) não casava com nenhum dos seis acima e o cartão saía SÓ COM O
+         NÚMERO — a única linha da tela que não dizia nada. O ramo de cima é o
+         desse caso, e este é o do que ninguém previu: dizer "não sei" é o
+         mínimo, e é o que separa estado novo de tela quebrada. #}
+      {% else %}<span class="tag es"
+        title="a leitura existe, mas não registrou contra o que foi comparada">leitura sem comparação registrada</span>
       {% endif %}
     </div>
     {# QUAL PROCESSO É ESTE — a pergunta do pedido, respondida na linha FECHADA.

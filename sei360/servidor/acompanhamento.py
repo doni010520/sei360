@@ -981,13 +981,25 @@ def reaproveitar(cx, usuario_id, instancia):
 TENTATIVAS_ATE_DESCANSAR = 3
 
 
-def descansando(cx, usuario_id, instancia):
+def descansando(cx, usuario_id, instancia, na_fila=()):
     """Os itens que o servidor parou de oferecer HOJE, e quantas vezes falharam.
 
     Existe para o recuo não ser silencioso. Item que some da fila sem ninguém
     dizer por quê é indistinguível de item que foi lido — e o custo do engano é
     alguém olhando a tela achar que o processo está em dia.
+
+    `na_fila` É O QUE ESTA MESMA RESPOSTA ESTÁ ENTREGANDO, e sai daqui. Sem ele,
+    o mesmo protocolo saía nas duas listas: `pendentes` INCREMENTA o contador
+    antes de esta função LER, então na entrega em que o item completa a terceira
+    tentativa a estação recebia "leia este" e "este descansa até amanhã" sobre o
+    mesmo número. Recuo é o que ficou FORA da fila; o que está sendo entregue
+    agora não descansa, por definição.
+
+    Filtrar aqui, e não na rota, porque a regra é do módulo — `app.py` só
+    transporta. E em Python, não em SQL: a lista tem no máximo `TETO` itens, e
+    um `NOT IN` de cem marcadores custaria mais para ler do que para rodar.
     """
+    fila = set(na_fila or ())
     return [{"protocolo": r["protocolo"], "tentativas": r["tentativas"]}
             for r in cx.execute(
                 """SELECT protocolo, tentativas FROM acompanhado
@@ -995,7 +1007,8 @@ def descansando(cx, usuario_id, instancia):
                      AND substr(COALESCE(tentativa_em,''),1,10)=substr(?,1,10)
                      AND (lido_em IS NULL OR substr(lido_em,1,10)<>substr(?,1,10))
                    ORDER BY tentativas DESC, protocolo""",
-                (usuario_id, instancia, TENTATIVAS_ATE_DESCANSAR, agora(), agora()))]
+                (usuario_id, instancia, TENTATIVAS_ATE_DESCANSAR, agora(), agora()))
+            if r["protocolo"] not in fila]
 
 
 def pendentes(cx, usuario_id, instancia):
