@@ -302,6 +302,81 @@ finally:
     ag._MODOS_DO_COLETOR.clear()
 
 
+# ============================================ I3, um nao-200 nao mata os outros
+def rodar_acompanhar(respostas_post, fatias=5, falhas_do_env=(), motivo=None,
+                     pedidos=None):
+    """Roda `acompanhar()` de verdade contra um coletor falso e um servidor falso.
+
+    Devolve (registro dos POSTs, texto impresso). `chamar()` e trocado: e o que
+    permite medir quantos POSTs sairam, com que corpo, e sem rede nenhuma.
+    """
+    import io
+    import contextlib
+
+    corpo = ["sys.stdin.readline()\n"]
+    for i in range(fatias):
+        pedaco = {"instancia": "SEI-SESAB",
+                  "leituras": [{"protocolo": "019.%d.2026.0000001-11" % i,
+                                "estado": "lido"}]}
+        if i == 0:
+            pedaco["falhas"] = [dict(f) for f in falhas_do_env]
+            pedaco["motivo"] = motivo
+            pedaco["pedidos"] = pedidos
+        corpo.append("print('ACOMP_OK ' + json.dumps(%r))\n" % pedaco)
+    FALSO = coletor_que_conhece("".join(corpo))
+
+    registro, restantes = [], list(respostas_post)
+
+    def chamar_falso(cfg, caminho, corpo=None, metodo=None, timeout=120):
+        registro.append((caminho, metodo, corpo))
+        if metodo == "GET":
+            return 200, {"ler": True, "instancia": "SEI-SESAB",
+                         "protocolos": ["019.%d.2026.0000001-11" % i
+                                        for i in range(fatias)],
+                         "perfil": {"instancia": "SEI-SESAB"}}
+        return restantes.pop(0) if restantes else (200, {"gravadas": 1, "ignoradas": 0})
+
+    guardado_c, guardado_ch = ag.COLETOR, ag.chamar
+    ag.COLETOR, ag.chamar = FALSO, chamar_falso
+    ag._MODOS_DO_COLETOR.clear()
+    try:
+        tela = io.StringIO()
+        with contextlib.redirect_stdout(tela):
+            ag.acompanhar({"servidor": "http://nao-usado", "token": "x"})
+        return [r for r in registro if r[1] != "GET"], tela.getvalue()
+    finally:
+        ag.COLETOR, ag.chamar = guardado_c, guardado_ch
+        ag._MODOS_DO_COLETOR.clear()
+
+
+print("\n8. um nao-200 passageiro numa fatia nao descarta as outras")
+# MEDIDO: 500 na primeira fatia -> 1 POST tentado de 5, 80 leituras boas perdidas
+# na mao do agente. O `break` era por QUALQUER nao-200, e `chamar()` devolve 0
+# para servidor inalcancavel e para timeout.
+posts, tela = rodar_acompanhar([(500, {"erro": "erro interno"})])
+checar("as 5 fatias sao tentadas mesmo com 500 na primeira", len(posts) == 5,
+       f"{len(posts)} POST(s)")
+checar("e a recusa da primeira aparece na tela", "500" in tela, tela[:300])
+checar("o servidor recebeu as outras 4", "gravou 4" in tela, tela[:300])
+
+posts, tela = rodar_acompanhar([(0, {"erro": "servidor inalcançável"})])
+checar("servidor inalcancavel numa fatia tambem nao mata as outras",
+       len(posts) == 5, f"{len(posts)} POST(s)")
+
+# O 409 CONTINUA PARANDO, e o argumento e o escrito: "a instalacao do dono mudou
+# entre o pedido e a resposta" vale para TODOS os pedacos — a instalacao declarada
+# e a mesma nos cinco. Insistir seriam 5 recusas iguais.
+posts, tela = rodar_acompanhar([(409, {"erro": "a estação relata leitura de..."})])
+checar("mas o 409 para no primeiro, porque vale para todos", len(posts) == 1,
+       f"{len(posts)} POST(s)")
+checar("e diz por que parou", "409" in tela and "instala" in tela, tela[:300])
+
+# 401/403 tambem valem para todos: o token nao muda entre uma fatia e outra.
+posts, tela = rodar_acompanhar([(401, {"erro": "token inválido"})])
+checar("401 tambem para no primeiro (o token nao muda no meio)", len(posts) == 1,
+       f"{len(posts)} POST(s)")
+
+
 print(f"\n{ok_total} verificacao(oes), {len(falhas)} falha(s)")
 if falhas:
     print("FALHOU: " + "; ".join(falhas))

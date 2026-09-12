@@ -552,17 +552,31 @@ def acompanhar(cfg):
         print("  a estação não devolveu leitura nenhuma — "
               f"os {len(protocolos)} item(ns) continuam pendentes")
         return True
-    gravadas, ignoradas, falhas = 0, 0, []
+    # AS RECUSAS QUE VALEM PARA TODOS OS PEDAÇOS, e só elas, param o laço:
+    #   409 — "a instalação do dono mudou entre o pedido e a resposta". A
+    #         instalação declarada é a MESMA nos cinco pedaços: insistir seriam
+    #         cinco recusas idênticas no log;
+    #   401/403 — o token do agente não muda entre um pedaço e o seguinte.
+    # Qualquer outra é passageira ATÉ PROVA EM CONTRÁRIO, e o `break` por
+    # `s != 200` custava caro: medido, 500 na primeira fatia dava 1 POST tentado
+    # de 5 e 80 leituras boas perdidas na mão do agente — leituras que custaram
+    # seis requisições ao SEI cada uma. E `chamar()` devolve 0 para servidor
+    # inalcançável E para timeout, então um soluço de rede no primeiro POST
+    # descartava o resto da mesma forma. O teto natural do laço são os cinco
+    # pedaços: não há como isto virar martelada.
+    PARA_TUDO = (401, 403, 409)
+    gravadas, ignoradas, falhas, recusados = 0, 0, [], []
     for i, envelope in enumerate(envelopes, 1):
         s, r = chamar(cfg, "/api/agente/acompanhamento", envelope, timeout=120)
         if s != 200:
-            # PARA NO PRIMEIRO NÃO-200, em vez de insistir com os outros pedaços.
-            # O 409 é "a instalação do dono mudou entre o pedido e a resposta", e
-            # ele vale para TODOS os pedaços — a instalação declarada é a mesma nos
-            # três. Insistir seria N recusas iguais no log.
             print(f"  servidor recusou o pedaço {i}/{len(envelopes)} ({s}): "
                   f"{r.get('erro')}")
-            break
+            recusados.append(i)
+            if s in PARA_TUDO:
+                print("    (essa recusa vale para todos os pedaços — a "
+                      "instalação ou a credencial não mudam no meio; parando)")
+                break
+            continue
         gravadas += r.get("gravadas") or 0
         ignoradas += r.get("ignoradas") or 0
         falhas += envelope.get("falhas") or []
