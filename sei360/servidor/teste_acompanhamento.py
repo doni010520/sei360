@@ -2656,6 +2656,89 @@ checar("só linhas sem carimbo: nada é anunciado, e a leitura diz por quê",
        f"{_d_tudo_nulo} / {_so_nulo['comparacao']}")
 _cx.commit(); _cx.close()
 
+print("\n12. coleta que não trouxe mesa nenhuma não é 'saiu de'")
+# O CENÁRIO MEDIDO EM 11/09/2026: o MESMO processo, na MESMA unidade, em duas
+# coletas — a segunda sem nenhuma linha em `processo_mesa`, que é o que acontece
+# quando a árvore não parseia (o comentário de `reaproveitar` já dizia que
+# acontece de verdade). `reaproveitar` entregava `aberto_em: []`, `delta`
+# guardava com `is not None`, e o conjunto vazio passava como OBSERVAÇÃO: a
+# subtração devolvia todas as unidades anteriores.
+#
+#   mudou = {'saiu_de': ['SESAB/MINHA']}   texto = 'saiu de MINHA'
+#
+# O processo não se moveu. E o cartão saía autocontraditório: a etiqueta dizia
+# "saiu de MINHA" e três linhas abaixo o template dizia "a leitura não trouxe
+# unidade nenhuma".
+_cx = conectar()
+_ALVO_C2 = "019.2424.2026.0000024-24"
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,documentos,
+               movimentos,medido_em,mesas_fonte)
+               VALUES(900,'2424',?,4,6,?,'arvore')""", (_ALVO_C2, _ANTEONTEM))
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'2424','SESAB/MINHA',NULL)""")
+_cx.commit()
+ac.adicionar(_cx, 7, _ALVO_C2, "SEI-SESAB")
+_cx.commit()
+checar("(cena) a primeira coleta responde, com a unidade da árvore",
+       ac.reaproveitar(_cx, 7, "SEI-SESAB") >= 1)
+_cx.commit()
+_c2_um = {x["protocolo"]: x for x in ac.listar(_cx, 7)}[_ALVO_C2]
+checar("(cena) e a leitura registra a unidade",
+       _c2_um["aberto_em"] == ["SESAB/MINHA"], str(_c2_um["aberto_em"]))
+
+# A COLETA SEGUINTE, mais fresca e SEM linha de mesa: a árvore não parseou.
+_cx.execute("DELETE FROM processo_mesa WHERE snapshot_id=900 AND id_sei='2424'")
+_cx.execute("UPDATE processo SET medido_em=? WHERE snapshot_id=900 AND id_sei='2424'",
+            (_ONTEM,))
+_cx.execute("UPDATE acompanhado SET lido_em=? WHERE usuario_id=7 AND protocolo=?",
+            (_ONTEM, _ALVO_C2))
+_cx.commit()
+checar("(cena) a segunda coleta também responde",
+       ac.reaproveitar(_cx, 7, "SEI-SESAB") >= 1)
+_cx.commit()
+_c2 = {x["protocolo"]: x for x in ac.listar(_cx, 7)}[_ALVO_C2]
+# A COMPARAÇÃO ACONTECEU — não é a guarda de monotonicidade calando tudo, é o
+# conjunto vazio deixando de virar afirmação.
+checar("a segunda leitura foi comparada de verdade",
+       _c2["comparacao"] == "comparada", str(_c2["comparacao"]))
+checar("coleta sem linha de mesa NÃO anuncia saída de unidade",
+       "saiu_de" not in (_c2["mudou"] or {}), str(_c2["mudou"]))
+checar("e a tela não escreve 'saiu de MINHA' sobre processo que não se moveu",
+       "saiu de" not in ac.texto_do_delta(_c2["mudou"]),
+       ac.texto_do_delta(_c2["mudou"]))
+# O OUTRO CANAL, que o conserto óbvio (`mesas or None`) matava: a lista VAZIA
+# continua chegando à coluna, porque é ela que deixa a tela dizer "a leitura não
+# trouxe unidade nenhuma" em vez de o item parecer nunca lido.
+checar("a lista vazia continua chegando à leitura, e não vira 'nunca lido'",
+       _c2["aberto_em"] == [] and _c2["fonte"] == "carteira",
+       f"{_c2['aberto_em']!r} / {_c2['fonte']}")
+_cx.commit(); _cx.close()
+
+_r = _c.get("/acompanhamento")
+_csrf = _csrf_do(_r, _csrf)
+_cart_c2 = cartao(_r.data.decode("utf-8", "replace"), _ALVO_C2)
+checar("o cartão diz que a leitura não trouxe unidade",
+       "não trouxe unidade nenhuma" in _cart_c2, _cart_c2[:300])
+checar("e não afirma, na mesma linha, que o processo saiu da unidade",
+       "saiu de" not in _cart_c2, _cart_c2[:300])
+
+# A REGRA, no nível do delta: conjunto vazio não é observação — nem do lado novo
+# (que dizia "saiu de tudo") nem do lado anterior (que diria "foi recebido em
+# tudo"). É o que o próprio template afirma sobre `[]`: "a coleta daquele dia não
+# disse onde o processo está", nunca "não está aberto em lugar nenhum".
+_com_unidade = {"aberto_em": ["SESAB/MINHA"], "documentos": 4, "movimentos": 6}
+_sem_unidade = {"aberto_em": [], "documentos": 4, "movimentos": 6}
+checar("conjunto novo vazio não vira 'saiu de todas'",
+       ac.delta(_com_unidade, _sem_unidade) is None,
+       str(ac.delta(_com_unidade, _sem_unidade)))
+checar("conjunto anterior vazio não vira 'foi recebido em todas'",
+       ac.delta(_sem_unidade, _com_unidade) is None,
+       str(ac.delta(_sem_unidade, _com_unidade)))
+checar("mas o conjunto vazio não cala a contagem que mudou",
+       ac.delta(_com_unidade, dict(_sem_unidade, documentos=6))
+       == {"documentos": 2},
+       str(ac.delta(_com_unidade, dict(_sem_unidade, documentos=6))))
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)

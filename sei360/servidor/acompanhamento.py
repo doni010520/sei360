@@ -321,15 +321,35 @@ def delta(anterior, atual):
     if not anterior:
         return None
     d = {}
-    # AUSÊNCIA NÃO É CONJUNTO VAZIO — o mesmo cuidado que as contagens, abaixo,
-    # já tinham com `is not None`. Com `or []`, leitura relatada SEM o campo
+    # AUSÊNCIA NÃO É CONJUNTO VAZIO. Com `or []`, leitura relatada SEM o campo
     # (árvore que não parseou, JSON truncado, campo que a estação não soube
     # preencher) virava "não está aberto em lugar nenhum", e a tela dizia que o
     # processo saiu de TODAS as unidades. A estação relata o que leu; o que ela
     # não leu não pode virar afirmação — e é a docstring desta função que promete
     # não anunciar mudança onde não houve observação.
+    #
+    # E LISTA VAZIA TAMBÉM NÃO É OBSERVAÇÃO — não aqui, onde se AFIRMA. `[]` é o
+    # que a carteira entrega quando a coleta não gravou nenhuma linha em
+    # `processo_mesa` (árvore que não parseou), e é o que a estação relata quando
+    # a árvore não trouxe a linha "Processo aberto nas unidades". O produto já
+    # diz isso por escrito na tela: "a leitura não trouxe unidade nenhuma", NUNCA
+    # "não está aberto em lugar nenhum". Com `is not None` sozinho, o vazio
+    # passava como conjunto observado e a subtração devolvia TODAS as unidades
+    # anteriores — medido em 11/09/2026, mesmo processo e mesma unidade em duas
+    # coletas: `mudou = {'saiu_de': ['SESAB/MINHA']}` para processo que não se
+    # moveu. E o cartão saía autocontraditório, com "saiu de MINHA" três linhas
+    # acima de "a leitura não trouxe unidade nenhuma".
+    #
+    # A REGRA VALE NOS DOIS LADOS: anterior vazio geraria o espelho da mesma
+    # falsidade, "foi recebido em" todas as unidades da leitura nova.
+    #
+    # O VAZIO NÃO SOME DO PRODUTO por causa disto: ele continua indo para a
+    # coluna e para a tela (ver `reaproveitar`, que entrega LISTA e nunca None) —
+    # são dois canais, e é só o de AFIRMAR que emudece. Trocar `mesas` por
+    # `mesas or None` na origem calaria os dois, e o item voltaria a parecer nunca
+    # lido.
     antes_un, agora_un = anterior.get("aberto_em"), atual.get("aberto_em")
-    if antes_un is not None and agora_un is not None:
+    if antes_un and agora_un:
         antes_un, agora_un = set(antes_un), set(agora_un)
         if antes_un - agora_un:
             d["saiu_de"] = sorted(antes_un - agora_un)
@@ -757,6 +777,13 @@ def reaproveitar(cx, usuario_id, instancia):
             # distinguir de "aguardando primeira leitura" — e vazio aqui
             # significa "a coleta não disse", nunca "não está aberto em lugar
             # nenhum".
+            #
+            # E É POR ISSO QUE CONTINUA SENDO `mesas`, e não `mesas or None`: o
+            # conserto óbvio do "saiu de" falso (medido em 11/09/2026, mesmo
+            # processo e mesma unidade em duas coletas) calaria também a tela, e
+            # o item voltaria a parecer nunca lido. Quem emudece é `delta()`, que
+            # não deriva saída de conjunto vazio — a afirmação e a exibição são
+            # canais separados.
             "aberto_em": mesas,
             # `mesas_fonte` vem da coleta e pode valer 'andamento', que a medição
             # de 10/09/2026 mostrou errar em 100% dos 1.278 casos observáveis.
@@ -961,8 +988,13 @@ def _unidades(v):
 
     Lista VAZIA passa e é diferente de None: `[]` é "li e a árvore não listou
     unidade nenhuma" — o que acontece de verdade quando a árvore não parseia — e
-    None é "não observado". A tela distingue as duas, e é para isso que `delta()`
-    guarda `is not None` em vez de `or []`.
+    None é "não observado". A tela distingue as duas, e é por isso que o vazio
+    chega inteiro até a coluna.
+
+    O QUE O VAZIO NÃO FAZ é virar afirmação: `delta()` não deriva `saiu_de` nem
+    `entrou_em` de conjunto vazio, porque "a leitura não trouxe unidade nenhuma"
+    não é "o processo não está aberto em lugar nenhum". São dois canais, e só um
+    deles emudece.
     """
     return _lista_texto(v)
 
