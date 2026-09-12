@@ -2498,6 +2498,93 @@ checar("o botão avisa que o histórico vai junto",
 checar("e que recolar não o traz de volta",
        "não o histórico" in _trecho, _trecho[-160:])
 
+print("\n11. a leitura estagnada não vira base de comparação")
+# O DEFEITO MEDIDO EM 11/09/2026, e o que a guarda de monotonicidade NÃO cobria.
+# `gravar_leitura` cala o delta quando a medição anda para trás ('sem_avanco'),
+# mas a linha estagnada continuava sendo a ÚLTIMA INSERIDA — e a leitura fresca
+# seguinte comparava contra ela, ressuscitando inteiro o delta que a guarda tinha
+# acabado de suprimir:
+#
+#   t1 (10/09): aberto=[A,B]    docs=10 movs=20   comparacao=primeira
+#   t2 (02/09): aberto=[A,B,C]  docs=8  movs=14   comparacao=sem_avanco (mudou=None)
+#   t3 (hoje) : aberto=[B]      docs=11 movs=21
+#       dizia   -> saiu de A, C · +3 documentos · +7 movimentos
+#       verdade -> saiu de A    · +1 documento  · +1 movimento
+#
+# A verdade é contra t1, a última observação FRESCA — nunca contra t2, que a
+# própria guarda declarou não ser observação nova.
+_cx = conectar()
+_ALVO_C1 = "019.1717.2026.0000017-17"
+_OITO_DIAS = (janelas.com_fuso(agora()) - timedelta(days=8)).isoformat(timespec="seconds")
+ac.adicionar(_cx, 7, _ALVO_C1, "SEI-SESAB")
+_cx.commit()
+
+
+def _ler_c1(protocolo, unidades, docs, movs, medido, fonte="carteira"):
+    """Uma leitura crua, direto em `gravar_leitura`: é ELE que está sob teste."""
+    return ac.gravar_leitura(_cx, 7, "SEI-SESAB", protocolo,
+                             {"aberto_em": unidades, "aberto_em_fonte": "arvore",
+                              "documentos": docs, "movimentos": movs},
+                             fonte=fonte, medido_em=medido)
+
+
+_ler_c1(_ALVO_C1, ["SESAB/A", "SESAB/B"], 10, 20, _ONTEM)
+_d_estagnada = _ler_c1(_ALVO_C1, ["SESAB/A", "SESAB/B", "SESAB/C"], 8, 14, _OITO_DIAS)
+_cx.commit()
+checar("(cena) a medição que andou para trás não anuncia mudança",
+       _d_estagnada is None, str(_d_estagnada))
+_d_fresca = _ler_c1(_ALVO_C1, ["SESAB/B"], 11, 21, agora(), fonte="sei")
+_cx.commit()
+checar("a leitura fresca compara contra a última FRESCA, não contra a estagnada",
+       (_d_fresca or {}).get("saiu_de") == ["SESAB/A"], str(_d_fresca))
+checar("e as contagens são as de verdade, não as ressuscitadas",
+       ((_d_fresca or {}).get("documentos"), (_d_fresca or {}).get("movimentos"))
+       == (1, 1), str(_d_fresca))
+checar("o texto da tela sai dessa verdade",
+       ac.texto_do_delta(_d_fresca) == "saiu de A · +1 documento · +1 movimento",
+       ac.texto_do_delta(_d_fresca))
+_c1 = {x["protocolo"]: x for x in ac.listar(_cx, 7)}[_ALVO_C1]
+checar("e a leitura de hoje se declara COMPARADA", _c1["comparacao"] == "comparada",
+       str(_c1["comparacao"]))
+
+# `medido_em` ACEITA NULO na coluna (linha anterior à régua, ou gravada fora de
+# `gravar_leitura`), e linha sem carimbo não tem lugar na linha do tempo: ela não
+# pode ser a base de comparação enquanto houver uma datada. Em SQLite, NULL é
+# menor que tudo e `DESC` já a joga para o fim — a ordem escreve isso à mão para
+# não depender do padrão do banco.
+_ALVO_C1_NULO = "019.1818.2026.0000018-18"
+ac.adicionar(_cx, 7, _ALVO_C1_NULO, "SEI-SESAB")
+_cx.commit()
+_ler_c1(_ALVO_C1_NULO, ["SESAB/A"], 5, 5, _ONTEM)
+_cx.execute("""INSERT INTO acompanhado_leitura(usuario_id,instancia,protocolo,
+               lido_em,fonte,medido_em,aberto_em,documentos,movimentos)
+               VALUES(7,'SEI-SESAB',?,?,'carteira',NULL,'["SESAB/Z"]',99,99)""",
+            (_ALVO_C1_NULO, agora()))
+_cx.commit()
+_d_sem_carimbo = _ler_c1(_ALVO_C1_NULO, ["SESAB/A"], 6, 5, agora())
+_cx.commit()
+checar("leitura sem carimbo não vira base: compara-se com a última DATADA",
+       (_d_sem_carimbo or {}).get("documentos") == 1, str(_d_sem_carimbo))
+checar("e o `saiu_de` de uma linha sem carimbo não é inventado",
+       "saiu_de" not in (_d_sem_carimbo or {}), str(_d_sem_carimbo))
+
+# E QUANDO TODAS AS ANTERIORES ESTÃO SEM CARIMBO, o lado seguro do erro: sem
+# frescor estabelecido não se anuncia mudança nenhuma.
+_ALVO_C1_SO_NULO = "019.1919.2026.0000019-19"
+ac.adicionar(_cx, 7, _ALVO_C1_SO_NULO, "SEI-SESAB")
+_cx.execute("""INSERT INTO acompanhado_leitura(usuario_id,instancia,protocolo,
+               lido_em,fonte,medido_em,aberto_em,documentos,movimentos)
+               VALUES(7,'SEI-SESAB',?,?,'carteira',NULL,'["SESAB/Z"]',99,99)""",
+            (_ALVO_C1_SO_NULO, agora()))
+_cx.commit()
+_d_tudo_nulo = _ler_c1(_ALVO_C1_SO_NULO, ["SESAB/A"], 1, 1, agora())
+_cx.commit()
+_so_nulo = {x["protocolo"]: x for x in ac.listar(_cx, 7)}[_ALVO_C1_SO_NULO]
+checar("só linhas sem carimbo: nada é anunciado, e a leitura diz por quê",
+       _d_tudo_nulo is None and _so_nulo["comparacao"] == "sem_avanco",
+       f"{_d_tudo_nulo} / {_so_nulo['comparacao']}")
+_cx.commit(); _cx.close()
+
 print("\n10. o expurgo: a série envelhece, a lista não")
 import expurgo                                                   # noqa: E402
 

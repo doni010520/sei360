@@ -504,11 +504,34 @@ def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte, medido_em
     if not medido_em:
         raise ValueError("gravar_leitura exige medido_em: é a data da MEDIÇÃO, "
                          "e quem lê no SEI passa agora() explicitamente")
+    # A ANTERIOR É A ÚLTIMA MEDIDA, NÃO A ÚLTIMA INSERIDA. Com `ORDER BY id DESC`
+    # a guarda de monotonicidade abaixo silenciava o delta da medição que andou
+    # para trás — e depois a leitura estagnada FICAVA sendo a base da próxima
+    # leitura fresca, que ressuscitava inteiro o delta suprimido. Medido em
+    # 11/09/2026:
+    #
+    #   t1 (10/09): aberto=[A,B]   docs=10 movs=20   -> primeira
+    #   t2 (02/09): aberto=[A,B,C] docs=8  movs=14   -> sem_avanco, mudou=None
+    #   t3 (hoje) : aberto=[B]     docs=11 movs=21
+    #       dizia   'saiu de A, C · +3 documentos · +7 movimentos'
+    #       verdade 'saiu de A · +1 documento · +1 movimento' (contra t1)
+    #
+    # A guarda não estava errada; estava incompleta. Suprimir o anúncio e deixar
+    # a linha suprimida como referência é adiar a falsidade um dia, não impedi-la.
+    #
+    # `medido_em` ACEITA NULO nesta coluna (linha anterior à régua, ou gravada
+    # fora daqui), e linha sem carimbo não tem lugar na linha do tempo: enquanto
+    # houver uma datada, é ela a base. Em SQLite NULL é menor que tudo e `DESC`
+    # já a jogaria para o fim, mas a ordem diz isso à mão — depender do padrão de
+    # NULL do banco é o tipo de silêncio que este módulo paga caro. Com TODAS as
+    # anteriores sem carimbo, sobra a última inserida e `_medicao_avancou`
+    # responde NÃO, que é o lado seguro do erro.
     anterior = cx.execute("""SELECT medido_em, aberto_em, ultimo_movimento,
                              documentos, movimentos
                              FROM acompanhado_leitura
                              WHERE usuario_id=? AND instancia=? AND protocolo=?
-                             ORDER BY id DESC LIMIT 1""",
+                             ORDER BY medido_em IS NULL, medido_em DESC, id DESC
+                             LIMIT 1""",
                           (usuario_id, instancia, protocolo)).fetchone()
     prev = None
     # AS TRÊS RAZÕES DE `mudou` FICAR NULO, ditas em `comparacao`. Antes eram
