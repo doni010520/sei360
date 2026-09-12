@@ -128,6 +128,88 @@ checar("e a execucao so para depois, no navegador que este teste nao tem",
        "launch_persistent_context" in saida or "Executable" in saida, saida[:300])
 
 
+# ==================================================================== C2, o par
+print("\n2. o agente aponta para o coletor DESTA arvore")
+checar("COLETOR e o coletor deste repositorio",
+       Path(ag.COLETOR).resolve() == COLETOR_REAL.resolve(), str(ag.COLETOR))
+checar("e o COLETAS ao lado dele",
+       Path(ag.COLETAS).resolve() == (COLETOR_REAL.parent / "_coletas").resolve(),
+       str(ag.COLETAS))
+# O DEFEITO ERA ESTE: o caminho absoluto da arvore anterior a separacao do
+# repositorio. O arquivo de la e de 7 de setembro e nao tem uma mencao a
+# "acompanhar" — todo o lado da estacao que este ramo construiu nunca rodaria.
+checar("o coletor apontado conhece o modo --acompanhar",
+       "acompanhar" in Path(ag.COLETOR).read_text(encoding="utf-8"), str(ag.COLETOR))
+
+print("\n3. o coletor responde ao aperto de mao, e sem navegador")
+conhece, texto = ag.coletor_conhece("--acompanhar")
+checar("o coletor real diz que conhece --acompanhar", conhece, texto)
+conhece, texto = ag.coletor_conhece("--buscar")
+checar("e --buscar tambem", conhece, texto)
+conhece, texto = ag.coletor_conhece("--modo-que-nunca-existiu")
+checar("e diz que NAO conhece um modo inventado", not conhece, texto)
+
+print("\n4. o coletor recusa modo desconhecido em voz alta — nunca coleta")
+codigo, saida = rodar_coletor_real(["--modo-que-nunca-existiu"], {})
+checar("recusa com codigo 4", codigo == 4, f"codigo {codigo}: {saida[:200]}")
+checar("e nomeia o modo que nao conhece", "--modo-que-nunca-existiu" in saida,
+       saida[:200])
+# O CUSTO DO CONTRARIO, medido no desenho antigo: a flag desconhecida era
+# ignorada, o coletor caia no caminho da COLETA, logava, colhia uma mesa so e
+# gravava por cima da coleta boa do dia.
+checar("e nao chega a abrir o navegador (nao caiu na coleta)",
+       "launch_persistent_context" not in saida and "abrindo o SEI" not in saida,
+       saida[:300])
+
+print("\n5. o agente NAO manda trabalho a coletor que nao conhece o modo")
+# O coletor "velho": responde ao `--modos` sem o modo pedido, e — se receber
+# trabalho assim mesmo — deixa marca no disco. A marca e o que separa "recusou"
+# de "rodou e nao devolveu nada".
+MARCA = Path(tempfile.mkdtemp(prefix="sei360_marca_")) / "rodou.txt"
+VELHO = coletor_falso(
+    "import json, sys\n"
+    "from pathlib import Path\n"
+    "if '--modos' in sys.argv:\n"
+    "    print('MODOS_OK ' + json.dumps({'modos': ['--buscar']}))\n"
+    "    sys.exit(0)\n"
+    f"Path(r'{MARCA}').write_text('recebi trabalho', encoding='utf-8')\n"
+    "sys.stdin.readline()\n"
+    "print('coletando a mesa toda, como sempre')\n")
+guardado, ag.COLETOR = ag.COLETOR, VELHO
+try:
+    ag._MODOS_DO_COLETOR.clear()
+    try:
+        ag._rodar_coletor({"acompanhamento": {}}, "--acompanhar", "ACOMP_OK ", 30,
+                          varios=True)
+        recusou = False
+    except ag.ColetorNaoConhece as e:
+        recusou, texto = True, str(e)
+    checar("o agente recusa antes de rodar", recusou,
+           "rodou assim mesmo" if not recusou else "")
+    checar("e a recusa diz qual modo falta", recusou and "--acompanhar" in texto,
+           texto if recusou else "")
+    checar("o coletor velho NAO recebeu trabalho nenhum", not MARCA.exists(),
+           str(MARCA))
+
+    # O outro coletor velho: nem sabe o que e `--modos`. Sai 0 e imprime log de
+    # coleta. Sem linha de marca nao ha aperto de mao, e sem aperto de mao nao ha
+    # trabalho — este e o caso REAL do arquivo de 7 de setembro.
+    MUDO = coletor_falso("import sys\n"
+                         "sys.stdin.readline()\n"
+                         "print('coletor antigo: comecando a coleta')\n")
+    ag.COLETOR = MUDO
+    ag._MODOS_DO_COLETOR.clear()
+    try:
+        ag._rodar_coletor({}, "--acompanhar", "ACOMP_OK ", 30, varios=True)
+        recusou = False
+    except ag.ColetorNaoConhece:
+        recusou = True
+    checar("coletor que nem conhece --modos tambem nao recebe trabalho", recusou)
+finally:
+    ag.COLETOR = guardado
+    ag._MODOS_DO_COLETOR.clear()
+
+
 print(f"\n{ok_total} verificacao(oes), {len(falhas)} falha(s)")
 if falhas:
     print("FALHOU: " + "; ".join(falhas))

@@ -31,6 +31,7 @@ USO
     python coletor_sesab.py --buscar          # UMA busca avancada; pedido por stdin
     python coletor_sesab.py --acompanhar      # le N processos por numero; pedido por stdin
     python coletor_sesab.py --testar          # entra, confere quem e onde, e sai
+    python coletor_sesab.py --modos           # diz que modos conhece, e sai (aperto de mao)
 
 SAIDAS
 ------
@@ -47,6 +48,52 @@ CODIGOS DE SAIDA
 """
 import json, os, sys, datetime, traceback
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# OS MODOS QUE ESTE COLETOR CONHECE, declarados — e o aperto de mao com o agente.
+#
+# POR QUE ISTO VEM ANTES DE TUDO. Este arquivo ja foi chamado por um caminho
+# absoluto da arvore ANTERIOR a separacao do repositorio (`sei360_agente.py`
+# apontava para `C:\Claude\sei_sistema\painel_sesab\coletor_sesab.py`, de 7 de
+# setembro, que nao tem uma linha sobre acompanhamento). O que acontecia entao
+# nao era um erro: a flag desconhecida era IGNORADA, a execucao caia no caminho
+# da COLETA, logava no SEI, colhia uma mesa so e gravava por cima da coleta boa
+# do dia. Modo que o coletor nao conhece tem de ser recusado em voz alta.
+#
+# `--modos` responde ANTES do import do playwright de proposito: o aperto de mao
+# roda a cada execucao do agente, tem de custar um arranque de Python e nada
+# mais, e tem de responder mesmo numa estacao com o navegador quebrado — ali a
+# pergunta "voce conhece este modo?" continua tendo resposta.
+MODOS = ("--buscar", "--acompanhar", "--testar-login", "--testar", "--modos")
+# As opcoes que NAO sao modo: mudam como um modo roda, ou como a coleta roda.
+# `--somente`, `--instancia` e `--amostra` levam valor logo depois.
+OPCOES = ("--ver", "--mesas", "--plano", "--somente", "--credencial-stdin",
+          "--instancia", "--amostra")
+COM_VALOR = ("--somente", "--instancia", "--amostra")
+VERSAO_COLETOR = "2026-09-11"
+
+if "--modos" in sys.argv:
+    print("MODOS_OK " + json.dumps({"modos": list(MODOS), "opcoes": list(OPCOES),
+                                    "versao": VERSAO_COLETOR}))
+    sys.exit(0)
+
+_pular = False
+for _arg in sys.argv[1:]:
+    if _pular:
+        _pular = False
+        continue
+    if not _arg.startswith("--"):
+        continue
+    if _arg in COM_VALOR:
+        _pular = True
+        continue
+    if _arg not in MODOS and _arg not in OPCOES:
+        # EM VOZ ALTA, e com a lista: quem chamou errou o nome ou este coletor e
+        # velho demais para o que pediram. Cair na coleta seria o pior dos dois
+        # mundos — trabalho que ninguem pediu, por cima do dado do dia.
+        print(f"modo desconhecido: {_arg}. Este coletor conhece "
+              + ", ".join(MODOS + OPCOES))
+        sys.exit(4)
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout

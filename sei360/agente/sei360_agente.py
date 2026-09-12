@@ -29,8 +29,35 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 CONFIG = BASE / "agente.json"
 TRAVA = BASE / "agente.lock"
-COLETOR = Path(r"C:\Claude\sei_sistema\painel_sesab\coletor_sesab.py")
-COLETAS = Path(r"C:\Claude\sei_sistema\painel_sesab\_coletas")
+
+
+def _achar_coletor():
+    """Onde esta o `coletor_sesab.py`. Relativo, nao absoluto fixo.
+
+    O absoluto (`C:\\Claude\\sei_sistema\\painel_sesab\\...`) JA SOBREVIVEU a
+    separacao deste repositorio da arvore antiga — o mesmo defeito que
+    `montar_painel._achar_origem` documenta ter sofrido, e aqui ele custava mais:
+    o arquivo de la e de 7 de setembro e nao tem uma mencao a "acompanhar", entao
+    todo o lado da estacao deste modulo nunca rodaria. E, pior, um coletor que nao
+    conhece a flag nao a recusava: caia no caminho da COLETA, logava, colhia uma
+    mesa so e gravava por cima da coleta boa do dia.
+
+    `painel_sesab/` e irma de `sei360/`, duas pastas acima deste arquivo. O
+    caminho antigo fica como ULTIMO candidato, para a estacao que ainda nao
+    moveu a arvore continuar funcionando — mas so depois do daqui, e o aperto de
+    mao (`coletor_conhece`) e quem diz se aquele serve para o que se vai pedir.
+    """
+    aqui = Path(__file__).resolve().parent
+    candidatos = (aqui.parent.parent / "painel_sesab" / "coletor_sesab.py",
+                  Path(r"C:\Claude\sei_sistema\painel_sesab\coletor_sesab.py"))
+    for c in candidatos:
+        if c.exists():
+            return c
+    return candidatos[0]
+
+
+COLETOR = _achar_coletor()
+COLETAS = COLETOR.parent / "_coletas"
 VERSAO = "1.0.0"
 TZ = timezone(timedelta(hours=-3), "America/Bahia")
 
@@ -223,6 +250,58 @@ def atender(cfg, minutos=ATENDIMENTO_MIN):
     return 0
 
 
+class ColetorNaoConhece(Exception):
+    """O coletor desta estação não conhece o modo que se ia pedir a ele.
+
+    NÃO É FALHA DA EXECUÇÃO: é falha de INSTALAÇÃO, e por isso tem tipo próprio.
+    Quem chama decide o que dizer ao servidor — a busca tem onde carimbar um
+    motivo, o acompanhamento não —, mas nenhum dos dois pode mandar trabalho.
+    """
+
+
+# O que cada coletor respondeu ao `--modos`, por caminho. Cache de PROCESSO: o
+# agente roda de 30 em 30 min e sai; guardar em disco seria guardar a resposta de
+# uma versão que pode ter sido trocada no meio.
+_MODOS_DO_COLETOR = {}
+
+
+def coletor_conhece(modo):
+    """Pergunta ao coletor se ele conhece o modo. Devolve (bool, texto).
+
+    O APERTO DE MÃO EXISTE PORQUE O SILÊNCIO ERA O CAMINHO CARO. Um coletor que
+    não conhece a flag não a recusava: ele a IGNORAVA e caía no caminho da
+    COLETA — login no SEI, uma mesa colhida, e o arquivo do dia sobrescrito por
+    cima da coleta boa. Não havia erro nenhum a ver; havia uma coleta pior.
+    Perguntar antes custa um arranque de Python (~0,2 s, uma vez por modo por
+    execução) e é a diferença entre "não fiz" e "fiz outra coisa".
+
+    Coletor que não responde `MODOS_OK` é coletor anterior a este contrato — o
+    da árvore antiga, por exemplo. Ele NÃO passa: quem não sabe dizer o que
+    conhece não recebe trabalho.
+    """
+    chave = str(COLETOR)
+    if chave not in _MODOS_DO_COLETOR:
+        try:
+            p = subprocess.run([sys.executable, str(COLETOR), "--modos"],
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=60)
+            linha = next((l for l in (p.stdout or "").splitlines()
+                          if l.startswith("MODOS_OK ")), None)
+            _MODOS_DO_COLETOR[chave] = (json.loads(linha[len("MODOS_OK "):])
+                                        if linha else {})
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            _MODOS_DO_COLETOR[chave] = {"erro": f"{type(e).__name__}: {str(e)[:120]}"}
+    d = _MODOS_DO_COLETOR[chave]
+    if not d or "erro" in d:
+        return False, (f"{COLETOR} não respondeu que modos conhece"
+                       + (f" ({d['erro']})" if d.get("erro") else "")
+                       + " — é anterior ao contrato de modos")
+    if modo in (d.get("modos") or []):
+        return True, f"{COLETOR} (versão {d.get('versao')})"
+    return False, (f"{COLETOR} (versão {d.get('versao')}) não conhece {modo}; "
+                   f"conhece {', '.join(d.get('modos') or []) or '(nada)'}")
+
+
 def _rodar_coletor(pedido, modo, marca, teto, varios=False):
     """Roda o coletor num modo de UMA tacada e devolve o envelope, ou None.
 
@@ -246,7 +325,13 @@ def _rodar_coletor(pedido, modo, marca, teto, varios=False):
     morreu antes de imprimir a marca, ou o relógio de parede o matou. Quem chama
     decide o que isso significa para o módulo dele — aqui não se inventa
     resultado.
+
+    E ANTES DE QUALQUER COISA, O APERTO DE MÃO: `ColetorNaoConhece` sai daqui sem
+    um único byte ter sido escrito no coletor. Ver `coletor_conhece`.
     """
+    conhece, quem = coletor_conhece(modo)
+    if not conhece:
+        raise ColetorNaoConhece(quem)
     proc = subprocess.Popen(
         [sys.executable, str(COLETOR), modo],
         cwd=str(COLETOR.parent), stdin=subprocess.PIPE,
@@ -326,7 +411,16 @@ def buscar(cfg):
                          "paginas_teto")},
               "perfil": tarefa.get("perfil") or {}}
     teto = tarefa.get("segundos_teto") or 600
-    envelope = _rodar_coletor(pedido, "--buscar", "BUSCA_OK ", teto)
+    try:
+        envelope = _rodar_coletor(pedido, "--buscar", "BUSCA_OK ", teto)
+    except ColetorNaoConhece as e:
+        # O MOTIVO CERTO, e não o do relógio. Alguém está olhando a tela: dizer
+        # "não devolveu resultado em 10 min" quando a estação nem tentou manda a
+        # pessoa esperar de novo por algo que nunca vai acontecer.
+        print(f"  a estação não sabe buscar: {e}")
+        envelope = {"busca_id": bid, "itens": [], "total_declarado": None,
+                    "motivo": f"o coletor desta estação não conhece o modo de "
+                              f"busca ({e})"}
     if envelope is None:
         envelope = {"busca_id": bid, "itens": [], "total_declarado": None,
                     "motivo": f"a estação não devolveu resultado em {teto // 60} min"}
@@ -389,7 +483,17 @@ def acompanhar(cfg):
     # há garantia documentada para tamanho nenhum. O que o corte compra é raio, e
     # o que fecha a repetição é o recuo por `tentativas` no servidor. Pedaço menor
     # compraria cada vez menos (a perda já fica pendente) e multiplicaria POSTs.
-    envelopes = _rodar_coletor(pedido, "--acompanhar", "ACOMP_OK ", 600, varios=True)
+    try:
+        envelopes = _rodar_coletor(pedido, "--acompanhar", "ACOMP_OK ", 600,
+                                   varios=True)
+    except ColetorNaoConhece as e:
+        # NADA FOI PEDIDO AO COLETOR, e é isso que precisa ser dito aqui. Esta
+        # rota não tem onde carimbar motivo (ver abaixo), então o único lugar em
+        # que a estação defasada aparece é este prompt — e sem esta linha o
+        # sintoma seria "o acompanhamento nunca anda", sem causa à vista.
+        print(f"  o coletor desta estação não sabe acompanhar: {e}")
+        print(f"  os {len(protocolos)} item(ns) continuam pendentes")
+        return True
     if not envelopes:
         # ENVELOPE VAZIO NÃO É PUBLICADO. O servidor gravaria zero e nada mais —
         # não há, nesta rota, onde registrar "a estação tentou e falhou" (ao
