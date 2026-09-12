@@ -2498,6 +2498,77 @@ checar("o botão avisa que o histórico vai junto",
 checar("e que recolar não o traz de volta",
        "não o histórico" in _trecho, _trecho[-160:])
 
+print("\n10. o expurgo: a série envelhece, a lista não")
+import expurgo                                                   # noqa: E402
+
+checar("a série tem prazo próprio, e é de 180 dias",
+       expurgo.DIAS.get("acompanhado_leitura") == 180,
+       str(expurgo.DIAS.get("acompanhado_leitura")))
+# A LISTA NÃO TEM PRAZO, e isso é afirmação, não esquecimento: ela é escolha da
+# pessoa. Um prazo que aparecesse aqui um dia apagaria item que alguém ainda
+# quer seguir — e processo parado há um ano é exatamente o caso.
+checar("e a LISTA não tem prazo nenhum no dicionário",
+       "acompanhado" not in expurgo.DIAS, str(sorted(expurgo.DIAS)))
+
+_cx = conectar()
+# A INSTALAÇÃO SAI DA MESMA LINHA do item. `listar()` devolve a lista das duas
+# juntas, e a chave de `acompanhado` é o TRIO (dono, instalação, protocolo):
+# semear a leitura sob 'SEI-SESAB' para um item da FESF é a FK recusando — com
+# razão, porque não existe leitura sem a linha da lista.
+_item = ac.listar(_cx, 7)[0]
+_alvo, _inst_alvo = _item["protocolo"], _item["instancia"]
+_cx.execute("""INSERT INTO acompanhado_leitura(usuario_id,instancia,protocolo,
+               lido_em,fonte,medido_em) VALUES(7,?,?,
+               '2020-01-01T00:00:00-03:00','sei','2020-01-01T00:00:00-03:00')""",
+            (_inst_alvo, _alvo))
+_cx.commit()
+_itens_antes = len(ac.listar(_cx, 7))
+_recentes_antes = _cx.execute(
+    "SELECT COUNT(*) FROM acompanhado_leitura WHERE lido_em > '2021-01-01'").fetchone()[0]
+_cx.close()
+
+_plano = expurgo.expurgar(simular=True)
+checar("o expurgo conhece a série de leituras",
+       any(t == "acompanhado_leitura" for t, _, _ in _plano), str(_plano))
+checar("e a SIMULAÇÃO não apaga",
+       conectar().execute("SELECT COUNT(*) FROM acompanhado_leitura "
+                          "WHERE lido_em < '2021-01-01'").fetchone()[0] == 1)
+
+expurgo.expurgar()
+_cx = conectar()
+_velhas = _cx.execute("SELECT COUNT(*) FROM acompanhado_leitura "
+                      "WHERE lido_em < '2021-01-01'").fetchone()[0]
+_recentes = _cx.execute("SELECT COUNT(*) FROM acompanhado_leitura "
+                        "WHERE lido_em > '2021-01-01'").fetchone()[0]
+_itens = ac.listar(_cx, 7)
+checar("leitura velha sai", _velhas == 0, str(_velhas))
+# A RÉGUA É A DATA, não a tabela: apagar a série inteira "porque é série" levaria
+# junto a leitura de ontem, que é o que a tela mostra.
+checar("e a leitura recente do MESMO item fica",
+       _recentes == _recentes_antes, f"{_recentes} != {_recentes_antes}")
+checar("a LISTA não é apagada por idade", len(_itens) == _itens_antes,
+       f"{len(_itens)} != {_itens_antes}")
+checar("nem por cascata: a FK corre de acompanhado PARA leitura, não ao contrário",
+       any(x["protocolo"] == _alvo for x in _itens),
+       str([x["protocolo"] for x in _itens])[:200])
+
+# E A CASCATA EXISTE MESMO — na direção certa. É dela que o botão "Parar de
+# acompanhar" depende, e é por isso que o histórico daquele processo é perda
+# IRREVERSÍVEL: recolar o número devolve o item, nunca a série.
+_cx.execute("""INSERT INTO acompanhado(usuario_id,instancia,protocolo,origem,
+               adicionado_em,estado) VALUES(7,'SEI-SESAB','019.7777.2026.0000077-77',
+               'manual',?,'novo')""", (agora(),))
+_cx.execute("""INSERT INTO acompanhado_leitura(usuario_id,instancia,protocolo,
+               lido_em,fonte,medido_em) VALUES(7,'SEI-SESAB',
+               '019.7777.2026.0000077-77',?,'sei',?)""", (agora(), agora()))
+_cx.execute("""DELETE FROM acompanhado WHERE usuario_id=7 AND instancia='SEI-SESAB'
+               AND protocolo='019.7777.2026.0000077-77'""")
+_cx.commit()
+checar("apagar o item da lista leva o histórico dele junto",
+       _cx.execute("""SELECT COUNT(*) FROM acompanhado_leitura
+                      WHERE protocolo='019.7777.2026.0000077-77'""").fetchone()[0] == 0)
+_cx.close()
+
 print("\n11. a leitura estagnada não vira base de comparação")
 # O DEFEITO MEDIDO EM 11/09/2026, e o que a guarda de monotonicidade NÃO cobria.
 # `gravar_leitura` cala o delta quando a medição anda para trás ('sem_avanco'),
@@ -2584,77 +2655,6 @@ checar("só linhas sem carimbo: nada é anunciado, e a leitura diz por quê",
        _d_tudo_nulo is None and _so_nulo["comparacao"] == "sem_avanco",
        f"{_d_tudo_nulo} / {_so_nulo['comparacao']}")
 _cx.commit(); _cx.close()
-
-print("\n10. o expurgo: a série envelhece, a lista não")
-import expurgo                                                   # noqa: E402
-
-checar("a série tem prazo próprio, e é de 180 dias",
-       expurgo.DIAS.get("acompanhado_leitura") == 180,
-       str(expurgo.DIAS.get("acompanhado_leitura")))
-# A LISTA NÃO TEM PRAZO, e isso é afirmação, não esquecimento: ela é escolha da
-# pessoa. Um prazo que aparecesse aqui um dia apagaria item que alguém ainda
-# quer seguir — e processo parado há um ano é exatamente o caso.
-checar("e a LISTA não tem prazo nenhum no dicionário",
-       "acompanhado" not in expurgo.DIAS, str(sorted(expurgo.DIAS)))
-
-_cx = conectar()
-# A INSTALAÇÃO SAI DA MESMA LINHA do item. `listar()` devolve a lista das duas
-# juntas, e a chave de `acompanhado` é o TRIO (dono, instalação, protocolo):
-# semear a leitura sob 'SEI-SESAB' para um item da FESF é a FK recusando — com
-# razão, porque não existe leitura sem a linha da lista.
-_item = ac.listar(_cx, 7)[0]
-_alvo, _inst_alvo = _item["protocolo"], _item["instancia"]
-_cx.execute("""INSERT INTO acompanhado_leitura(usuario_id,instancia,protocolo,
-               lido_em,fonte,medido_em) VALUES(7,?,?,
-               '2020-01-01T00:00:00-03:00','sei','2020-01-01T00:00:00-03:00')""",
-            (_inst_alvo, _alvo))
-_cx.commit()
-_itens_antes = len(ac.listar(_cx, 7))
-_recentes_antes = _cx.execute(
-    "SELECT COUNT(*) FROM acompanhado_leitura WHERE lido_em > '2021-01-01'").fetchone()[0]
-_cx.close()
-
-_plano = expurgo.expurgar(simular=True)
-checar("o expurgo conhece a série de leituras",
-       any(t == "acompanhado_leitura" for t, _, _ in _plano), str(_plano))
-checar("e a SIMULAÇÃO não apaga",
-       conectar().execute("SELECT COUNT(*) FROM acompanhado_leitura "
-                          "WHERE lido_em < '2021-01-01'").fetchone()[0] == 1)
-
-expurgo.expurgar()
-_cx = conectar()
-_velhas = _cx.execute("SELECT COUNT(*) FROM acompanhado_leitura "
-                      "WHERE lido_em < '2021-01-01'").fetchone()[0]
-_recentes = _cx.execute("SELECT COUNT(*) FROM acompanhado_leitura "
-                        "WHERE lido_em > '2021-01-01'").fetchone()[0]
-_itens = ac.listar(_cx, 7)
-checar("leitura velha sai", _velhas == 0, str(_velhas))
-# A RÉGUA É A DATA, não a tabela: apagar a série inteira "porque é série" levaria
-# junto a leitura de ontem, que é o que a tela mostra.
-checar("e a leitura recente do MESMO item fica",
-       _recentes == _recentes_antes, f"{_recentes} != {_recentes_antes}")
-checar("a LISTA não é apagada por idade", len(_itens) == _itens_antes,
-       f"{len(_itens)} != {_itens_antes}")
-checar("nem por cascata: a FK corre de acompanhado PARA leitura, não ao contrário",
-       any(x["protocolo"] == _alvo for x in _itens),
-       str([x["protocolo"] for x in _itens])[:200])
-
-# E A CASCATA EXISTE MESMO — na direção certa. É dela que o botão "Parar de
-# acompanhar" depende, e é por isso que o histórico daquele processo é perda
-# IRREVERSÍVEL: recolar o número devolve o item, nunca a série.
-_cx.execute("""INSERT INTO acompanhado(usuario_id,instancia,protocolo,origem,
-               adicionado_em,estado) VALUES(7,'SEI-SESAB','019.7777.2026.0000077-77',
-               'manual',?,'novo')""", (agora(),))
-_cx.execute("""INSERT INTO acompanhado_leitura(usuario_id,instancia,protocolo,
-               lido_em,fonte,medido_em) VALUES(7,'SEI-SESAB',
-               '019.7777.2026.0000077-77',?,'sei',?)""", (agora(), agora()))
-_cx.execute("""DELETE FROM acompanhado WHERE usuario_id=7 AND instancia='SEI-SESAB'
-               AND protocolo='019.7777.2026.0000077-77'""")
-_cx.commit()
-checar("apagar o item da lista leva o histórico dele junto",
-       _cx.execute("""SELECT COUNT(*) FROM acompanhado_leitura
-                      WHERE protocolo='019.7777.2026.0000077-77'""").fetchone()[0] == 0)
-_cx.close()
 
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
