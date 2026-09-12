@@ -124,6 +124,48 @@ LOGIN  = "https://sip.seibahia.ba.gov.br/login.php?sigla_orgao_sistema=GOVBA&sig
 ORGAO = "23"          # SESAB no #selOrgao (77 opcoes; 'null' = em branco)
 
 
+def fatiar(env, por_linha=20):
+    """O envelope do acompanhamento em PEDAÇOS independentes, cada um completo.
+
+    POR QUE EM PEDAÇOS, e não numa linha só. Medido em 11/09/2026, depois da
+    ficha completa: uma leitura passou de 277 para 825 bytes, e 100 leituras de
+    27 KB para 81 KB. Numa linha só de stdout, com stderr fundido nela
+    (`stderr=STDOUT`) e sem buffer, escrita desse tamanho não é atômica — e foi
+    assim que a linha-marca corrompida virou um crítico. Em pedaços de 20, uma
+    linha corrompida custa 20 leituras em vez de 100. Reduz o raio; não fecha a
+    janela — ver o comentário de `acompanhar()` em `sei360_agente.py`.
+
+    E POR QUE `falhas`, `motivo` E `pedidos` VÃO EM TODOS, e não só no primeiro.
+    Iam só no primeiro, com o argumento de que repetir faria o agente contar cada
+    falha N vezes. O que a medição mostrou é que o primeiro pedaço é TÃO PERDÍVEL
+    quanto os outros — é a mesma escrita não atômica —, e com ele sumiam de uma
+    vez a lista de falhas (o ÚNICO lugar onde um item que não pôde ser lido
+    aparece), o motivo (sessão caída, teto de tempo) e o número de reconciliação.
+    O agente imprimia "gravou 40, ignorou 0 (em 2 pedaços)" e nada fechava conta
+    com nada.
+
+    A contagem em dobro é problema de quem LÊ, e lá se resolve com uma linha de
+    deduplicação por protocolo; a perda do único registro da falha não se resolve
+    em lugar nenhum. O custo é tamanho: cada falha são ~120 bytes, e o pior caso
+    real (60 lidas em 3 pedaços + 40 falhas) põe ~5 KB de falhas em cada pedaço de
+    16 KB. Fica abaixo do que já se aceita, e o que ele compra é a conta fechar.
+
+    `pedaco`/`pedacos` são a identidade da fatia, e existem para o agente saber
+    que faltou uma — sem eles, "recebi 2" e "eram 2" são indistinguíveis.
+    """
+    leituras = env.get("leituras") or []
+    fatias = [leituras[i:i + por_linha]
+              for i in range(0, len(leituras), por_linha)] or [[]]
+    return [{"instancia": env.get("instancia"),
+             "leituras": fatia,
+             "pedaco": i + 1,
+             "pedacos": len(fatias),
+             "falhas": env.get("falhas") or [],
+             "motivo": env.get("motivo"),
+             "pedidos": env.get("pedidos")}
+            for i, fatia in enumerate(fatias)]
+
+
 def unidade_origem():
     """A unidade para onde a sessao TEM de voltar, ou None.
 
@@ -620,29 +662,8 @@ try:
                 "campos": PERFIL_SEI.get("campos_busca") or {},
             })
             # O ENVELOPE VAI PARA STDOUT COM PREFIXO — o mesmo contrato de
-            # BUSCA_OK —, mas EM PEDAÇOS, e por causa do tamanho. Medido em
-            # 11/09/2026, depois da ficha completa: uma leitura passou de 277 para
-            # 825 bytes, e 100 leituras de 27 KB para 81 KB. Numa linha só, com
-            # stderr fundido no stdout e sem buffer, escrita desse tamanho não é
-            # atômica — e foi assim que a linha-marca corrompida virou um crítico.
-            #
-            # Cada pedaço é um envelope COMPLETO e independente: mesma instalação,
-            # sua fatia de leituras. O agente publica um por um, e uma linha
-            # corrompida custa 20 leituras em vez de 100. Reduz o raio; não fecha a
-            # janela — ver o comentário de `acompanhar()` em `sei360_agente.py`.
-            #
-            # `falhas` e `motivo` viajam no PRIMEIRO pedaço, não repetidos em
-            # todos: repetir faria o agente contar cada falha N vezes no log.
-            _leituras = env.get("leituras") or []
-            _POR_LINHA = 20
-            _fatias = [_leituras[i:i + _POR_LINHA]
-                       for i in range(0, len(_leituras), _POR_LINHA)] or [[]]
-            for _i, _fatia in enumerate(_fatias):
-                _pedaco = {"instancia": env.get("instancia"), "leituras": _fatia}
-                if _i == 0:
-                    _pedaco["falhas"] = env.get("falhas") or []
-                    _pedaco["motivo"] = env.get("motivo")
-                    _pedaco["pedidos"] = env.get("pedidos")
+            # BUSCA_OK —, mas EM PEDAÇOS. Ver `fatiar()`.
+            for _pedaco in fatiar(env):
                 print("ACOMP_OK " + json.dumps(_pedaco, ensure_ascii=False))
             log(f"acompanhamento: {len(env.get('leituras') or [])} lido(s), "
                 f"{len(env.get('falhas') or [])} falha(s)"

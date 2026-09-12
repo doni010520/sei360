@@ -22,6 +22,7 @@ e do `_teste_acompanhar.js` (a composicao) e da estacao de uma pessoa (o SEI).
 
     python _teste_agente.py
 """
+import ast
 import importlib.util
 import json
 import os
@@ -303,26 +304,52 @@ finally:
 
 
 # ============================================ I3, um nao-200 nao mata os outros
+def _fatiar_do_coletor():
+    """A `fatiar()` do coletor DE VERDADE, sem executar o script inteiro.
+
+    O contrato dos pedacos tem duas pontas — quem corta (o coletor) e quem
+    remonta (o agente) — e um teste que inventa o formato dos pedacos so provaria
+    a invencao. Importar o coletor nao da: o modulo e um script que abre
+    navegador. Entao se extrai a FUNCAO da fonte, por AST, e se roda ela mesma.
+    """
+    arvore = ast.parse(COLETOR_REAL.read_text(encoding="utf-8"))
+    trecho = next(n for n in arvore.body
+                  if isinstance(n, ast.FunctionDef) and n.name == "fatiar")
+    espaco = {}
+    exec(compile(ast.Module(body=[trecho], type_ignores=[]),
+                 str(COLETOR_REAL), "exec"), espaco)
+    return espaco["fatiar"]
+
+
+fatiar = _fatiar_do_coletor()
+
+
 def rodar_acompanhar(respostas_post, fatias=5, falhas_do_env=(), motivo=None,
-                     pedidos=None):
+                     pedidos=None, perder_primeira=False):
     """Roda `acompanhar()` de verdade contra um coletor falso e um servidor falso.
 
     Devolve (registro dos POSTs, texto impresso). `chamar()` e trocado: e o que
-    permite medir quantos POSTs sairam, com que corpo, e sem rede nenhuma.
+    permite medir quantos POSTs sairam, com que corpo, e sem rede nenhuma. Os
+    pedacos saem da `fatiar()` real, uma leitura por pedaco.
     """
     import io
     import contextlib
 
+    leituras = [{"protocolo": "019.%d.2026.0000001-11" % i, "estado": "lido"}
+                for i in range(fatias)]
+    env = {"instancia": "SEI-SESAB", "leituras": leituras,
+           "falhas": [dict(f) for f in falhas_do_env], "motivo": motivo,
+           "pedidos": pedidos if pedidos is not None
+                      else fatias + len(falhas_do_env)}
     corpo = ["sys.stdin.readline()\n"]
-    for i in range(fatias):
-        pedaco = {"instancia": "SEI-SESAB",
-                  "leituras": [{"protocolo": "019.%d.2026.0000001-11" % i,
-                                "estado": "lido"}]}
-        if i == 0:
-            pedaco["falhas"] = [dict(f) for f in falhas_do_env]
-            pedaco["motivo"] = motivo
-            pedaco["pedidos"] = pedidos
-        corpo.append("print('ACOMP_OK ' + json.dumps(%r))\n" % pedaco)
+    for i, pedaco in enumerate(fatiar(env, por_linha=1)):
+        if i == 0 and perder_primeira:
+            # A LINHA CORROMPIDA, que e o caso que o corte em pedacos existe para
+            # sobreviver: escrita nao atomica no pipe. O agente a descarta em
+            # `_rodar_coletor`, com aviso, e segue com as outras.
+            corpo.append("print('ACOMP_OK ' + json.dumps(%r)[:30])\n" % pedaco)
+        else:
+            corpo.append("print('ACOMP_OK ' + json.dumps(%r))\n" % pedaco)
     FALSO = coletor_que_conhece("".join(corpo))
 
     registro, restantes = [], list(respostas_post)
@@ -331,8 +358,7 @@ def rodar_acompanhar(respostas_post, fatias=5, falhas_do_env=(), motivo=None,
         registro.append((caminho, metodo, corpo))
         if metodo == "GET":
             return 200, {"ler": True, "instancia": "SEI-SESAB",
-                         "protocolos": ["019.%d.2026.0000001-11" % i
-                                        for i in range(fatias)],
+                         "protocolos": [x["protocolo"] for x in leituras],
                          "perfil": {"instancia": "SEI-SESAB"}}
         return restantes.pop(0) if restantes else (200, {"gravadas": 1, "ignoradas": 0})
 
@@ -375,6 +401,49 @@ checar("e diz por que parou", "409" in tela and "instala" in tela, tela[:300])
 posts, tela = rodar_acompanhar([(401, {"erro": "token inválido"})])
 checar("401 tambem para no primeiro (o token nao muda no meio)", len(posts) == 1,
        f"{len(posts)} POST(s)")
+
+
+# ==================================== I4, a fatia 0 nao decide pelas outras
+print("\n9. falhas, motivo e a conta de reconciliacao nao viajam so na fatia 0")
+# MEDIDO: a fatia 0 e tao perdivel quanto as outras (mesma escrita nao atomica), e
+# com ela sumiam de uma vez a lista de falhas — UNICO lugar onde um item que nao
+# pode ser lido aparece —, o motivo (sessao caida, teto de tempo) e o numero de
+# reconciliacao. O agente imprimia "gravou 40, ignorou 0 (em 2 pedacos)", e "2
+# pedacos" eram os RECEBIDOS, nao os enviados: nada fechava conta com nada.
+pedacos = fatiar({"instancia": "SEI-SESAB",
+                  "leituras": [{"protocolo": "p%d" % i} for i in range(3)],
+                  "falhas": [{"protocolo": "px", "motivo": "caiu"}],
+                  "motivo": "sessao caiu apos 3 de 5", "pedidos": 5},
+                 por_linha=1)
+checar("fatiar corta uma leitura por pedaco", len(pedacos) == 3, repr(pedacos)[:200])
+checar("e TODO pedaco leva falhas, motivo e pedidos",
+       all(p.get("falhas") and p.get("motivo") and p.get("pedidos") == 5
+           for p in pedacos), repr(pedacos)[:300])
+checar("e cada um sabe quem e no conjunto",
+       [p["pedaco"] for p in pedacos] == [1, 2, 3]
+       and all(p["pedacos"] == 3 for p in pedacos), repr(pedacos)[:200])
+
+FALHA_UM = {"protocolo": "019.9.2026.0000009-99", "motivo": "historico nao respondeu"}
+posts, tela = rodar_acompanhar([], fatias=5, falhas_do_env=[FALHA_UM],
+                               motivo="teto de tempo da estacao (9 min): 5 de 6",
+                               perder_primeira=True)
+checar("a fatia 0 se perdeu (4 POSTs de 5)", len(posts) == 4, f"{len(posts)} POST(s)")
+checar("mesmo assim a falha aparece — e o unico lugar onde ela aparece",
+       "019.9.2026.0000009-99" in tela, tela[:400])
+checar("e o motivo tambem", "teto de tempo" in tela, tela[:400])
+checar("a falha nao e contada 4 vezes", "1 processo(s) não puderam ser lidos" in tela,
+       tela[:400])
+checar("nem o motivo repetido 4 vezes", tela.count("teto de tempo") == 1, tela[:400])
+checar("e a conta fecha em voz alta: 1 leitura sem noticia",
+       "reconcilia" in tela and "1 sem" in tela, tela[:500])
+checar("os pedacos recebidos sao distinguidos dos declarados",
+       "4 de 5" in tela, tela[:400])
+
+# NADA PERDIDO: a conta tem de calar. Linha de reconciliacao em execucao boa vira
+# ruido, e ruido diario e o que faz ninguem ler o log no dia em que ele importa.
+posts, tela = rodar_acompanhar([], fatias=3, pedidos=3)
+checar("sem perda nenhuma, a reconciliacao nao imprime nada",
+       "reconcilia" not in tela, tela[:400])
 
 
 print(f"\n{ok_total} verificacao(oes), {len(falhas)} falha(s)")

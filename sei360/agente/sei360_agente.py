@@ -565,7 +565,7 @@ def acompanhar(cfg):
     # descartava o resto da mesma forma. O teto natural do laço são os cinco
     # pedaços: não há como isto virar martelada.
     PARA_TUDO = (401, 403, 409)
-    gravadas, ignoradas, falhas, recusados = 0, 0, [], []
+    gravadas, ignoradas, recusados = 0, 0, []
     for i, envelope in enumerate(envelopes, 1):
         s, r = chamar(cfg, "/api/agente/acompanhamento", envelope, timeout=120)
         if s != 200:
@@ -579,9 +579,36 @@ def acompanhar(cfg):
             continue
         gravadas += r.get("gravadas") or 0
         ignoradas += r.get("ignoradas") or 0
-        falhas += envelope.get("falhas") or []
+    # O RELATO DA ESTAÇÃO VEM REPETIDO EM TODO PEDAÇO, e é aqui que ele volta a
+    # ser um só. `falhas`, `motivo` e `pedidos` viajavam só no pedaço 0 — que é
+    # tão perdível quanto os outros —, e com ele sumiam a lista de falhas, a causa
+    # e o número de reconciliação de uma vez. A duplicação é o preço, e o preço se
+    # paga aqui: deduplicar por protocolo é uma linha; recuperar o que se perdeu
+    # com o pedaço 0 não é lugar nenhum.
+    #
+    # Os pedaços RECUSADOS entram nesta conta na mesma: o que a estação não
+    # conseguiu ler é verdade sobre o SEI, e não sobre o POST que falhou.
+    falhas, vistas = [], set()
+    for envelope in envelopes:
+        for f in envelope.get("falhas") or []:
+            chave = (f or {}).get("protocolo")
+            if chave in vistas:
+                continue
+            vistas.add(chave)
+            falhas.append(f)
+    motivos = []
+    for envelope in envelopes:
+        m = envelope.get("motivo")
+        if m and m not in motivos:
+            motivos.append(m)
+    # QUANTOS PEDAÇOS A ESTAÇÃO DISSE QUE ERAM, e não quantos chegaram: "em 2
+    # pedaços" era o número dos RECEBIDOS, e por isso nunca acusava perda nenhuma.
+    declarados = max([e.get("pedacos") or 0 for e in envelopes] + [len(envelopes)])
+    conta = f"{len(envelopes)} de {declarados} pedaços recebidos"
+    if recusados:
+        conta += f", {len(recusados)} recusado(s) pelo servidor"
     print(f"  servidor gravou {gravadas}, ignorou {ignoradas}"
-          + (f" (em {len(envelopes)} pedaços)" if len(envelopes) > 1 else ""))
+          + (f" ({conta})" if declarados > 1 or recusados else ""))
     if falhas:
         # FALHA SEM ESTADO é item que continua pendente. Ela não vira linha no
         # banco de propósito (ver `acompanhar()` em `automacao_sei.js`), então o
@@ -589,10 +616,26 @@ def acompanhar(cfg):
         print(f"  {len(falhas)} processo(s) não puderam ser lidos: "
               + "; ".join(f"{f.get('protocolo')}: {f.get('motivo')}"
                           for f in falhas[:5]))
-    # O `motivo` (sessão caída, teto de tempo) vem no pedaço em que aconteceu.
-    for envelope in envelopes:
-        if envelope.get("motivo"):
-            print(f"  {envelope['motivo']}")
+    for m in motivos:                     # sessão caída, teto de tempo da estação
+        print(f"  {m}")
+    # A RECONCILIAÇÃO, e só quando ela NÃO fecha. `pedidos` é quantos números
+    # desceram para a estação; leitura publicada mais falha relatada tem de dar
+    # nisso. O que sobra é pedaço perdido entre a estação e aqui — a escrita não
+    # atômica do pipe —, e sem esta linha essa perda era invisível: os itens
+    # continuavam pendentes, voltavam no ciclo seguinte, e ninguém sabia por quê.
+    # Em execução boa ela cala: linha diária que sempre diz "tudo certo" é a linha
+    # que ninguém lê no dia em que ela muda.
+    pedidos_estacao = next((e.get("pedidos") for e in envelopes
+                            if e.get("pedidos")), None)
+    recebidas = sum(len(e.get("leituras") or []) for e in envelopes)
+    if pedidos_estacao:
+        sem_noticia = pedidos_estacao - recebidas - len(falhas)
+        if sem_noticia > 0 or len(envelopes) < declarados:
+            print(f"  reconciliação: {pedidos_estacao} número(s) desceram, "
+                  f"{recebidas} leitura(s) e {len(falhas)} falha(s) voltaram — "
+                  f"{max(sem_noticia, 0)} sem notícia "
+                  f"({declarados - len(envelopes)} pedaço(s) perdido(s) "
+                  "entre a estação e aqui)")
     return True
 
 
