@@ -230,9 +230,26 @@ def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
         if quantos >= TETO:
             sem_espaco.append(linha.strip())
             continue
-        cx.execute("""INSERT INTO acompanhado(usuario_id,instancia,protocolo,origem,
-                      nota,adicionado_em,estado) VALUES(?,?,?,?,?,?,'novo')""",
-                   (usuario_id, instancia, p, origem, nota, agora()))
+        # `OR IGNORE` PORQUE `ja_seguidos` É UMA FOTO, e a linha pode nascer
+        # depois dela. Medido em 11/09/2026, e basta um duplo clique: a segunda
+        # requisição comita o mesmo número entre o SELECT e o INSERT desta, o
+        # INSERT levanta IntegrityError, a rota devolve 500 — e os OUTROS números
+        # válidos da mesma colagem NÃO ENTRAM, porque o laço morre no do meio.
+        # Quem colou perde o trabalho por causa de um número que já estava lá.
+        #
+        # O `OR IGNORE` alcança só a chave primária desta tabela: FK não obedece
+        # a cláusula (é o SQLite que decide isso, não nós) e continua levantando,
+        # e os outros valores são desta função, não do cliente. Logo, `rowcount`
+        # zero aqui significa UMA coisa — a linha já existe —, que é o mesmo caso
+        # de `ja_seguidos` acima e recebe o mesmo tratamento: não conta como
+        # aceita, e não devolve erro para quem não errou.
+        entrou = cx.execute(
+            """INSERT OR IGNORE INTO acompanhado(usuario_id,instancia,protocolo,
+               origem,nota,adicionado_em,estado) VALUES(?,?,?,?,?,?,'novo')""",
+            (usuario_id, instancia, p, origem, nota, agora())).rowcount
+        if not entrou:
+            ja_seguidos.add(digitos(p))
+            continue
         quantos += 1
         ja_seguidos.add(digitos(p))
         aceitos.append(p)

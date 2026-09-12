@@ -3413,68 +3413,80 @@ def acompanhamento_tela(recusados=None, sem_espaco=None):
     import acompanhamento as acmod
     u = request.usuario
     cx = conectar()
-    # A CARTEIRA RESPONDE ANTES DE A TELA PINTAR: é de graça — o dado já está no
-    # banco — e evita a tela dizer "aguardando primeira leitura" sobre processo
-    # que a coleta da própria pessoa já leu.
-    #
-    # Isto é ESCRITA no caminho de uma requisição de LEITURA, e por isso é
-    # melhor-esforço: se tropeçar, a pessoa ainda tem de ver a lista, que é o
-    # produto. Sem rollback de propósito — cada item respondido é independente
-    # dos outros, e desfazer os que deram certo só faria a próxima visita
-    # repetir o trabalho.
-    #
-    # POR INSTALAÇÃO, e a lista é de TODAS: `reaproveitar` recorta a fronteira
-    # por instalação, então reaproveitar só a configuração ATIVA deixaria o item
-    # da FESF esperando com a resposta pronta na coleta da FESF.
-    for inst in acmod.instancias(cx, u["usuario_id"]):
-        try:
-            acmod.reaproveitar(cx, u["usuario_id"], inst)
-        except Exception as ex:                                # noqa: BLE001
-            print(f"acompanhamento: reaproveitar {inst} falhou "
-                  f"({type(ex).__name__})", flush=True)
-    itens = acmod.listar(cx, u["usuario_id"])
-    # ONDE O PRÓXIMO NÚMERO VAI CAIR. A configuração ativa é "a última que a
-    # pessoa mexeu" (`configuracao.ler`), então depois de mexer na FESF o número
-    # colado aqui entra como da FESF — em silêncio, na versão anterior. Item
-    # carimbado na instalação errada nunca casa com a coleta dela: fica
-    # "aguardando primeira leitura" para sempre e, na leitura pelo SEI, é
-    # procurado na instalação errada.
-    #
-    # SUBIU PARA ANTES DO LAÇO porque agora ela decide também o que cada CARTÃO
-    # diz: a fila da estação é a da instalação ativa, e o item da outra não entra
-    # nela (ver `texto_fora_da_fila`).
-    inst_ativa = cfgmod.ler(cx, u["usuario_id"])["sistema"]
-    for x in itens:
-        x["texto_mudou"] = acmod.texto_do_delta(x.get("mudou"))
-        x["instancia_rotulo"] = perfil_sei.rotulo(x["instancia"])
-        # POR QUE ESTE ITEM NÃO VAI SER LIDO — quando não vai. A rota do agente
-        # pede a instalação ATIVA do dono, e a estação entra numa instalação só:
-        # medido em 11/09/2026, três ciclos completos e o item da FESF nunca foi
-        # oferecido, ficando 'novo' com a tela dizendo "aguardando primeira
-        # leitura" — a mesma frase de quem vai ser lido hoje à noite.
-        x["fora_da_fila"] = acmod.texto_fora_da_fila(
-            x, inst_ativa, rotulo_do_item=x["instancia_rotulo"],
-            rotulo_ativa=perfil_sei.rotulo(inst_ativa))
-        # A PROCEDÊNCIA É TEXTO GERADO DO DADO, como o do delta — e não fatia de
-        # data no template. A coluna aceita nulo, e o template fatiando nulo
-        # derrubava a tela INTEIRA (500), não a linha; além disso a regra de
-        # quando mostrar o ano e de calar em estado de recusa é testável aqui e
-        # não é em Jinja.
-        x["procedencia"] = acmod.texto_da_procedencia(x)
-        # A PROCEDÊNCIA DA FICHA INTEIRA é outra frase, e não o mesmo rodapé
-        # repetido: com marcador, anotação e dias na unidade dentro do expandir,
-        # "pela sua coleta de 27/08" discreto no pé do cartão deixa a ficha
-        # parecendo de agora — e o marcador de nove dias atrás é exatamente o
-        # campo que alguém lê para decidir o que fazer hoje.
-        x["ficha_de"] = acmod.texto_da_ficha(x)
-        # POR QUE OS CAMPOS DA MESA NÃO ESTÃO NA FICHA — quando não estão. Vazio
-        # quando estão, e aí branco é branco de verdade. Item de fora da carteira
-        # não tem marcador porque a MESA não existe, e imprimir "Marcador —"
-        # sobre ele afirmaria que o processo não tem marcador.
-        x["sem_mesa"] = acmod.texto_sem_mesa(x)
-    registrar(cx, u["usuario_id"], "ver_acompanhamento",
-              alvo=f"{len(itens)} processo(s)", ip=ip_cliente())
-    cx.commit(); cx.close()
+    # `try/finally` COMO AS DUAS ROTAS DO AGENTE, e pelo motivo que elas já
+    # documentavam. Medido em 11/09/2026: com a regra levantando no meio (a
+    # IntegrityError da colagem simultânea), a conexão ficava viva com
+    # transação de ESCRITA pendente enquanto o gunicorn montava o 500 — e
+    # qualquer outro escritor do banco INTEIRO esperava os 5 s de
+    # `busy_timeout` e caía com "database is locked". A requisição seguinte
+    # morria antes da rota, em `usuario_atual`.
+    try:
+        # A CARTEIRA RESPONDE ANTES DE A TELA PINTAR: é de graça — o dado já está no
+        # banco — e evita a tela dizer "aguardando primeira leitura" sobre processo
+        # que a coleta da própria pessoa já leu.
+        #
+        # Isto é ESCRITA no caminho de uma requisição de LEITURA, e por isso é
+        # melhor-esforço: se tropeçar, a pessoa ainda tem de ver a lista, que é o
+        # produto. Sem rollback de propósito — cada item respondido é independente
+        # dos outros, e desfazer os que deram certo só faria a próxima visita
+        # repetir o trabalho.
+        #
+        # POR INSTALAÇÃO, e a lista é de TODAS: `reaproveitar` recorta a fronteira
+        # por instalação, então reaproveitar só a configuração ATIVA deixaria o item
+        # da FESF esperando com a resposta pronta na coleta da FESF.
+        for inst in acmod.instancias(cx, u["usuario_id"]):
+            try:
+                acmod.reaproveitar(cx, u["usuario_id"], inst)
+            except Exception as ex:                                # noqa: BLE001
+                print(f"acompanhamento: reaproveitar {inst} falhou "
+                      f"({type(ex).__name__})", flush=True)
+        itens = acmod.listar(cx, u["usuario_id"])
+        # ONDE O PRÓXIMO NÚMERO VAI CAIR. A configuração ativa é "a última que a
+        # pessoa mexeu" (`configuracao.ler`), então depois de mexer na FESF o número
+        # colado aqui entra como da FESF — em silêncio, na versão anterior. Item
+        # carimbado na instalação errada nunca casa com a coleta dela: fica
+        # "aguardando primeira leitura" para sempre e, na leitura pelo SEI, é
+        # procurado na instalação errada.
+        #
+        # SUBIU PARA ANTES DO LAÇO porque agora ela decide também o que cada CARTÃO
+        # diz: a fila da estação é a da instalação ativa, e o item da outra não entra
+        # nela (ver `texto_fora_da_fila`).
+        inst_ativa = cfgmod.ler(cx, u["usuario_id"])["sistema"]
+        for x in itens:
+            x["texto_mudou"] = acmod.texto_do_delta(x.get("mudou"))
+            x["instancia_rotulo"] = perfil_sei.rotulo(x["instancia"])
+            # POR QUE ESTE ITEM NÃO VAI SER LIDO — quando não vai. A rota do agente
+            # pede a instalação ATIVA do dono, e a estação entra numa instalação só:
+            # medido em 11/09/2026, três ciclos completos e o item da FESF nunca foi
+            # oferecido, ficando 'novo' com a tela dizendo "aguardando primeira
+            # leitura" — a mesma frase de quem vai ser lido hoje à noite.
+            x["fora_da_fila"] = acmod.texto_fora_da_fila(
+                x, inst_ativa, rotulo_do_item=x["instancia_rotulo"],
+                rotulo_ativa=perfil_sei.rotulo(inst_ativa))
+            # A PROCEDÊNCIA É TEXTO GERADO DO DADO, como o do delta — e não fatia de
+            # data no template. A coluna aceita nulo, e o template fatiando nulo
+            # derrubava a tela INTEIRA (500), não a linha; além disso a regra de
+            # quando mostrar o ano e de calar em estado de recusa é testável aqui e
+            # não é em Jinja.
+            x["procedencia"] = acmod.texto_da_procedencia(x)
+            # A PROCEDÊNCIA DA FICHA INTEIRA é outra frase, e não o mesmo rodapé
+            # repetido: com marcador, anotação e dias na unidade dentro do expandir,
+            # "pela sua coleta de 27/08" discreto no pé do cartão deixa a ficha
+            # parecendo de agora — e o marcador de nove dias atrás é exatamente o
+            # campo que alguém lê para decidir o que fazer hoje.
+            x["ficha_de"] = acmod.texto_da_ficha(x)
+            # POR QUE OS CAMPOS DA MESA NÃO ESTÃO NA FICHA — quando não estão. Vazio
+            # quando estão, e aí branco é branco de verdade. Item de fora da carteira
+            # não tem marcador porque a MESA não existe, e imprimir "Marcador —"
+            # sobre ele afirmaria que o processo não tem marcador.
+            x["sem_mesa"] = acmod.texto_sem_mesa(x)
+        registrar(cx, u["usuario_id"], "ver_acompanhamento",
+                  alvo=f"{len(itens)} processo(s)", ip=ip_cliente())
+        cx.commit()
+    finally:
+        # FECHA SEMPRE: fechar desfaz a transação pendente, que é o que
+        # devolve o banco a quem estava esperando.
+        cx.close()
     resp = make_response(render_template("acompanhamento.html", u=u, itens=itens,
                                          teto=acmod.TETO, recusados=recusados or [],
                                          sem_espaco=sem_espaco or [],
@@ -3499,23 +3511,35 @@ def acompanhamento_adicionar():
     confere_csrf()
     u = request.usuario
     cx = conectar()
-    # A INSTALAÇÃO É A DA CONFIGURAÇÃO ATIVA, não um campo do formulário: número
-    # colado na tela é número da instalação em que a pessoa está trabalhando, e
-    # deixar o cliente escolher a instalação seria deixá-lo carimbar dado de uma
-    # como sendo de outra — o defeito que `acompanhado.instancia` nasceu sem
-    # DEFAULT para evitar.
-    # SEM `or "SEI-SESAB"`: `cfgmod.ler` já cai em `perfil_sei.PADRAO` quando não
-    # há configuração, então a reserva era código morto que reencenava justamente
-    # o idioma do DEFAULT que esta tabela nasceu sem. As rotas vizinhas não têm.
-    inst = cfgmod.ler(cx, u["usuario_id"])["sistema"]
-    aceitos, recusados, sem_espaco = acmod.adicionar(
-        cx, u["usuario_id"], request.form.get("numeros"), inst,
-        nota=(request.form.get("nota") or "").strip() or None)
-    registrar(cx, u["usuario_id"], "acompanhar",
-              alvo=f"{inst} +{len(aceitos)} -{len(recusados)} "
-                   f"cheio:{len(sem_espaco)}",
-              ip=ip_cliente())
-    cx.commit(); cx.close()
+    # `try/finally` COMO AS DUAS ROTAS DO AGENTE, e pelo motivo que elas já
+    # documentavam. Medido em 11/09/2026: com a regra levantando no meio (a
+    # IntegrityError da colagem simultânea), a conexão ficava viva com
+    # transação de ESCRITA pendente enquanto o gunicorn montava o 500 — e
+    # qualquer outro escritor do banco INTEIRO esperava os 5 s de
+    # `busy_timeout` e caía com "database is locked". A requisição seguinte
+    # morria antes da rota, em `usuario_atual`.
+    try:
+        # A INSTALAÇÃO É A DA CONFIGURAÇÃO ATIVA, não um campo do formulário: número
+        # colado na tela é número da instalação em que a pessoa está trabalhando, e
+        # deixar o cliente escolher a instalação seria deixá-lo carimbar dado de uma
+        # como sendo de outra — o defeito que `acompanhado.instancia` nasceu sem
+        # DEFAULT para evitar.
+        # SEM `or "SEI-SESAB"`: `cfgmod.ler` já cai em `perfil_sei.PADRAO` quando não
+        # há configuração, então a reserva era código morto que reencenava justamente
+        # o idioma do DEFAULT que esta tabela nasceu sem. As rotas vizinhas não têm.
+        inst = cfgmod.ler(cx, u["usuario_id"])["sistema"]
+        aceitos, recusados, sem_espaco = acmod.adicionar(
+            cx, u["usuario_id"], request.form.get("numeros"), inst,
+            nota=(request.form.get("nota") or "").strip() or None)
+        registrar(cx, u["usuario_id"], "acompanhar",
+                  alvo=f"{inst} +{len(aceitos)} -{len(recusados)} "
+                       f"cheio:{len(sem_espaco)}",
+                  ip=ip_cliente())
+        cx.commit()
+    finally:
+        # FECHA SEMPRE: fechar desfaz a transação pendente, que é o que
+        # devolve o banco a quem estava esperando.
+        cx.close()
     # As recusadas voltam RENDERIZADAS, não por query string: o texto é o que a
     # pessoa colou, e pode citar nome — e a URL vai para o log do gunicorn.
     return acompanhamento_tela(recusados=recusados, sem_espaco=sem_espaco)
@@ -3528,19 +3552,31 @@ def acompanhamento_remover():
     confere_csrf()
     u = request.usuario
     cx = conectar()
-    # `protocolo` e `instancia` vêm do formulário porque são O QUE se remove; o
-    # DE QUEM vem da sessão. `remover` apaga por (usuario_id, instancia,
-    # protocolo), então o pior que um campo forjado faz é não achar linha.
-    proto = request.form.get("protocolo") or ""
-    saiu = acmod.remover(cx, u["usuario_id"], request.form.get("instancia"), proto)
-    # O LOG DIZ SE HOUVE ATO. `registrar` é a resposta de "quem fez o quê" num
-    # incidente: gravar `parar_acompanhar` sobre protocolo que não estava na
-    # lista — número errado, duplo clique, formulário forjado — afirmava uma
-    # remoção que não aconteceu.
-    registrar(cx, u["usuario_id"], "parar_acompanhar",
-              alvo=f"{request.form.get('instancia')} {proto}"
-                   + ("" if saiu else " (nada a remover)"), ip=ip_cliente())
-    cx.commit(); cx.close()
+    # `try/finally` COMO AS DUAS ROTAS DO AGENTE, e pelo motivo que elas já
+    # documentavam. Medido em 11/09/2026: com a regra levantando no meio (a
+    # IntegrityError da colagem simultânea), a conexão ficava viva com
+    # transação de ESCRITA pendente enquanto o gunicorn montava o 500 — e
+    # qualquer outro escritor do banco INTEIRO esperava os 5 s de
+    # `busy_timeout` e caía com "database is locked". A requisição seguinte
+    # morria antes da rota, em `usuario_atual`.
+    try:
+        # `protocolo` e `instancia` vêm do formulário porque são O QUE se remove; o
+        # DE QUEM vem da sessão. `remover` apaga por (usuario_id, instancia,
+        # protocolo), então o pior que um campo forjado faz é não achar linha.
+        proto = request.form.get("protocolo") or ""
+        saiu = acmod.remover(cx, u["usuario_id"], request.form.get("instancia"), proto)
+        # O LOG DIZ SE HOUVE ATO. `registrar` é a resposta de "quem fez o quê" num
+        # incidente: gravar `parar_acompanhar` sobre protocolo que não estava na
+        # lista — número errado, duplo clique, formulário forjado — afirmava uma
+        # remoção que não aconteceu.
+        registrar(cx, u["usuario_id"], "parar_acompanhar",
+                  alvo=f"{request.form.get('instancia')} {proto}"
+                       + ("" if saiu else " (nada a remover)"), ip=ip_cliente())
+        cx.commit()
+    finally:
+        # FECHA SEMPRE: fechar desfaz a transação pendente, que é o que
+        # devolve o banco a quem estava esperando.
+        cx.close()
     return redirect(url_for("acompanhamento_tela"))
 
 

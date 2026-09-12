@@ -2924,6 +2924,119 @@ _cx = conectar()
 _cx.execute("UPDATE acompanhado SET tentativas=0, tentativa_em=NULL")
 _cx.commit(); _cx.close()
 
+print("\n15. duas colagens ao mesmo tempo, e o banco que ficava trancado")
+# O QUE FOI MEDIDO EM 11/09/2026, e basta um duplo clique: `ja_seguidos` é lido
+# UMA vez, antes do laço, e o INSERT não tolerava a linha que a outra requisição
+# comitou no meio. Resultado: IntegrityError, HTTP 500 — e os OUTROS números
+# válidos da mesma colagem não entravam, porque o laço morria no do meio.
+_cx = conectar()
+_COLAGEM = ("019.2626.2026.0000026-26\n019.2727.2026.0000027-27\n"
+            "019.2828.2026.0000028-28")
+_NO_MEIO = "019.2727.2026.0000027-27"
+
+
+class _Corrida:
+    """A conexão da requisição, com uma SEGUNDA requisição comitando no meio.
+
+    O proxy insere a linha logo DEPOIS da leitura de `ja_seguidos` — que é
+    exatamente a janela do duplo clique. Simular aqui, e não com duas conexões
+    de verdade, é de propósito: com duas conexões o SQLite serializa a escrita e
+    a cena vira teste do `busy_timeout`, não da corrida.
+    """
+
+    def __init__(self, cx, protocolo):
+        self._cx, self._protocolo, self._feito = cx, protocolo, False
+
+    def execute(self, sql, *a, **k):
+        r = self._cx.execute(sql, *a, **k)
+        # DEPOIS DO PRIMEIRO INSERT, e não depois do SELECT de `ja_seguidos`: o
+        # conjunto é uma compreensão sobre o CURSOR, e o SQLite avança a consulta
+        # preguiçosamente — linha inserida entre o `execute` e a iteração ainda
+        # entra no conjunto, e a cena provaria o contrário do que quer provar.
+        if not self._feito and "INSERT" in sql and "acompanhado(" in sql:
+            self._feito = True
+            self._cx.execute(
+                """INSERT INTO acompanhado(usuario_id,instancia,protocolo,origem,
+                   adicionado_em,estado) VALUES(7,'SEI-SESAB',?,'manual',?,'novo')""",
+                (self._protocolo, agora()))
+        return r
+
+
+_erro_corrida, _aceitos_corrida = None, []
+try:
+    _aceitos_corrida, _, _ = ac.adicionar(_Corrida(_cx, _NO_MEIO), 7, _COLAGEM,
+                                          "SEI-SESAB")
+except Exception as _ex:                                          # noqa: BLE001
+    _erro_corrida = f"{type(_ex).__name__}: {_ex}"
+_cx.commit()
+checar("colagem não estoura quando outra requisição insere no meio",
+       _erro_corrida is None, str(_erro_corrida))
+_lista_corrida = {x["protocolo"] for x in ac.listar(_cx, 7)}
+checar("e os outros números da mesma colagem entram",
+       {"019.2626.2026.0000026-26", "019.2828.2026.0000028-28"} <= _lista_corrida,
+       str(sorted(p for p in _lista_corrida if p.startswith("019.28"))))
+checar("o que a outra requisição já tinha inserido não é contado duas vezes",
+       _NO_MEIO not in _aceitos_corrida and _NO_MEIO in _lista_corrida,
+       str(_aceitos_corrida))
+_cx.commit(); _cx.close()
+
+# A SEGUNDA METADE, e a cara: sem `try/finally` a conexão da rota ficava viva com
+# transação de ESCRITA pendente, e qualquer outro escritor do banco INTEIRO
+# esperava os 5 s de `busy_timeout` e falhava com "database is locked". As duas
+# rotas do agente já tinham o `try/finally`, com o comentário explicando o risco;
+# as três de tela, não.
+
+
+def _que_explode(*a, **_k):
+    """A regra escreve e explode — é a forma da IntegrityError medida."""
+    a[0].execute("UPDATE acompanhado SET nota=nota WHERE usuario_id=7")
+    raise RuntimeError("cena: a regra explode com transação de escrita aberta")
+
+
+def _travou_o_banco(nome_regra, chamada):
+    """A rota explode; outro escritor tenta escrever LOGO EM SEGUIDA."""
+    real = getattr(ac, nome_regra)
+    setattr(ac, nome_regra, _que_explode)
+    guardado = None
+    try:
+        chamada()
+    except RuntimeError as ex:
+        # SEGURA O TRACEBACK de propósito: é ele que mantém vivo o quadro da
+        # rota — e, com ele, a conexão. É o que acontece em produção enquanto o
+        # gunicorn monta o 500.
+        guardado = ex
+    finally:
+        setattr(ac, nome_regra, real)
+    outra = conectar()
+    outra.execute("PRAGMA busy_timeout=300")     # 5 s de espera por cena é caro
+    travou = False
+    try:
+        outra.execute("UPDATE acompanhado SET nota=nota WHERE usuario_id=7")
+        outra.commit()
+    except sqlite3.OperationalError as ex:
+        travou = "lock" in str(ex).lower()
+    outra.close()
+    del guardado
+    return travou
+
+
+checar("rota de adicionar que explode não deixa o banco trancado",
+       not _travou_o_banco("adicionar", lambda: _c.post(
+           "/acompanhamento/adicionar",
+           data={"csrf": _csrf, "numeros": "019.2929.2026.0000029-29"})))
+checar("nem a rota da tela",
+       not _travou_o_banco("listar", lambda: _c.get("/acompanhamento")))
+checar("nem a de remover",
+       not _travou_o_banco("remover", lambda: _c.post(
+           "/acompanhamento/remover",
+           data={"csrf": _csrf, "protocolo": "019.2626.2026.0000026-26",
+                 "instancia": "SEI-SESAB"})))
+# E a tela continua abrindo depois de tudo isso — a conexão que sobrou fechada é
+# a prova de que nada ficou pendurado.
+_r = _c.get("/acompanhamento")
+_csrf = _csrf_do(_r, _csrf)
+checar("e a tela volta a abrir em seguida", _r.status_code == 200, str(_r.status_code))
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)
