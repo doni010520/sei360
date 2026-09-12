@@ -2377,21 +2377,31 @@ checar("recusa num pedaço para os seguintes",
 checar("e a recusa diz qual pedaço foi", "pedaço 1/2" in _log_409.getvalue(),
        _log_409.getvalue()[-200:])
 
-# COLETOR MORTO PELO RELÓGIO joga fora o que já veio, de propósito: não há como
-# saber se a última linha estava completa, e `json.loads` aceita um envelope de 20
-# leituras truncado em 3 se o corte cair num lugar legal. Quem para sozinho,
-# dentro do `.js`, devolve envelope inteiro com `motivo` — é esse o caminho para
-# entregar leitura parcial.
+# COLETOR MORTO PELO RELÓGIO ENTREGA O QUE JÁ VEIO INTEIRO, e esta checagem
+# afirmava o contrário até 11/09/2026 — a regra mudou em `sei360_agente.py`
+# (commit "o teto para de jogar fora as fatias validas que ja chegaram"), com a
+# medida: 3 fatias boas chegam, o teto estoura na linha seguinte, e as 3 eram
+# descartadas — 60 leituras perdidas por causa da 61ª, a seis requisições ao SEI
+# cada uma.
+#
+# A justificativa antiga ("`json.loads` aceita um envelope de 20 leituras
+# truncado em 3") não valia para as fatias: cada uma já passou por `json.loads`
+# inteira, e é um envelope completo e independente. O corte que a frase temia cai
+# numa linha SÓ — e essa continua sendo descartada, no `except ValueError` do
+# laço, como o pedaço corrompido da cena lá em cima prova.
 _coletor_falso(
     "import json, sys, time\n"
     "sys.stdin.readline()\n"
-    "print('ACOMP_OK ' + json.dumps({'instancia': 'SEI-SESAB', 'leituras': []}))\n"
+    "print('ACOMP_OK ' + json.dumps({'instancia': 'SEI-SESAB',\n"
+    "      'leituras': [{'protocolo': '019.1111.2026.0000001-11'}]}))\n"
     "sys.stdout.flush()\n"
     "while True:\n"
     "    print('ainda aqui'); sys.stdout.flush(); time.sleep(0.02)\n")
 with contextlib.redirect_stdout(io.StringIO()):
     _morto = _ag._rodar_coletor({}, "--modo-falso", "ACOMP_OK ", 1, varios=True)
-checar("morto pelo relógio não entrega pedaço nenhum", _morto == [], str(_morto))
+checar("morto pelo relógio entrega a fatia inteira que já tinha chegado",
+       [x["leituras"][0]["protocolo"] for x in _morto]
+       == ["019.1111.2026.0000001-11"], str(_morto))
 
 _ag.chamar = _chamar_real
 
