@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 
 from ambiente_teste import isolar
 
-isolar(__file__)                        # cópia do banco; nunca o de trabalho
+isolar(__file__, exige_dados=True)                        # cópia do banco; nunca o de trabalho
 # UMA CHAVE VALIDA. `"x" * 44` nao decodifica em 32 bytes de AES: `cofre` ficava
 # indisponivel e metade do bloco de credencial passava pelo caminho de ERRO —
 # verde sem nunca cifrar nem decifrar nada. 32 bytes em base64 sao 44 chars,

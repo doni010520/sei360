@@ -157,7 +157,18 @@ checar("agora está pronto", email_saida.ler_config(cx)["pronto"])
 # segundo fator para o papel delas as trancaria para sempre, sem tela por onde
 # destrancar.
 _presa = "gestor@sei360.local"
-cx.execute("UPDATE usuarios SET ativo=1 WHERE email=?", (_presa,))
+# A CONTA É CRIADA AQUI, não presumida do banco copiado.
+#
+# A versão anterior só fazia `UPDATE ... SET ativo=1 WHERE email=?`, contando
+# com as três contas `@sei360.local` com que esta instalação nasceu. Num banco
+# sem elas — máquina de quem desenvolve, clone novo — o UPDATE não pegava nada,
+# não havia conta indeliverável para barrar, `salvar_politica` passava, e a
+# verificação ficava VERMELHA acusando o produto de deixar trancar uma conta que
+# não existia. A cena é sobre a REGRA, e a regra precisa de um sujeito.
+cx.execute("""INSERT INTO usuarios(email,nome,papel,origem,criado_em,ativo,senha_hash)
+              VALUES(?,?,'gestor','teste',?,1,NULL)
+              ON CONFLICT(email) DO UPDATE SET ativo=1, papel='gestor'""",
+           (_presa, "Gestor sem correio", agora()))
 cx.commit()
 try:
     acesso.salvar_politica(cx, True, ["gestor"], UID)

@@ -25,7 +25,7 @@ navegador seguindo 302. Cliente de teste esconde exatamente essa classe.
 import base64 as _b64, os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from ambiente_teste import isolar, subir_servidor          # noqa: E402
-_dir = isolar(__file__)
+_dir = isolar(__file__, exige_dados=True)
 _chave = _os.environ.get("SEI360_CHAVE_MESTRA") or _b64.urlsafe_b64encode(
     _os.urandom(32)).decode().rstrip("=")
 _os.environ["SEI360_CHAVE_MESTRA"] = _chave
