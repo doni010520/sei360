@@ -3037,6 +3037,109 @@ _r = _c.get("/acompanhamento")
 _csrf = _csrf_do(_r, _csrf)
 checar("e a tela volta a abrir em seguida", _r.status_code == 200, str(_r.status_code))
 
+print("\n16. o dado da carteira também passa pelo conferidor de tipo")
+# O MÓDULO APLICA RIGOR AO ENVELOPE DA ESTAÇÃO (`_texto`, `_contagem`,
+# `_lista_texto`, a doutrina do relator não confiável) e NENHUM ao dado da
+# carteira: `json.loads(r["ultimo_movimento"] or "null")` sem conferir tipo.
+# Medido em 11/09/2026 com `ultimo_movimento` guardando uma string em vez de um
+# objeto: AttributeError na SEGUNDA leitura (o `delta` faz `.get("dh")` sobre
+# ela). Na rota do agente isso é 500 sem `except`, e a estação repete o ciclo
+# indefinidamente; na tela o `except` de melhor-esforço engole e o
+# reaproveitamento nunca mais funciona para aquela conta — TODOS os itens dela,
+# porque o laço morre no primeiro.
+_cx = conectar()
+_ALVO_I4 = "019.3131.2026.0000031-31"
+_VIZINHO_I4 = "019.3232.2026.0000032-32"
+# O DEFORMADO VEM PRIMEIRO na ordem da medição, que é a ordem em que o laço
+# percorre: é assim que ele leva o vizinho junto.
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,ultimo_movimento,
+               documentos,movimentos,medido_em,mesas_fonte)
+               VALUES(900,'3131',?,'"Processo recebido"',2,2,?,'arvore')""",
+            (_ALVO_I4, _ONTEM))
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'3131','SESAB/MINHA',NULL)""")
+_cx.execute("""INSERT INTO processo(snapshot_id,id_sei,protocolo,ultimo_movimento,
+               documentos,movimentos,medido_em,mesas_fonte)
+               VALUES(900,'3232',?,
+               '{"dh":"01/09/2026 10:00","un":"SESAB/MINHA","de":"Recebido"}',
+               1,1,?,'arvore')""", (_VIZINHO_I4, _ANTEONTEM))
+_cx.execute("""INSERT INTO processo_mesa(snapshot_id,id_sei,mesa,atribuido)
+               VALUES(900,'3232','SESAB/MINHA',NULL)""")
+_cx.commit()
+ac.adicionar(_cx, 7, f"{_ALVO_I4}\n{_VIZINHO_I4}", "SEI-SESAB")
+_cx.commit()
+checar("(cena) a primeira leitura dos dois acontece",
+       ac.reaproveitar(_cx, 7, "SEI-SESAB") >= 2)
+_cx.commit()
+_i4_um = {x["protocolo"]: x for x in ac.listar(_cx, 7)}[_ALVO_I4]
+checar("movimento que não é objeto não vira movimento — fica não observado",
+       _i4_um["ultimo_movimento"] is None, repr(_i4_um["ultimo_movimento"]))
+
+# A SEGUNDA LEITURA, que é onde estourava.
+_cx.execute("""UPDATE processo SET medido_em=?, documentos=documentos+1
+               WHERE snapshot_id=900 AND id_sei IN ('3131','3232')""", (agora(),))
+_cx.execute("UPDATE acompanhado SET lido_em=? WHERE usuario_id=7 AND protocolo IN (?,?)",
+            (_ONTEM, _ALVO_I4, _VIZINHO_I4))
+_cx.commit()
+_erro_i4, _feitos_i4 = None, 0
+try:
+    _feitos_i4 = ac.reaproveitar(_cx, 7, "SEI-SESAB")
+except Exception as _ex:                                          # noqa: BLE001
+    _erro_i4 = f"{type(_ex).__name__}: {_ex}"
+_cx.commit()
+checar("a segunda leitura não estoura no dado deformado", _erro_i4 is None,
+       str(_erro_i4))
+_i4 = {x["protocolo"]: x for x in ac.listar(_cx, 7)}
+checar("e o VIZINHO bem formado continua sendo respondido",
+       _i4[_VIZINHO_I4]["documentos"] == 2
+       and (_i4[_VIZINHO_I4]["mudou"] or {}).get("documentos") == 1,
+       f"{_i4[_VIZINHO_I4]['documentos']} / {_i4[_VIZINHO_I4]['mudou']}")
+checar("(e foram dois itens respondidos, não um)", _feitos_i4 >= 2, str(_feitos_i4))
+
+# A LINHA JÁ GRAVADA ANTES DESTA REGRA também volta pelo mesmo caminho: o
+# `anterior` de `gravar_leitura` sai do BANCO, e ali `aberto_em` pode ser uma
+# string — sobre a qual `set()` é um conjunto de LETRAS, que é o defeito que
+# `_unidades` descreve, entrando pela porta de dentro.
+_ALVO_I4_VELHO = "019.3434.2026.0000034-34"
+ac.adicionar(_cx, 7, _ALVO_I4_VELHO, "SEI-SESAB")
+_cx.execute("""INSERT INTO acompanhado_leitura(usuario_id,instancia,protocolo,
+               lido_em,fonte,medido_em,aberto_em,ultimo_movimento,documentos,
+               movimentos) VALUES(7,'SEI-SESAB',?,?,'carteira',?,'"SESAB/X"',
+               '"texto solto"',1,1)""", (_ALVO_I4_VELHO, _ONTEM, _ONTEM))
+_cx.commit()
+_erro_velho, _d_velho = None, None
+try:
+    _d_velho = ac.gravar_leitura(_cx, 7, "SEI-SESAB", _ALVO_I4_VELHO,
+                                 {"aberto_em": ["SESAB/MINHA"],
+                                  "aberto_em_fonte": "arvore",
+                                  "documentos": 2, "movimentos": 1},
+                                 fonte="carteira", medido_em=agora())
+except Exception as _ex:                                          # noqa: BLE001
+    _erro_velho = f"{type(_ex).__name__}: {_ex}"
+_cx.commit()
+checar("leitura anterior deformada no banco não derruba a próxima",
+       _erro_velho is None, str(_erro_velho))
+checar("e não vira conjunto de LETRAS: nada de 'saiu de S, E, A, B'",
+       "saiu_de" not in (_d_velho or {}), str(_d_velho))
+checar("o que foi observado de verdade continua sendo contado",
+       (_d_velho or {}).get("documentos") == 1, str(_d_velho))
+_cx.commit(); _cx.close()
+
+# E A ROTA DO AGENTE NÃO PODE VIRAR 500: ali não há `except`, e 500 é o que faz a
+# estação repetir o mesmo ciclo indefinidamente.
+_cx = conectar()
+_cx.execute("""UPDATE processo SET medido_em=? WHERE snapshot_id=900
+               AND id_sei='3131'""", (agora(),))
+_cx.execute("UPDATE acompanhado SET lido_em=NULL WHERE usuario_id=7 AND protocolo=?",
+            (_ALVO_I4,))
+_cx.commit(); _cx.close()
+_r_i4 = _do_agente("/api/agente/acompanhamento", metodo="GET")
+checar("a rota do agente responde, em vez de 500 sobre dado deformado",
+       _r_i4.status_code == 200, str(_r_i4.status_code))
+_cx = conectar()
+_cx.execute("UPDATE acompanhado SET tentativas=0, tentativa_em=NULL")
+_cx.commit(); _cx.close()
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)

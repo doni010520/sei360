@@ -188,6 +188,32 @@ def _lista_json(bruto):
     return v if isinstance(v, list) else None
 
 
+def _movimento_json(bruto):
+    """JSON que era para ser o objeto {dh, un, de} -> dict, ou None quando não deu.
+
+    O IRMÃO DE `_lista_json`, e existe pelo mesmo motivo com outro tipo: o módulo
+    conferia o tipo de tudo o que vem da ESTAÇÃO (`_texto`, `_contagem`,
+    `_lista_texto`, e a doutrina do relator não confiável) e de NADA do que vem da
+    carteira. Medido em 11/09/2026 com `ultimo_movimento` guardando uma string em
+    vez de um objeto: `delta()` faz `(anterior.get("ultimo_movimento") or {})
+    .get("dh")`, e sobre string isso é AttributeError na SEGUNDA leitura — 500 na
+    rota do agente (que não tem `except`, e a estação repete o ciclo para
+    sempre), e na tela o `except` de melhor-esforço engolindo o erro com o
+    reaproveitamento MORTO para aquela conta inteira, porque o laço morre no
+    primeiro item.
+
+    A coluna é TEXT e o SQLite não impede nada; quem escreve é a ingestão, e
+    "improvável" não é "impossível" — é a mesma conta que `_lista_json` já fez.
+    """
+    if not bruto:
+        return None
+    try:
+        v = json.loads(bruto)
+    except (TypeError, ValueError):
+        return None
+    return v if isinstance(v, dict) else None
+
+
 def adicionar(cx, usuario_id, texto, instancia, origem="manual", nota=None):
     """Uma ou várias linhas -> (aceitos, recusados, sem_espaco).
 
@@ -676,10 +702,17 @@ def gravar_leitura(cx, usuario_id, instancia, protocolo, dados, fonte, medido_em
         comparacao = "sem_avanco"
     else:
         comparacao = "comparada"
-        prev = {"aberto_em": json.loads(anterior["aberto_em"] or "null"),
-                "ultimo_movimento": json.loads(anterior["ultimo_movimento"] or "null"),
-                "documentos": anterior["documentos"],
-                "movimentos": anterior["movimentos"]}
+        # A LEITURA ANTERIOR SAI DO BANCO, e o banco guarda o que gravaram ontem
+        # — inclusive antes de haver conferidor. `json.loads` cru aqui devolvia o
+        # que estivesse lá: `aberto_em` como STRING vira, no `set()` do delta, um
+        # conjunto de LETRAS (o defeito que `_unidades` descreve, entrando pela
+        # porta de dentro), e `ultimo_movimento` como string estoura no `.get`.
+        # Conferir na volta é o que impede a linha velha de derrubar a leitura
+        # nova para sempre — apagá-la não é opção, e ela não some sozinha.
+        prev = {"aberto_em": _lista_json(anterior["aberto_em"]),
+                "ultimo_movimento": _movimento_json(anterior["ultimo_movimento"]),
+                "documentos": _contagem(anterior["documentos"]),
+                "movimentos": _contagem(anterior["movimentos"])}
     d = delta(prev, dados)
     # A FICHA ENTRA PELA TUPLA, não por uma segunda lista de nomes escrita aqui.
     # São 26 campos; escrevê-los à mão nas três pontas (colunas, `?` e valores)
@@ -887,9 +920,14 @@ def reaproveitar(cx, usuario_id, instancia):
             # Não se relê por isso — seria uma requisição por dia para trocar
             # dado velho por dado novo do mesmo campo —, mas a tela marca como
             # não confirmado pela árvore, e para isso a fonte tem de chegar lá.
-            "aberto_em_fonte": r["mesas_fonte"] or "andamento",
-            "ultimo_movimento": json.loads(r["ultimo_movimento"] or "null"),
-            "documentos": r["documentos"], "movimentos": r["movimentos"],
+            "aberto_em_fonte": _texto(r["mesas_fonte"]) or "andamento",
+            # PELO CONFERIDOR, como o envelope da estação — ver `_movimento_json`.
+            # A carteira não é relator confiável por ser nossa: ela é o resultado
+            # de um parse de HTML do SEI, e o tipo errado aqui só aparece na
+            # SEGUNDA leitura, longe do envelope que o produziu.
+            "ultimo_movimento": _movimento_json(r["ultimo_movimento"]),
+            "documentos": _contagem(r["documentos"]),
+            "movimentos": _contagem(r["movimentos"]),
         }
         # A FICHA SAI DA MESMA LINHA que deu as mesas, a contagem e a régua. É a
         # regra "um momento, um quadro" do comentário acima, e ela vale para o
