@@ -499,6 +499,116 @@ _le, _parado = asv.cobertura(cx, uidB)
 checar("conta em modo estação não aparece nem como lida nem como parada",
        _le == [] and _parado == {}, (_le, _parado))
 
+print("\nS. 'HÁ EXECUTOR?' É PERGUNTA SOBRE O CONTAINER, NÃO SOBRE O WORKER")
+# O DEFEITO, e ele desarmava a coleta de gente: `_motivo_servidor()` (app.py)
+# perguntava `coleta_servidor.vivo()`, que só sabe do processo que responde. Com
+# `--workers 3`, dois dos três respondem False — então salvar /configuracao
+# caindo num worker de painel gravava `pausado_motivo` = "o executor deveria
+# estar rodando e não está" e DESARMAVA o agendamento da conta, por um fato
+# verdadeiro sobre aquele processo e falso sobre o container. Dois terços das
+# vezes. E não voltava: `_reavaliar_existentes` roda uma vez por processo, na
+# subida — até o próximo redeploy, aquela conta não coletava.
+os.environ["SEI360_COLETA_SERVIDOR"] = "1"
+import app as A                                                  # noqa: E402
+_cs_vivo, _cs_cap, _cs_hae = cs.vivo, cs.capacidade, cs.ha_executor
+cs.capacidade = lambda: (True, "")
+cs.vivo = lambda: False            # este worker é um worker de painel
+cs.ha_executor = lambda: True      # e o container TEM executor, noutro worker
+try:
+    checar("worker sem a thread, container com executor: nenhuma pausa",
+           A._motivo_servidor() is None, A._motivo_servidor())
+    cs.ha_executor = lambda: False
+    checar("e quando não há executor em lugar nenhum, a pausa volta — com o motivo",
+           "não está" in (A._motivo_servidor() or ""), A._motivo_servidor())
+finally:
+    cs.vivo, cs.capacidade, cs.ha_executor = _cs_vivo, _cs_cap, _cs_hae
+# E a resposta verdadeira atravessa processo pelo arquivo de vez do atendente,
+# que é o único estado que workers irmãos compartilham.
+checar("ha_executor() delega ao atendente, que sabe responder pelo container",
+       cs.ha_executor() == (cs.vivo() or atendente.ha_executor()))
+
+print("\nT. O AGENTE SEGUE O MODO, não a ordem dos cliques")
+# Quem pareou uma estação e DEPOIS escolheu "a senha fica no servidor" ficava
+# com um agente de estação e modo `servidor`. `_candidatos` filtra
+# `nome_estacao LIKE 'SERVIDOR/%'`: o motor do container não via a conta, e
+# `/api/agente/tarefa` seguia esperando a estação que a pessoa acabou de dizer
+# que não usa mais. `agente_do` devolve o agente MAIS NOVO, de qualquer tipo; a
+# criação do lógico só cobria quem nunca teve agente.
+cs.capacidade = lambda: (True, "")
+cs.ha_executor = lambda: True
+try:
+    uidE = novo_usuario("acomp.pareou@sei360.local")
+    config_servidor(uidE, "SEI-SESAB")
+    cx.execute("""INSERT INTO agentes(nome_estacao,dono_usuario_id,unidades_esperadas,
+                  ativo,criado_em) VALUES(?,?,'[]',1,?)""",
+               (f"ESTACAO-{uidE}", uidE, agora()))
+    agE = cx.execute("SELECT last_insert_rowid()").fetchone()[0]
+    cx.execute("INSERT INTO agendamento(agente_id,janelas,dias,ativo) VALUES(?,?,'todos',1)",
+               (agE, json.dumps(["00:00"])))
+    cx.commit()
+    checar("(cena) antes, o motor do container NÃO vê a conta",
+           agE not in cs._candidatos(cx), cs._candidatos(cx))
+    A.aplicar_agendamento(cx, uidE)
+    cx.commit()
+    _nome = cx.execute("SELECT nome_estacao FROM agentes WHERE id=?", (agE,)).fetchone()[0]
+    checar("modo servidor converte o agente de estação", _nome.startswith("SERVIDOR/"),
+           _nome)
+    checar("e o motor passa a vê-lo", agE in cs._candidatos(cx), cs._candidatos(cx))
+    checar("a conversão fica no log de acesso, com o nome antigo e o novo",
+           cx.execute("""SELECT alvo FROM log_acesso WHERE acao='agente_para_servidor'
+                         AND usuario_id=?""", (uidE,)).fetchone() is not None)
+    # E O CAMINHO DE VOLTA: escolher modo estação com um agente lógico armado
+    # deixaria o container coletando uma conta que pediu que a senha não ficasse
+    # aqui. A pausa tira a conta de `_candidatos` sem apagar nada.
+    cx.execute("UPDATE config_usuario SET modo_coleta='estacao' WHERE usuario_id=?", (uidE,))
+    cx.commit()
+    A.aplicar_agendamento(cx, uidE)
+    cx.commit()
+    checar("modo estação PAUSA o agente lógico até a máquina ser pareada",
+           agE not in cs._candidatos(cx), cs._candidatos(cx))
+    _pausa = cx.execute("SELECT pausado_motivo FROM agentes WHERE id=?",
+                        (agE,)).fetchone()[0]
+    checar("e a pausa diz o que fazer, em vez de acusar o servidor",
+           _pausa and "pareie" in _pausa, _pausa)
+finally:
+    cs.capacidade, cs.ha_executor = _cs_cap, _cs_hae
+
+print("\nU. DUAS PONTAS, UMA JANELA — o container não coleta o que a estação levou")
+# Converter o agente (cena T) NÃO revoga o pareamento: modo estação continua
+# opção documentada, e os dois passam a compartilhar o MESMO agente. O que
+# impede duas sessões do SEI na mesma conta, com a mesma credencial nominal, é o
+# carimbo `gatilho` — `max_entregas_janela` é 3 e existe para RETENTATIVA.
+uidF = novo_usuario("acomp.duas.pontas@sei360.local")
+config_servidor(uidF, "SEI-SESAB")
+agF = novo_agente_servidor(uidF)
+novo_agendamento(agF, ativo=1, horario="00:00")
+cx.commit()
+# A JANELA SAI DO PRÓPRIO `_decidir`, e não escrita à mão: `janela_devida`
+# carimba data ISO com fuso, e uma janela montada por concatenação não casaria —
+# o teste passaria por não achar nada, provando o contrário do que quer provar.
+_ex, _janela, _inst, _p = cs._decidir(cx, agF)
+cx.commit()
+checar("(cena) a primeira decisão entrega a janela a este motor",
+       _ex is not None and _inst == "SEI-SESAB", (_ex, _janela))
+cx.execute("UPDATE execucao SET gatilho='agente' WHERE id=?", (_ex,))
+cx.commit()
+_r = cs._decidir(cx, agF)
+checar("janela entregue à ESTAÇÃO não é retomada nem reentregue aqui",
+       _r[0] is None and "estação levou" in _r[1], _r)
+# Entrega SEM carimbo nenhum também não é nossa: `gatilho` aceita nulo, e em SQL
+# `NULL <> 'servidor'` NÃO é verdadeiro — daí o `IS NOT`.
+cx.execute("UPDATE execucao SET gatilho=NULL WHERE id=?", (_ex,))
+cx.commit()
+_r = cs._decidir(cx, agF)
+checar("entrega sem carimbo também não é retomada (IS NOT, não <>)",
+       _r[0] is None and "estação levou" in _r[1], _r)
+# E a nossa, sim: retomar é justamente para o motor que caiu no meio.
+cx.execute("UPDATE execucao SET gatilho='servidor' WHERE id=?", (_ex,))
+cx.commit()
+_r = cs._decidir(cx, agF)
+checar("a entrega DESTE motor é retomada, que é o caso para o qual ela existe",
+       _r[0] == _ex, (_r[0], _ex))
+
 cx.close()
 print("\n" + "=" * 62)
 # O FORMATO E CONTRATO: rodar_testes.py casa a frase exata e conta como

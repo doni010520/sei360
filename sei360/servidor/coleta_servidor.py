@@ -113,6 +113,33 @@ def vivo():
     return bool(_thread and _thread.is_alive())
 
 
+def ha_executor():
+    """Existe executor de coleta neste CONTAINER? (qualquer worker)
+
+    A DIFERENÇA COM `vivo()` ERA UM DEFEITO COM CONSEQUÊNCIA, achado em
+    12/09/2026: `_motivo_servidor()` (app.py) perguntava `vivo()`, que só sabe
+    deste processo. Com `--workers 3`, dois dos três respondem False — então
+    salvar /configuracao caindo num worker de painel gravava `pausado_motivo` =
+    "o executor deveria estar rodando e não está" e **DESARMAVA o agendamento
+    da conta**, por um fato verdadeiro sobre aquele processo e falso sobre o
+    container. Dois terços das vezes, e com a mensagem culpando o servidor.
+
+    E não voltava sozinho: `_reavaliar_existentes` roda uma vez por processo, na
+    subida. Até o próximo redeploy, aquela conta não coletava — o modo de falha
+    silencioso que este módulo inteiro foi escrito para não ter.
+
+    Este laço só sobe onde `atendente.vivo()` é verdadeiro (ver `iniciar`), e o
+    atendente já sabe responder pelo container inteiro através do arquivo de vez.
+    Logo a pergunta certa é a dele.
+
+    RESSALVA ESCRITA: se `coleta_servidor.iniciar()` tivesse levantado no worker
+    vencedor (app.py o envolve em try/except para a busca não cair junto), um
+    worker de painel responderia "há executor" sem haver. O worker vencedor
+    responderia a verdade, e o log traria a linha da exceção.
+    """
+    return vivo() or atendente.ha_executor()
+
+
 # ------------------------------------------------------------------ a fila
 def _candidatos(cx):
     """Agentes lógicos SERVIDOR/* armados: com dono e sem pausa própria.
@@ -164,7 +191,18 @@ def _decidir(cx, agente_id, agora_dt=None):
                             LIMIT 1""", (agente_id,)).fetchone()
     if ocupada:
         return None, f"execução {ocupada['id']} ainda em curso", None, None
+    # RETOMA SÓ O QUE ESTE MOTOR ENTREGOU A SI MESMO. `gatilho='servidor'` é o
+    # carimbo que o INSERT abaixo põe; `/api/agente/tarefa` põe outro.
+    #
+    # Sem a condição, uma janela que a ESTAÇÃO levou (`execucao` 'entregue',
+    # dela) seria retomada aqui e coletada em paralelo — duas sessões do SEI na
+    # mesma conta, gravando na mesma `execucao`. Não era alcançável enquanto um
+    # agente era estação OU servidor pelo nome; passou a ser no dia em que
+    # `aplicar_agendamento` começou a CONVERTER o agente de quem escolhe modo
+    # servidor sem desfazer o pareamento (12/09/2026). Esta guarda é o que torna
+    # a conversão segura.
     pendente = cx.execute("""SELECT * FROM execucao WHERE agente_id=? AND estado='entregue'
+                             AND gatilho='servidor'
                              ORDER BY id DESC LIMIT 1""", (agente_id,)).fetchone()
     if pendente:
         return (pendente["id"], pendente["janela"], instancia,
@@ -182,6 +220,18 @@ def _decidir(cx, agente_id, agora_dt=None):
                            (agente_id, devida)).fetchone()[0]
     if entregues >= cfg["max_entregas_janela"]:
         return None, "teto de entregas desta janela atingido", None, None
+    # A ESTAÇÃO LEVOU ESTA JANELA: sai daqui sem entregar. `max_entregas_janela`
+    # é 3 por padrão, e ele existe para RETENTATIVA — não para dois executores
+    # coletando a mesma mesa ao mesmo tempo, na mesma conta, com a mesma
+    # credencial nominal. `IS NOT` e não `<>` porque `gatilho` aceita nulo, e em
+    # SQL `NULL <> 'servidor'` não é verdadeiro: a entrega sem carimbo escaparia.
+    da_estacao = cx.execute(
+        """SELECT id FROM execucao WHERE agente_id=? AND janela=?
+           AND gatilho IS NOT 'servidor'
+           AND estado IN ('entregue','em_curso') LIMIT 1""",
+        (agente_id, devida)).fetchone()
+    if da_estacao:
+        return None, f"a estação levou esta janela (execução {da_estacao['id']})", None, None
 
     # A ENTREGA É O LOCK, igual à rota HTTP: gravar antes de agir impede que
     # duas passadas do laço (ou uma passada e um pedido manual) peguem a

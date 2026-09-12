@@ -1435,12 +1435,19 @@ def _motivo_servidor():
     if not pode:
         return (f"modo servidor: {motivo}. A coleta roda na estação com o agente "
                 f"instalado enquanto isto não for resolvido.")
-    if not coleta_servidor.vivo():
+    if not coleta_servidor.ha_executor():
         # LIGADO, CAPAZ, E MESMO ASSIM NÃO RODANDO é defeito do servidor, não
         # da conta: o executor só sobe no processo que venceu a eleição do
         # atendente de busca (mesmo semáforo de memória — ver o cabeçalho de
         # `coleta_servidor.py`). Dizer isso em vez de "agendamento desarmado"
         # evita que a pessoa procure na própria configuração o que não é dela.
+        #
+        # `ha_executor()` E NÃO `vivo()`: esta função é chamada de dentro de uma
+        # REQUISIÇÃO, que cai em qualquer um dos três workers, e `vivo()` só
+        # sabe do processo dela. Com `vivo()`, dois terços dos salvamentos de
+        # /configuracao pausavam o agente e DESARMAVAM o agendamento da conta
+        # por um fato falso sobre o container — sem voltar até o próximo
+        # redeploy. Ver a docstring de `coleta_servidor.ha_executor`.
         return ("modo servidor: o executor de coleta deveria estar rodando neste "
                 "container e não está — defeito do servidor, não da sua conta. "
                 "Reinicie o serviço e, se persistir, relate.")
@@ -1478,10 +1485,51 @@ def aplicar_agendamento(cx, uid):
         return
     cx.execute("UPDATE agentes SET unidades_esperadas=?, credencial_login_mascarado=? WHERE id=?",
                (json.dumps(unidades, ensure_ascii=False), mascarar(c["sei_login"]), ag["id"]))
+    # O AGENTE SEGUE O MODO, e não a ordem dos cliques.
+    #
+    # O DEFEITO, medido pela leitura do código em 12/09/2026: quem pareou uma
+    # estação e DEPOIS escolheu "a senha fica no servidor" ficava com um agente
+    # de estação e modo `servidor`. `coleta_servidor._candidatos` filtra por
+    # `nome_estacao LIKE 'SERVIDOR/%'`, então o motor do container NÃO via essa
+    # conta; e `/api/agente/tarefa` continuava esperando uma estação que a pessoa
+    # acabou de dizer que não quer mais usar. Resultado: uma janela perdida por
+    # dia, com o texto culpando a estação, e a coleta nunca acontecendo em lugar
+    # nenhum. `agente_do` devolve o agente MAIS NOVO da pessoa, qualquer que seja
+    # o tipo — a criação acima só cobre quem nunca teve agente.
+    #
+    # CONVERTER É HONRAR A ESCOLHA: ir a /configuracao e marcar modo servidor é
+    # dizer "colete daqui". O pareamento NÃO é revogado — modo estação continua
+    # sendo opção documentada (§6.0/§6.3), e os dois podem coexistir porque
+    # passam a compartilhar o MESMO agente e, portanto, a mesma trava de janela
+    # por `execucao`. Ver a guarda de `gatilho` em `coleta_servidor._decidir`,
+    # que é o que impede o container de executar a janela que a estação levou.
+    if (c["modo_coleta"] == "servidor"
+            and not ag["nome_estacao"].startswith("SERVIDOR/")):
+        _login = (cx.execute("SELECT email FROM usuarios WHERE id=?",
+                             (uid,)).fetchone()["email"] or "").split("@")[0]
+        cx.execute("UPDATE agentes SET nome_estacao=? WHERE id=?",
+                   ("SERVIDOR/" + _login, ag["id"]))
+        registrar(cx, uid, "agente_para_servidor",
+                  alvo=f"{ag['nome_estacao']} -> SERVIDOR/{_login}")
+        ag = cfgmod.agente_do(cx, uid)
+    # E O CAMINHO DE VOLTA: escolher modo estação com um agente lógico no lugar
+    # deixaria o motor do container continuando a coletar uma conta que pediu que
+    # a senha não ficasse aqui. Quem renomeia para ESTACAO-* é o pareamento
+    # (`/configuracao/estacao`), que é o passo seguinte do assistente; até ele
+    # acontecer, o agente lógico fica PAUSADO em vez de armado — a pausa é o que
+    # tira a conta de `_candidatos` sem apagar nada.
+    if (c["modo_coleta"] == "estacao"
+            and ag["nome_estacao"].startswith("SERVIDOR/")
+            and not ag["pausado_motivo"]):
+        cx.execute("UPDATE agentes SET pausado_motivo=? WHERE id=?",
+                   ("modo estação escolhido: pareie a máquina que vai coletar",
+                    ag["id"]))
+        ag = cfgmod.agente_do(cx, uid)
+
     # AGENTE LÓGICO JÁ CRIADO É RE-AVALIADO. Sem isto, quem configurou antes de a
     # imagem ganhar navegador ficaria pausado para sempre por um motivo que deixou
     # de ser verdade — e o texto da pausa continuaria afirmando que não há executor.
-    if ag["nome_estacao"].startswith("SERVIDOR/"):
+    if ag["nome_estacao"].startswith("SERVIDOR/") and c["modo_coleta"] == "servidor":
         novo = _motivo_servidor()
         if novo != ag["pausado_motivo"]:
             cx.execute("UPDATE agentes SET pausado_motivo=? WHERE id=?", (novo, ag["id"]))
