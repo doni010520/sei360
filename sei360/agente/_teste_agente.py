@@ -497,7 +497,12 @@ checar("nem para a lista de alertas, que vira anexo",
 checar("e o alerta continua sendo detectado", len(guardadas) == 1, repr(guardadas))
 
 
-print(f"\n{ok_total} verificacao(oes), {len(falhas)} falha(s)")
+# O FORMATO E CONTRATO, nao estilo: `rodar_testes.py` casa a frase exata
+# "N verificacoes OK, M falha" e conta como FALHA qualquer suite que nao a
+# imprima — verde nenhum a salva. Ver o comentario de `ler_saida` la, escrito
+# depois de rodadas de 267, 340 e 602 verificacoes declararem sucesso sobre
+# suite que morreu antes do resumo.
+print(f"\n{ok_total} verificações OK, {len(falhas)} falha(s)")
 if falhas:
     print("FALHOU: " + "; ".join(falhas))
 sys.exit(1 if falhas else 0)

@@ -28,6 +28,7 @@ SUITES = [
     ("teste_busca.py", "busca avançada, instância e cofre por instalação"),
     ("teste_acompanhamento.py", "acompanhamento: lista por pessoa, fora da mesa"),
     ("teste_recebimento_coleta.py", "o que a coleta FAZ ao SEI, nao so o que le"),
+    ("../agente/_teste_agente.py", "o laco do agente na estacao"),
     ("teste_acesso.py", "recuperação de senha e segundo fator por e-mail"),
 ]
 CONTAINER = ("teste_container.py", "imagem Docker (exige Docker instalado)")
