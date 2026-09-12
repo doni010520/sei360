@@ -1259,12 +1259,24 @@ processo que não está em mesa nenhuma da pessoa.
 
 Porta própria no menu, lista por conta, lida com o login da própria pessoa.
 
+**Duas entradas, uma lista.** Colar números na tela do módulo, e o botão "Adicionar
+ao Acompanhamento" na ficha lateral do painel — que é onde a decisão de seguir um
+processo costuma nascer, olhando para ele. O botão existe só no painel SERVIDO: a
+cópia estática abre de `file://`, sem sessão, e um botão ali postaria para lugar
+nenhum em silêncio. A procedência (`origem`) é gravada pela CASA, não pelo
+formulário: só `painel` é aceito do cliente, e qualquer outro valor vira `manual` —
+senão um pedido forjado carimbaria `sei_acompanhamento`, a importação do
+Acompanhamento Especial do SEI que ainda não existe, e o registro afirmaria uma
+leitura do SEI que nunca houve.
+
 **O que ele deliberadamente não faz.** Não entra na carteira: processo acompanhado
 não soma indicador do painel, não aparece nos relatórios, não vira snapshot — se
 entrasse, todo número do produto passaria a misturar "o que é meu" com "o que eu
 observo". Não responde "parado há N dias aqui", porque os cinco campos de custódia
-são derivados PARA UMA MESA e fora dela não têm referente; diz "aberto em CIR-IBOT há
-14 dias", que é verdade. Não atravessa pessoa e não passa pelo poço. Não amplia
+são derivados PARA UMA MESA e fora dela não têm referente; diz "aberto em
+CIR-IBOT" e nomeia o que falta, em vez de deixar campo em branco. Nem o "há N dias":
+a árvore do SEI lista as unidades e **não carrega data nenhuma**, e a data de entrada
+numa unidade sai de `mov_custodia`, que é o derivado por mesa que não atravessa. Não atravessa pessoa e não passa pelo poço. Não amplia
 acesso: o que o SEI nega ao login, o módulo registra como `sem_acesso` e diz na tela.
 
 **A economia central.** Processo que já está na carteira é respondido pela própria
@@ -1273,8 +1285,11 @@ coleta, sem uma requisição ao SEI — `processo_mesa` já guarda as unidades d
 `snapshots_de`, a MESMA função que o painel usa: um `SELECT` por protocolo acharia a
 linha de qualquer unidade do banco, e o módulo viraria a porta lateral que contorna a
 fronteira que o resto do sistema defende. Só o que está fora da carteira custa
-requisição — 5 por processo, teto de 100 por pessoa, ~500 no pior caso contra as
-~5.900 da coleta diária.
+requisição — 6 por processo (5 quando não há a ação Consultar/Alterar), teto de 100
+por pessoa, ~600 no pior caso contra as ~5.900 da coleta diária. É uma a mais que as
+5 da coleta porque a pesquisa por número é reaberta a cada protocolo, de propósito:
+reusar o formulário da vez anterior arrisca `infra_hash` morto, que não devolve erro
+— derruba a sessão de quem está trabalhando.
 
 **Quatro decisões que o desenho tomou, e por quê:**
 

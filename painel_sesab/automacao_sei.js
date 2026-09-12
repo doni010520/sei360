@@ -2072,8 +2072,9 @@ async function acompanhar(protocolo, campos) {
 
    TETO DE RELOGIO PROPRIO, e nao o do agente. O agente mata o coletor por relogio
    de parede e nao fica com nada; aqui, parar sozinho devolve o que JA foi lido, e
-   o resto continua pendente para a proxima volta. Cem processos a tres
-   requisicoes cada nao cabem num numero que alguem adivinhe: o teto existe para o
+   o resto continua pendente para a proxima volta. Cem processos a seis
+   requisicoes cada (ver o cabecalho de `acompanhar`) nao cabem num numero que
+   alguem adivinhe: o teto existe para o
    envelope chegar, nao para a lista acabar. */
 async function acompanharLista(pedido) {
   const protocolos = (pedido && pedido.protocolos) || [];

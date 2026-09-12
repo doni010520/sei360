@@ -3334,6 +3334,38 @@ checar("origem forjada NÃO entra: vira 'manual', que é a verdade do caminho",
        _forjado and _forjado["origem"] == "manual",
        str(dict(_forjado) if _forjado else None))
 
+print("\n22. o lado da estação, conferido por quem roda o arnês")
+# `_teste_acompanhar.js` tem 107 verificações sobre a metade do módulo que roda no
+# navegador — a leitura reduzida, a lista de campos escrita à mão, o teto de
+# relógio, o corte do envelope. Elas não valiam nada no arnês: nenhuma suíte as
+# chamava, e uma suíte que só roda quando alguém lembra é uma suíte que não roda.
+# É o mesmo buraco que `_teste_agente.py` tinha, e o idioma do conserto é o de
+# `teste_busca.py`: a suíte Python chama o `node`.
+#
+# APONTA PARA ESTA ÁRVORE. As chamadas vizinhas em `teste_busca.py` apontam para
+# `C:\Claude\sei_sistema\painel_sesab`, que é repositório de CONSULTA: conferir lá
+# é conferir o arquivo de outro projeto e chamar de verde o daqui.
+import shutil as _sh                                             # noqa: E402
+import subprocess as _sp                                         # noqa: E402
+_js_acomp = Path(__file__).resolve().parents[2] / "painel_sesab" / "_teste_acompanhar.js"
+_node = next((e for e in (r"C:\Program Files\nodejs\node.exe", "node")
+              if _sh.which(e)), None)
+if _js_acomp.exists() and _node:
+    _rj = _sp.run([_node, str(_js_acomp)], capture_output=True, text=True,
+                  encoding="utf-8", errors="replace", timeout=180)
+    checar("o coletor do acompanhamento passa nas próprias 107 verificações",
+           _rj.returncode == 0, (_rj.stdout or "")[-400:])
+    # E que ELAS TENHAM RODADO: `returncode 0` sozinho também é o que um arquivo
+    # vazio devolve. O número vem do resumo da própria suíte.
+    import re as _re_js                                          # noqa: E402
+    _m_js = _re_js.search(r"(\d+) verificacoes, (\d+) falha", _rj.stdout or "")
+    checar("e o resumo dela prova que rodaram, em vez de sair 0 em silêncio",
+           bool(_m_js) and int(_m_js.group(1)) >= 100 and _m_js.group(2) == "0",
+           (_rj.stdout or "")[-200:])
+else:
+    checar("o coletor do acompanhamento foi conferido", False,
+           f"node={_node} arquivo={_js_acomp}")
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)

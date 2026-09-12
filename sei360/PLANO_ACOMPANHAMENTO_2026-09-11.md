@@ -31,8 +31,16 @@ fronteira que o resto do sistema inteiro defende.
 **Não responde "parado há N dias aqui".** Os cinco campos de custódia
 (`marco_unidade`, `recebimento`, `recebimento_por`, `envio`, `unidade_envio`) são
 derivados PARA UMA MESA — é o que `poco.py` já trata como recalculável e nunca
-copiável. Fora da mesa eles não têm referente. O módulo mostra "aberto em CIR-IBOT
-há 14 dias", que é verdade, e **omite** o resto em vez de fabricá-lo.
+copiável. Fora da mesa eles não têm referente. O módulo mostra "aberto em
+CIR-IBOT" e **omite** o resto em vez de fabricá-lo.
+
+> **Corrigido em 12/09/2026, na implementação.** Este parágrafo prometia "aberto em
+> CIR-IBOT **há 14 dias**". Não há de onde tirar os 14: a árvore do SEI lista as
+> unidades em que o processo está aberto e **não carrega data nenhuma** — a data de
+> entrada numa unidade sai de `mov_custodia`, que é derivado por mesa e é
+> justamente o que este parágrafo diz não atravessar. A promessa era o número
+> fabricado que o módulo existe para não fabricar; a tela entrega a unidade, sem o
+> "há N dias".
 
 **Não atravessa pessoa, e não passa pelo poço.** A lista é por conta e a leitura sai
 do login daquela conta. Se duas pessoas seguem o mesmo processo, são duas leituras —
@@ -61,6 +69,19 @@ configuração. Ícone novo em `_ICONES["acompanhamento"]` (marcador/bookmark), 
 formato dos existentes: `path`/`circle` sem `<svg>` em volta.
 
 ## 4. Modelo de dados — duas tabelas novas, nenhuma alterada
+
+> **O DDL abaixo é o ESBOÇO de 11/09, não o esquema.** O que está no ar é
+> `banco.DDL`, e só ele: `migrar()` deriva os ALTERs comparando o DDL com o
+> `PRAGMA table_info`, então divergência aqui não é aviso — é papel. As duas
+> tabelas cresceram na implementação, e as diferenças que mudam o raciocínio são
+> quatro: `acompanhado` ganhou `tentativas`/`tentativa_em` (o recuo depois da
+> linha-marca corrompida) e um CHECK no `estado`; perdeu o `DEFAULT 'SEI-SESAB'`
+> de `instancia`, para instalação nunca ser carimbada por omissão;
+> `acompanhado_leitura` ganhou a ficha inteira do processo (§11), mais `fonte`
+> NOT NULL, `medido_em` (a data da MEDIÇÃO, que não é `lido_em`),
+> `aberto_em_fonte` e `comparacao`; e a FK dela virou composta, com cascade, para
+> sair da lista levar a série junto. Leia o esboço pelo desenho — a chave ser o
+> protocolo, a série existir —, nunca pelas colunas.
 
 ```sql
 -- A LISTA. A chave é o PROTOCOLO, não o id_sei: o número é o que a pessoa tem na
@@ -117,11 +138,22 @@ estação pergunta     ->  GET /api/agente/acompanhamento
                             (nunca de outra conta)
                                         |
 estação lê no SEI    ->  pesquisa_sei.js busca por numero_sei -> link do processo
-                            leitura REDUZIDA, ~3 requisições: a página do
-                            processo, a árvore (de onde sai aberto_em, via
-                            mesasPorArvore) e o histórico (último movimento e
-                            as contagens). NÃO chama daMesa(): os cinco campos
-                            por mesa nem são calculados.
+                            leitura REDUZIDA, 6 requisições por processo
+                            (5 quando o processo não tem a ação
+                            Consultar/Alterar): a pesquisa por número — que é
+                            reaberta a cada protocolo, de propósito —, a página
+                            do processo, a árvore (de onde sai aberto_em) e o
+                            histórico, mais a ficha de cadastro (assuntos e
+                            interessados). Os cinco campos por mesa SÃO
+                            calculados por `derivar` e não sobem: a lista de
+                            campos do envelope é escrita à mão.
+                                        |
+                          (medido: 6, não os "~3" que este desenho estimou
+                            antes de a função existir. `custo()` publica 5 por
+                            processo para a coleta; o acompanhamento paga uma a
+                            mais porque reabre a pesquisa a cada número, e
+                            `_teste_acompanhar.js` CONTA as requisições da
+                            fixture para o número não envelhecer sozinho.)
                                         |
 estação devolve      ->  POST /api/agente/acompanhamento
                             servidor calcula o DELTA contra a leitura anterior,
