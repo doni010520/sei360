@@ -54,7 +54,7 @@ TIMEOUT_TESTE_S = 120
 TIMEOUT_COLETA_S = 30 * 60
 
 
-def _rodar(argumentos, credencial, timeout):
+def _rodar(argumentos, credencial, timeout, usuario_id=None, instancia=None):
     """Chama o coletor entregando a credencial por stdin."""
     if not COLETOR.exists():
         return 4, f"coletor não encontrado em {COLETOR}", ""
@@ -62,7 +62,8 @@ def _rodar(argumentos, credencial, timeout):
         [sys.executable, str(COLETOR), *argumentos, "--credencial-stdin"],
         cwd=str(COLETOR.parent), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-        env={"PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", **_ambiente()})
+        env={"PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
+             **_ambiente(usuario_id, instancia)})
     try:
         saida, _ = proc.communicate(json.dumps(credencial, ensure_ascii=False) + "\n",
                                    timeout=timeout)
@@ -74,7 +75,7 @@ def _rodar(argumentos, credencial, timeout):
         return 5, f"morto pelo relógio após {timeout // 60} min", ""
 
 
-def _ambiente():
+def _ambiente(usuario_id=None, instancia=None):
     import os
     # A credencial NÃO entra no ambiente do filho. O que passa é só o mínimo para
     # o Python e o Playwright acharem o que precisam.
@@ -85,10 +86,38 @@ def _ambiente():
     # redeploy, e cada teste vira um login novo (que é onde o segundo fator
     # aparece). Nenhuma das duas é segredo — a primeira é um interruptor, a
     # segunda é um caminho.
-    return {k: v for k, v in os.environ.items()
-            if k in ("PATH", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "APPDATA",
-                     "LOCALAPPDATA", "HOME", "PLAYWRIGHT_BROWSERS_PATH",
-                     "SEI_SEM_SANDBOX", "SEI_PERFIL_DIR")}
+    env = {k: v for k, v in os.environ.items()
+           if k in ("PATH", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "APPDATA",
+                    "LOCALAPPDATA", "HOME", "PLAYWRIGHT_BROWSERS_PATH",
+                    "SEI_SEM_SANDBOX", "SEI_PERFIL_DIR")}
+    if usuario_id is None:
+        return env
+    # UM PERFIL POR PESSOA E POR INSTALAÇÃO — a mesma correção que a BUSCA já
+    # tinha e que esta função não recebeu, achada em 12/09/2026.
+    #
+    # `SEI_PERFIL_DIR` cru é `/dados/_perfil_sei`: UM perfil de Chromium para
+    # todas as contas. O comentário de `atendente.executar` descreve o preço,
+    # medido lá: "a busca de B reaproveitava a sessão do SEI de A — `goto(LOGIN)`
+    # nem caía em login.php, e o SEI gravava as consultas de B com o nome de A. O
+    # cofre registrava 'B usou a credencial' e o log do SEI dizia outra coisa".
+    # Numa COLETA o efeito é maior: ela abre o Controle de Processos de seis
+    # mesas, e desde 11/09/2026 sabe-se que abrir a mesa RECEBE os processos em
+    # trânsito dela — ou seja, a coleta de B praticaria atos no SEI em nome de A.
+    #
+    # E DE GRAÇA VEM A ECONOMIA que este módulo não tinha: o acompanhamento e a
+    # busca da MESMA pessoa na MESMA instalação passam a achar o cookie que a
+    # coleta deixou. Um login por pessoa por instalação neste container, em vez
+    # de um por execução — e login novo é exatamente onde o segundo fator
+    # aparece, sem ninguém na tela para digitar.
+    import atendente                                    # tardio: evita ciclo
+    env["SEI_PERFIL_DIR"] = str(atendente._perfil_de(usuario_id, instancia))
+    # A SENHA NÃO FICA NO PERFIL. Ela chega por stdin a cada execução daqui,
+    # então o coletor pode apagá-la do `localStorage` depois de logar e o perfil
+    # guarda só o cookie. Na ESTAÇÃO a variável não existe e a credencial fica,
+    # porque lá a coleta agendada roda sem stdin e depende dela — e este módulo
+    # é só do servidor (nenhum arquivo de `sei360/agente/` o importa).
+    env["SEI_ESQUECER_APOS_LOGIN"] = "1"
+    return env
 
 
 def instancia_do_usuario(cx, usuario_id, registrar_aviso=None):
@@ -214,9 +243,15 @@ def testar_acesso(usuario_id, ip=None):
     envelope = perfil_sei.envelope_do_coletor(instancia)
     cx.commit(); cx.close()
 
+    # O PERFIL É DESTA PESSOA NESTA INSTALAÇÃO, e aqui isso vale mais que na
+    # coleta: o que este teste lê — as mesas que o SEI mostrou — VIRA O VÍNCULO
+    # da conta (logo abaixo). Num perfil compartilhado, o teste de B podia cair
+    # na sessão de A e gravar as mesas de A como vínculos de B: acesso à carteira
+    # de outra pessoa, criado em silêncio por um diretório.
     codigo, saida, _ = _rodar(["--testar-login"],
                               {"usuario": login, "senha": senha, "perfil": envelope},
-                              TIMEOUT_TESTE_S)
+                              TIMEOUT_TESTE_S,
+                              usuario_id=usuario_id, instancia=instancia)
     linha = next((l for l in saida.splitlines() if l.startswith("TESTE_OK ")), None)
     cx = conectar()
     if codigo == 0 and linha:
@@ -313,7 +348,9 @@ def coletar(usuario_id, instancia, somente=None, amostra=None, timeout=None):
         args += ["--somente", ",".join(somente)]
     cred = {"usuario": login, "senha": senha, "perfil": perfil_sei.envelope_do_coletor(instancia)}
     del senha
-    return _rodar(args, cred, timeout or (TIMEOUT_TESTE_S * 3 if amostra else TIMEOUT_COLETA_S))[:2]
+    return _rodar(args, cred,
+                  timeout or (TIMEOUT_TESTE_S * 3 if amostra else TIMEOUT_COLETA_S),
+                  usuario_id=usuario_id, instancia=instancia)[:2]
 
 
 if __name__ == "__main__":

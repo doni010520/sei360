@@ -609,6 +609,44 @@ _r = cs._decidir(cx, agF)
 checar("a entrega DESTE motor é retomada, que é o caso para o qual ela existe",
        _r[0] == _ex, (_r[0], _ex))
 
+print("\nV. UM PERFIL POR PESSOA — e um login por pessoa, não um por execução")
+# O DEFEITO, achado em 12/09/2026: `coleta._ambiente()` passava `SEI_PERFIL_DIR`
+# cru, que no container é `/dados/_perfil_sei` — UM perfil de Chromium para
+# todas as contas. O comentário de `atendente.executar` já mede o preço do outro
+# lado: "a busca de B reaproveitava a sessão do SEI de A; `goto(LOGIN)` nem caía
+# em login.php, e o SEI gravava as consultas de B com o nome de A". Numa COLETA é
+# pior — ela abre o Controle de Processos de seis mesas, e abrir a mesa RECEBE os
+# processos em trânsito dela: a coleta de B praticaria ATOS no SEI em nome de A.
+# E em `testar_acesso` é pior ainda: o que ele lê vira o VÍNCULO da conta.
+import coleta as colmod                                          # noqa: E402
+_a = colmod._ambiente(11, "SEI-SESAB")
+_b = colmod._ambiente(22, "SEI-SESAB")
+_c = colmod._ambiente(11, "SEI-FESF")
+checar("duas contas, dois perfis", _a["SEI_PERFIL_DIR"] != _b["SEI_PERFIL_DIR"],
+       (_a["SEI_PERFIL_DIR"], _b["SEI_PERFIL_DIR"]))
+checar("duas instalações da mesma conta, dois perfis também",
+       _a["SEI_PERFIL_DIR"] != _c["SEI_PERFIL_DIR"],
+       (_a["SEI_PERFIL_DIR"], _c["SEI_PERFIL_DIR"]))
+# E A ECONOMIA, que é o outro lado da mesma moeda: coleta, busca e
+# acompanhamento da MESMA pessoa na MESMA instalação usam o MESMO diretório —
+# então o segundo acha o cookie que o primeiro deixou. Um login por pessoa por
+# instalação neste container, e login novo é onde o segundo fator aparece sem
+# ninguém na tela para digitar.
+checar("coleta e busca/acompanhamento compartilham o perfil da pessoa",
+       _a["SEI_PERFIL_DIR"] == str(atendente._perfil_de(11, "SEI-SESAB")),
+       (_a["SEI_PERFIL_DIR"], str(atendente._perfil_de(11, "SEI-SESAB"))))
+# A SENHA NÃO FICA NO PERFIL: ela chega por stdin a cada execução daqui, então o
+# coletor a apaga do localStorage depois de logar.
+checar("a senha é apagada do perfil depois do login",
+       _a.get("SEI_ESQUECER_APOS_LOGIN") == "1", _a.get("SEI_ESQUECER_APOS_LOGIN"))
+checar("e a credencial nunca entra no ambiente do filho",
+       not any("SENHA" in k.upper() or "SEGREDO" in k.upper() for k in _a), list(_a))
+# SEM DONO, o ambiente é o de antes — é o que a linha de comando deste módulo
+# usa, e mexer nela mudaria o perfil de quem roda `python coleta.py` à mão.
+checar("sem usuario_id, o ambiente continua o de antes",
+       "SEI_ESQUECER_APOS_LOGIN" not in colmod._ambiente(),
+       list(colmod._ambiente()))
+
 cx.close()
 print("\n" + "=" * 62)
 # O FORMATO E CONTRATO: rodar_testes.py casa a frase exata e conta como
