@@ -286,6 +286,14 @@ def expurgar(simular=False, usuario_id=None):
     # Por isso o DELETE é direto na tabela filha e NÃO há varredura de órfão
     # correspondente: órfão aqui seria leitura sem item na lista, e a FK é quem
     # impede que ela exista.
+    #
+    # O QUE ESTE DELETE DEIXA PARA TRÁS, e quem trata: item cuja ÚLTIMA leitura
+    # envelheceu fica `estado='lido'` SEM nenhuma linha de leitura — estado que
+    # só existe por causa daqui. Nenhum dos ramos de etiqueta da tela casava com
+    # ele e o cartão saía só com o número; hoje `acompanhamento.html` tem ramo
+    # próprio ("leitura fora do histórico — volta para a fila"). Não se mexe no
+    # `estado` aqui de propósito: reescrevê-lo para 'novo' seria o expurgo
+    # inventando que o processo nunca foi lido.
     n_acomp = cx.execute("SELECT COUNT(*) FROM acompanhado_leitura WHERE lido_em < ?",
                          (_corte(DIAS["acompanhado_leitura"]),)).fetchone()[0]
     if n_acomp:
