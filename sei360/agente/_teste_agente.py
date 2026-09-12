@@ -269,6 +269,39 @@ finally:
     ag._MODOS_DO_COLETOR.clear()
 
 
+# ================================================== I2, o que ja chegou fica
+print("\n7. o teto NAO joga fora as fatias validas que ja chegaram")
+# MEDIDO: 3 fatias boas chegam, o teto estoura na linha seguinte, e as 3 eram
+# descartadas. A justificativa escrita era "json.loads aceita truncado" — que nao
+# vale para estas: elas JA passaram por `json.loads`, uma a uma, e cada pedaco e
+# um envelope completo e independente.
+TRES_E_PENDURA = coletor_que_conhece(
+    "sys.stdin.readline()\n"
+    "for i in range(3):\n"
+    "    print('ACOMP_OK ' + json.dumps({'instancia': 'SEI-SESAB',\n"
+    "        'leituras': [{'protocolo': '019.%d.2026.0000001-11' % i,\n"
+    "                      'estado': 'lido'}]}))\n"
+    "    sys.stdout.flush()\n"
+    "time.sleep(30)\n")
+guardado, ag.COLETOR = ag.COLETOR, TRES_E_PENDURA
+ag._MODOS_DO_COLETOR.clear()
+try:
+    t0 = time.time()
+    envelopes = ag._rodar_coletor({}, "--acompanhar", "ACOMP_OK ", 2, varios=True)
+    gasto = time.time() - t0
+    checar("o teto disparou (o filho continuava pendurado)", gasto < 6, f"{gasto:.1f}s")
+    checar("e as 3 fatias validas voltam, em vez de serem descartadas",
+           len(envelopes) == 3, repr(envelopes)[:200])
+    checar("com as leituras inteiras",
+           len(envelopes) == 3
+           and all((e.get("leituras") or [{}])[0].get("estado") == "lido"
+                   for e in envelopes),
+           repr(envelopes)[:200])
+finally:
+    ag.COLETOR = guardado
+    ag._MODOS_DO_COLETOR.clear()
+
+
 print(f"\n{ok_total} verificacao(oes), {len(falhas)} falha(s)")
 if falhas:
     print("FALHOU: " + "; ".join(falhas))

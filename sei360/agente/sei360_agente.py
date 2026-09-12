@@ -321,10 +321,11 @@ def _rodar_coletor(pedido, modo, marca, teto, varios=False):
     envelope em JSON. O que não é a marca é ecoado, indentado — é o log da
     estação, e quem está de plantão no prompt precisa vê-lo.
 
-    `None` significa "a estação não devolveu envelope nenhum": ou o coletor
-    morreu antes de imprimir a marca, ou o relógio de parede o matou. Quem chama
-    decide o que isso significa para o módulo dele — aqui não se inventa
-    resultado.
+    `None` significa "a estação não devolveu envelope nenhum": o coletor morreu,
+    ou o relógio o matou, ANTES de imprimir uma linha de marca legível. O relógio
+    disparar não basta para dar `None` — o que já chegou volta, porque cada pedaço
+    é um envelope inteiro que já passou por `json.loads`. Quem chama decide o que
+    isso significa para o módulo dele — aqui não se inventa resultado.
 
     E ANTES DE QUALQUER COISA, O APERTO DE MÃO: `ColetorNaoConhece` sai daqui sem
     um único byte ter sido escrito no coletor. Ver `coletor_conhece`.
@@ -414,14 +415,24 @@ def _rodar_coletor(pedido, modo, marca, teto, varios=False):
         # O MESMO exit 5 sintético da coleta: `page.evaluate` não obedece o
         # timeout do Playwright, então quem mata é o relógio de parede.
         #
-        # JOGA FORA O QUE JÁ VEIO, e de propósito: o coletor morto no meio pode
-        # ter imprimido meia linha, e não há como saber se a última que chegou
-        # está completa — `json.loads` aceita um envelope de 20 leituras truncado
-        # em 3 se o corte cair num lugar legal. Quem para sozinho, dentro do
-        # `.js`, devolve envelope inteiro com `motivo`; é esse o caminho para
-        # entregar leitura parcial, e não este.
+        # O QUE JÁ CHEGOU FICA, e isto é a correção de um defeito medido: três
+        # fatias boas chegavam, o teto estourava na linha seguinte, e as três
+        # eram descartadas — 60 leituras perdidas por causa da 61ª.
+        #
+        # A justificativa antiga era "`json.loads` aceita um envelope de 20
+        # leituras truncado em 3 se o corte cair num lugar legal". Ela não vale
+        # PARA ESTAS: cada uma já passou por `json.loads` inteira, uma a uma, e
+        # cada pedaço é um envelope completo e independente (mesma instalação, sua
+        # fatia). O corte que a frase teme cai numa linha SÓ — e essa linha, sim,
+        # é descartada, no `except ValueError` do laço acima, com aviso.
+        #
+        # O que se perde ao matar o filho é o que ele ainda ia imprimir. Isso já
+        # está pendente no servidor, e volta no ciclo seguinte; jogar fora o que
+        # chegou não o traz de volta, só o acompanha.
         proc.kill()
-        envelopes = []
+        if envelopes:
+            print(f"     (teto de {teto}s: {len(envelopes)} pedaço(s) já haviam "
+                  "chegado e vão junto)")
     if varios:
         return envelopes
     return envelopes[-1] if envelopes else None
