@@ -2849,6 +2849,81 @@ checar("a ficha continua aberta com o que já se sabia", "URGENTE" in _cart_i1,
 checar("mas agora ela sai carimbada com o dia da leitura anterior",
        _DIA_I1 in _cart_i1 and "hoje nada foi lido" in _cart_i1, _cart_i1[:600])
 
+print("\n14. item de instalação que não é a ativa: a tela diz que ele não será lido")
+# O QUE FOI MEDIDO EM 11/09/2026: três ciclos completos do agente e o item da
+# FESF nunca é oferecido — a rota pede `instancia_do_agente`, que é a
+# configuração ATIVA do dono, e a estação entra numa instalação só. O item fica
+# 'novo' para sempre e a tela diz "aguardando primeira leitura", indistinguível
+# de "vai ser lido hoje à noite". Nada avisava a pessoa.
+#
+# A fila continua sendo de UMA instalação (é onde a estação faz login); o que não
+# pode continuar é o silêncio.
+import configuracao as cfg                                       # noqa: E402
+
+_cx = conectar()
+_ALVO_I2 = "019.3030.2026.0000030-30"
+_cx.execute("""DELETE FROM acompanhado_leitura WHERE usuario_id=7
+               AND instancia='SEI-FESF' AND protocolo=?""", (_ALVO_I2,))
+_cx.execute("""UPDATE acompanhado SET estado='novo', lido_em=NULL, tentativas=0,
+               tentativa_em=NULL WHERE usuario_id=7 AND instancia='SEI-FESF'
+               AND protocolo=?""", (_ALVO_I2,))
+_cx.commit()
+_ativa_i2 = cfg.ler(_cx, 7)["sistema"]
+_cx.close()
+checar("(cena) a configuração ativa da conta é a outra instalação",
+       _ativa_i2 == "SEI-SESAB", str(_ativa_i2))
+_ciclos = []
+for _volta in range(3):
+    _ciclos.append(((_do_agente("/api/agente/acompanhamento", metodo="GET")
+                     .get_json() or {}).get("protocolos")) or [])
+checar("(cena) três ciclos, e o item da outra instalação nunca é oferecido",
+       not any(_ALVO_I2 in c for c in _ciclos), str(_ciclos)[:200])
+
+_i2 = {x["protocolo"]: x for x in ac.listar(conectar(), 7)}[_ALVO_I2]
+checar("o item continua 'novo' — a fila não passa por ele",
+       _i2["estado"] == "novo", str(_i2["estado"]))
+checar("e o módulo sabe dizer por que ele não vai ser lido",
+       "configuração ativa" in ac.texto_fora_da_fila(_i2, "SEI-SESAB"),
+       repr(ac.texto_fora_da_fila(_i2, "SEI-SESAB")))
+checar("a frase nomeia as DUAS instalações, que é o que a pessoa precisa comparar",
+       all(t in ac.texto_fora_da_fila(_i2, "SEI-SESAB", rotulo_do_item="FESF",
+                                      rotulo_ativa="SESAB")
+           for t in ("FESF", "SESAB")),
+       repr(ac.texto_fora_da_fila(_i2, "SEI-SESAB", rotulo_do_item="FESF",
+                                  rotulo_ativa="SESAB")))
+# NADA DE RUÍDO NOS DOIS CASOS EM QUE O ITEM ESTÁ EM DIA: carimbar o aviso em
+# toda linha da outra instalação ensina a não ler o carimbo — é a mesma regra do
+# `multi_instancia` do painel.
+checar("item da instalação ativa não ganha aviso nenhum",
+       ac.texto_fora_da_fila({"instancia": "SEI-SESAB", "estado": "novo"},
+                             "SEI-SESAB") == "")
+checar("nem o da outra instalação que a PRÓPRIA coleta já respondeu hoje",
+       ac.texto_fora_da_fila({"instancia": "SEI-FESF", "estado": "lido",
+                              "lido_em": agora()}, "SEI-SESAB") == "",
+       repr(ac.texto_fora_da_fila({"instancia": "SEI-FESF", "estado": "lido",
+                                   "lido_em": agora()}, "SEI-SESAB")))
+# Mas o que foi lido ONTEM e não é da instalação ativa está parado, e isso conta.
+checar("o que ficou para trás desde ontem ganha o aviso",
+       ac.texto_fora_da_fila({"instancia": "SEI-FESF", "estado": "lido",
+                              "lido_em": _ONTEM}, "SEI-SESAB") != "")
+
+_r = _c.get("/acompanhamento")
+_csrf = _csrf_do(_r, _csrf)
+_cart_i2 = cartao(_r.data.decode("utf-8", "replace"), _ALVO_I2)
+checar("o cartão para de dizer só 'aguardando primeira leitura'",
+       "não entra na fila da estação" in _cart_i2, _cart_i2[:400])
+checar("e diz em qual instalação a estação está lendo hoje",
+       "SESAB" in _cart_i2 and "FESF" in _cart_i2, _cart_i2[:400])
+_cart_normal = cartao(_r.data.decode("utf-8", "replace"),
+                      "019.1111.2026.0000001-11")
+checar("o cartão da instalação ativa continua sem o aviso",
+       "não entra na fila" not in _cart_normal, _cart_normal[:200])
+# A cena mexeu no contador de entregas de TODA a fila da SESAB; as cenas
+# seguintes contam a partir do zero.
+_cx = conectar()
+_cx.execute("UPDATE acompanhado SET tentativas=0, tentativa_em=NULL")
+_cx.commit(); _cx.close()
+
 print(f"\n{'='*58}\n{ok} verificações OK, {len(falhas)} falha(s)")
 for f in falhas:
     print("  FALHOU:", f)

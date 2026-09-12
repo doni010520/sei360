@@ -3319,6 +3319,14 @@ def agente_acompanhamento():
     # dado de um órgão sob o nome do outro. As duas metades desta conversa — esta
     # rota e a de baixo — têm de resolver a instalação pela MESMA função, senão a
     # estação lê numa e o servidor grava noutra.
+    #
+    # E É UMA SÓ, ao contrário da tela (que percorre `acmod.instancias`): a
+    # estação faz login em UMA instalação por ciclo, e mandá-la ler noutra é
+    # pedir credencial que ela não tem. O preço disso é real e foi medido em
+    # 11/09/2026 — três ciclos completos e o item da outra instalação nunca é
+    # oferecido, ficando 'novo' —, e quem o diz é a TELA, em cada cartão
+    # (`acompanhamento.texto_fora_da_fila`). O que não podia continuar era o
+    # silêncio: item parado e item na fila saíam idênticos.
     inst = instancia_do_agente(cx, ag)
     # E A INSTALAÇÃO TEM DE SABER BUSCAR. A leitura da estação começa por uma
     # pesquisa por número (`SEIAuto.acompanhar`, que começa chamando
@@ -3425,9 +3433,28 @@ def acompanhamento_tela(recusados=None, sem_espaco=None):
             print(f"acompanhamento: reaproveitar {inst} falhou "
                   f"({type(ex).__name__})", flush=True)
     itens = acmod.listar(cx, u["usuario_id"])
+    # ONDE O PRÓXIMO NÚMERO VAI CAIR. A configuração ativa é "a última que a
+    # pessoa mexeu" (`configuracao.ler`), então depois de mexer na FESF o número
+    # colado aqui entra como da FESF — em silêncio, na versão anterior. Item
+    # carimbado na instalação errada nunca casa com a coleta dela: fica
+    # "aguardando primeira leitura" para sempre e, na leitura pelo SEI, é
+    # procurado na instalação errada.
+    #
+    # SUBIU PARA ANTES DO LAÇO porque agora ela decide também o que cada CARTÃO
+    # diz: a fila da estação é a da instalação ativa, e o item da outra não entra
+    # nela (ver `texto_fora_da_fila`).
+    inst_ativa = cfgmod.ler(cx, u["usuario_id"])["sistema"]
     for x in itens:
         x["texto_mudou"] = acmod.texto_do_delta(x.get("mudou"))
         x["instancia_rotulo"] = perfil_sei.rotulo(x["instancia"])
+        # POR QUE ESTE ITEM NÃO VAI SER LIDO — quando não vai. A rota do agente
+        # pede a instalação ATIVA do dono, e a estação entra numa instalação só:
+        # medido em 11/09/2026, três ciclos completos e o item da FESF nunca foi
+        # oferecido, ficando 'novo' com a tela dizendo "aguardando primeira
+        # leitura" — a mesma frase de quem vai ser lido hoje à noite.
+        x["fora_da_fila"] = acmod.texto_fora_da_fila(
+            x, inst_ativa, rotulo_do_item=x["instancia_rotulo"],
+            rotulo_ativa=perfil_sei.rotulo(inst_ativa))
         # A PROCEDÊNCIA É TEXTO GERADO DO DADO, como o do delta — e não fatia de
         # data no template. A coluna aceita nulo, e o template fatiando nulo
         # derrubava a tela INTEIRA (500), não a linha; além disso a regra de
@@ -3447,13 +3474,6 @@ def acompanhamento_tela(recusados=None, sem_espaco=None):
         x["sem_mesa"] = acmod.texto_sem_mesa(x)
     registrar(cx, u["usuario_id"], "ver_acompanhamento",
               alvo=f"{len(itens)} processo(s)", ip=ip_cliente())
-    # ONDE O PRÓXIMO NÚMERO VAI CAIR. A configuração ativa é "a última que a
-    # pessoa mexeu" (`configuracao.ler`), então depois de mexer na FESF o número
-    # colado aqui entra como da FESF — em silêncio, na versão anterior. Item
-    # carimbado na instalação errada nunca casa com a coleta dela: fica
-    # "aguardando primeira leitura" para sempre e, na leitura pelo SEI, é
-    # procurado na instalação errada.
-    inst_ativa = cfgmod.ler(cx, u["usuario_id"])["sistema"]
     cx.commit(); cx.close()
     resp = make_response(render_template("acompanhamento.html", u=u, itens=itens,
                                          teto=acmod.TETO, recusados=recusados or [],

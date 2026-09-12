@@ -529,6 +529,44 @@ def texto_sem_mesa(item):
             "SEI que não tem linha de mesa para ele")
 
 
+def texto_fora_da_fila(item, instancia_ativa, rotulo_do_item=None,
+                       rotulo_ativa=None):
+    """Por que este item NÃO vai ser lido no SEI hoje. Vazio quando vai.
+
+    O DEFEITO QUE ESTA FUNÇÃO IMPEDE, medido em 11/09/2026: a rota do agente pede
+    `instancia_do_agente`, que é a configuração ATIVA do dono, e a estação entra
+    em UMA instalação por vez — então o item colado na outra nunca é oferecido.
+    Três ciclos completos, e o item da FESF continuou 'novo', com a tela dizendo
+    "aguardando primeira leitura": a mesma frase de quem vai ser lido hoje à
+    noite. Item parado e item na fila ficavam idênticos, e nada avisava a pessoa.
+
+    NÃO É A FILA QUE MUDA — a estação faz login numa instalação só, e mandá-la
+    ler noutra seria pedir credencial que ela não tem. O que muda é o silêncio.
+
+    CALA NOS DOIS CASOS EM QUE NÃO HÁ O QUE AVISAR: item da instalação ativa (vai
+    para a fila normalmente) e item que a PRÓPRIA coleta daquela instalação já
+    respondeu hoje — quem acompanha processo da própria carteira não depende da
+    estação, que é o desenho de `reaproveitar` funcionando. Carimbar o aviso em
+    toda linha da outra instalação seria ruído que ensina a não ler o carimbo, a
+    mesma razão do `multi_instancia` do painel.
+
+    Os RÓTULOS entram por parâmetro em vez de `perfil_sei` aqui dentro: este
+    módulo é regra pura, e quem pinta a tela já resolve rótulo (`app.py`).
+    """
+    instancia = item.get("instancia")
+    if not instancia_ativa or instancia == instancia_ativa:
+        return ""
+    # LIDO HOJE, de qualquer fonte, é item em dia: `lido_em` é a mesma coluna que
+    # `reaproveitar` e `pendentes` usam para a trava de uma leitura por dia.
+    if (item.get("lido_em") or "")[:10] == agora()[:10]:
+        return ""
+    dele = rotulo_do_item or instancia
+    return (f"não entra na fila da estação: ela lê na instalação da sua "
+            f"configuração ativa ({rotulo_ativa or instancia_ativa}), e este item "
+            f"é do {dele} — hoje, só a sua própria coleta do {dele} pode "
+            "respondê-lo")
+
+
 def _medicao_avancou(nova, anterior):
     """A medição nova é ESTRITAMENTE mais nova que a da leitura anterior?
 

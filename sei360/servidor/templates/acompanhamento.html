@@ -175,6 +175,19 @@
         a leitura não trouxe unidade nenhuma</div>
     {% endif %}
 
+    {# POR QUE ESTE ITEM NÃO VAI SER LIDO — quando não vai. A fila da estação é a
+       da instalação ATIVA (a rota do agente pede `instancia_do_agente`), e a
+       estação faz login numa instalação só: o item da outra nunca é oferecido.
+       Medido em 11/09/2026: três ciclos completos, o item da FESF continuou
+       'novo' e o cartão dizia "aguardando primeira leitura" — a mesma frase de
+       quem vai ser lido hoje à noite. O texto vem pronto de
+       `texto_fora_da_fila`, que cala para o item em dia. #}
+    {% if x.fora_da_fila %}
+    <div style="color:var(--ink-2);font-size:12.5px;margin-top:6px">
+      {{ x.fora_da_fila }} — <a href="/configuracao">trocar a instalação ativa</a>
+    </div>
+    {% endif %}
+
     {# PROCEDÊNCIA: dado da carteira pode ser de dias atrás, e dizer "lido hoje"
        sobre ele seria mentir no carimbo. O texto vem pronto de
        `texto_da_procedencia` — aqui se fatiava `medido_em`, que aceita nulo, e
