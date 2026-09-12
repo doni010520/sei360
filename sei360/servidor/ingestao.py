@@ -218,6 +218,85 @@ def _sem_cinco(d):
     d["mesa_indeterminada"] = 1
 
 
+# ---------------------------------------------------------------------------
+# RECEBIMENTO CAUSADO PELA PROPRIA COLETA
+#
+# Medido em 11/09/2026, sobre 15 coletas do acervo, sem tocar no SEI:
+#
+#   * recebimentos em FIM DE SEMANA que caem na janela da coleta (22 min):  38%
+#   * em dias uteis, na mesma janela:                                        2%
+#   * esperado ao acaso (22 min sao 1,5% do dia):                          ~1,5%
+#   * dois domingos com 100% dos recebimentos do dia dentro da janela
+#     (13 de 13, e 8 de 8) — em domingo nao ha ninguem trabalhando;
+#   * atribuicao: dentro da janela, 72 dos 79 recebimentos estao no nome da
+#     conta que RODA a coleta; fora dela essa conta quase nao aparece;
+#   * mecanismo: 80 de 80 dos recebidos estavam EM TRANSITO (remetidos para a
+#     unidade e ainda nao abertos). No SEI, receber e abrir;
+#   * o gatilho e a ENTRADA NA MESA, nao o processo: numa coleta de 14 minutos
+#     sobre 1.182 processos, os recebimentos se concentram em DOIS minutos,
+#     agrupados por unidade (DGESS as 07:30; ASTEC e CESS as 07:31).
+#
+# Consequencia: "Processo recebido na unidade" e ATO com efeito no SEI, que e
+# sistema de registro de uma secretaria de saude, e ele esta sendo praticado em
+# nome de quem empresta a sessao — inclusive em domingos.
+#
+# ESTA FUNCAO NAO CONSERTA ISSO, e nao ha conserto de codigo que consiga:
+# coletar uma mesa exige abrir o Controle de Processos dela. O que ela faz e
+# tirar o efeito da invisibilidade — que era o pior de tudo, porque ninguem
+# sabia. A decisao (aceitar e declarar, mudar configuracao do SEI, ou coletar
+# de outro jeito) e de quem responde pela conta, e agora ela tem o numero.
+# ---------------------------------------------------------------------------
+def recebidos_pela_coleta(dados, unidades, coletado_em):
+    """Processos que a propria coleta recebeu no SEI, nesta execucao.
+
+    A regra de deteccao e a assinatura medida, nao um palpite: recebimento
+    numa unidade DESTA coleta, dentro da janela em que ela rodou, e precedido
+    de uma remessa — isto e, processo que estava em transito.
+
+    Devolve a lista de (protocolo, unidade, datahora, login). Lista vazia e o
+    que se espera de uma coleta que nao recebeu nada.
+    """
+    from datetime import datetime, timedelta
+
+    from banco import TZ
+
+    try:
+        fim = datetime.fromisoformat(coletado_em)
+    except (TypeError, ValueError):
+        return []
+    if fim.tzinfo is None:
+        fim = fim.replace(tzinfo=TZ)
+    # A coleta medida levou 14m47s e os recebimentos sairam no PRIMEIRO minuto;
+    # `coletado_em` e carimbado no fim. Quarenta minutos para tras cobrem uma
+    # coleta longa com folga, e dez para a frente cobrem relogio dessincronizado
+    # entre a estacao e o servidor.
+    inicio, teto = fim - timedelta(minutes=40), fim + timedelta(minutes=10)
+    alvo = set(unidades or ())
+    achados = []
+    for d in dados:
+        mov = list(reversed(d.get("mov_custodia") or []))     # do mais antigo ao mais novo
+        for i, m in enumerate(mov):
+            de, un, dh = (m.get("de") or ""), m.get("un"), (m.get("dh") or "")
+            if not de.startswith("Processo recebido na unidade") or un not in alvo:
+                continue
+            try:
+                q = datetime.strptime(dh, "%d/%m/%Y %H:%M").replace(tzinfo=fim.tzinfo)
+            except ValueError:
+                continue
+            if not (inicio <= q <= teto):
+                continue
+            # EM TRANSITO: o movimento anterior daquela unidade foi uma remessa.
+            # Sem esta condicao, um recebimento humano que caisse na janela por
+            # acaso entraria na conta — e a assinatura medida e 80 de 80 em
+            # transito, entao exigi-la custa nada e tira o acaso.
+            anteriores = [x for x in mov[:i]
+                          if x.get("un") == un or "remetido" in (x.get("de") or "").lower()]
+            if not anteriores or "remetido" not in (anteriores[-1].get("de") or "").lower():
+                continue
+            achados.append((d.get("protocolo"), un, dh, m.get("us")))
+    return achados
+
+
 def ingerir(caminho=None, forcar=False, agente_id=None, execucao_id=None,
             coletado_em=None, escopo=None, dono=None, instancia=None):
     """`escopo` recorta as unidades que podem virar snapshot.
@@ -326,6 +405,21 @@ def ingerir(caminho=None, forcar=False, agente_id=None, execucao_id=None,
                  "execucao_id": execucao_id, "resumos": 0,
                  "resumos_sem_procedencia": 0, "recortadas": recortadas,
                  "instancia": instancia, "ja_ingerido": False}
+    # O QUE A COLETA FEZ AO SEI, e nao so o que leu dele. Sem esta linha o
+    # efeito segue invisivel — foi assim ate 11/09/2026.
+    _recebidos = recebidos_pela_coleta(dados, mesas, coletado_em)
+    relatorio["recebidos_pela_coleta"] = len(_recebidos)
+    if _recebidos:
+        _amostra = "; ".join(f"{p} em {u.split('/')[-1]}" for p, u, _, _ in _recebidos[:3])
+        cx.execute("""INSERT INTO alerta(ts,tipo,severidade,execucao_id,texto)
+                      VALUES(?,?,?,?,?)""",
+                   (agora(), "recebimento_pela_coleta", "alta", execucao_id,
+                    f"Esta coleta RECEBEU {len(_recebidos)} processo(s) no SEI: eles "
+                    f"estavam em transito para a unidade e abrir o Controle de "
+                    f"Processos os marcou como recebidos, em nome da conta que "
+                    f"coletou. E ato com efeito no SEI, nao leitura. Exemplos: "
+                    f"{_amostra}."))
+
     if aviso_instancia:
         relatorio["aviso_instancia"] = aviso_instancia
         cx.execute("""INSERT INTO alerta(ts,tipo,severidade,execucao_id,texto)
