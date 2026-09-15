@@ -203,8 +203,15 @@ def _decidir(cx, agente_id, agora_dt=None):
     # `aplicar_agendamento` começou a CONVERTER o agente de quem escolhe modo
     # servidor sem desfazer o pareamento (12/09/2026). Esta guarda é o que torna
     # a conversão segura.
+    #
+    # E A JANELA EXTRA DO ADMIN (`gatilho='manual_admin'`, /admin → "janela extra")
+    # É DESTE MOTOR TAMBÉM, quando o agente é lógico. Sem ela na lista, o único
+    # jeito de FORÇAR a coleta de uma conta em modo servidor gravava uma execução
+    # 'entregue' que ninguém executava: a guarda acima, escrita para não roubar a
+    # janela da estação, pegou junto o botão do admin (achado em 15/09/2026, ao
+    # ir forçar uma coleta). A estação carimba 'janela' — é só essa que não é nossa.
     pendente = cx.execute("""SELECT * FROM execucao WHERE agente_id=? AND estado='entregue'
-                             AND gatilho='servidor'
+                             AND gatilho IN ('servidor','manual_admin')
                              ORDER BY id DESC LIMIT 1""", (agente_id,)).fetchone()
     if pendente:
         return (pendente["id"], pendente["janela"], instancia,
@@ -229,7 +236,7 @@ def _decidir(cx, agente_id, agora_dt=None):
     # SQL `NULL <> 'servidor'` não é verdadeiro: a entrega sem carimbo escaparia.
     da_estacao = cx.execute(
         """SELECT id FROM execucao WHERE agente_id=? AND janela=?
-           AND gatilho IS NOT 'servidor'
+           AND gatilho IS NOT 'servidor' AND gatilho IS NOT 'manual_admin'
            AND estado IN ('entregue','em_curso') LIMIT 1""",
         (agente_id, devida)).fetchone()
     if da_estacao:

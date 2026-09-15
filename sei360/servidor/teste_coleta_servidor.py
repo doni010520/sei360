@@ -614,6 +614,14 @@ cx.commit()
 _r = cs._decidir(cx, agF)
 checar("a entrega DESTE motor é retomada, que é o caso para o qual ela existe",
        _r[0] == _ex, (_r[0], _ex))
+# A JANELA EXTRA DO ADMIN é o botão de FORÇAR a coleta. Ela é deste motor quando o
+# agente é lógico — a guarda de `gatilho` a excluía, e forçar gravava uma execução
+# que ninguém rodava.
+cx.execute("UPDATE execucao SET gatilho='manual_admin' WHERE id=?", (_ex,))
+cx.commit()
+_r = cs._decidir(cx, agF)
+checar("a janela extra do admin (forçar coleta) é retomada por este motor",
+       _r[0] == _ex, (_r[0], _ex))
 
 print("\nV. UM PERFIL POR PESSOA — e um login por pessoa, não um por execução")
 # O DEFEITO, achado em 12/09/2026: `coleta._ambiente()` passava `SEI_PERFIL_DIR`
