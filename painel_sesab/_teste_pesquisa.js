@@ -172,6 +172,9 @@ for (const [txt, esperado] of [
   ['<p>1.133 registros encontrados</p>', 1133],
   ['<p>Encontrados 42 registros</p>', 42],
   ['<p>Nada por aqui</p>', null],
+  // A pesquisa que nao acha nada TEM total: zero. Nulo aqui virava 'falhou'.
+  ['<p>Nenhum registro encontrado.</p>', 0],
+  ['<td>Nenhum resultado foi localizado</td>', 0],
 ]) {
   checar(`"${txt.replace(/<[^>]*>/g, '').trim().slice(0, 34)}" -> ${esperado}`,
          B.totalDeclarado(domSimples(txt)) === esperado,
@@ -187,5 +190,26 @@ console.log('\nO CORPO VAI EM ISO-8859-1');
   checar('e o acento NAO e removido do termo', !/Licitacao/.test(c), c);
 }
 
-console.log(`\n${ok} verificacoes, ${mau} falha(s)`);
-process.exit(mau ? 1 : 0);
+console.log('\nFALHA PASSAGEIRA GANHA NOVA TENTATIVA; SESSAO CAIDA NAO');
+(async () => {
+  let n = 0;
+  const volta = await B.comRetentativa('teste', async () => {
+    n++;
+    if (n < 3) throw new Error('Failed to fetch');
+    return 'ok';
+  });
+  checar('duas quedas de rede e a terceira passa', volta === 'ok' && n === 3, `${volta} ${n}`);
+  let m = 0, lancou = null;
+  try {
+    await B.comRetentativa('teste', async () => { m++; throw new Error('SESSAO caiu durante a busca'); });
+  } catch (e) { lancou = e.message; }
+  checar('sessao caida NAO e repetida (uma tentativa so)', m === 1 && /SESSAO/.test(lancou), `${m} ${lancou}`);
+  let k = 0, fim = null;
+  try {
+    await B.comRetentativa('teste', async () => { k++; throw new Error('o SEI respondeu 502'); });
+  } catch (e) { fim = e.message; }
+  checar('falha que persiste desiste depois de 3 tentativas e diz o motivo',
+         k === 3 && /502/.test(fim), `${k} ${fim}`);
+  console.log(`\n${ok} verificacoes, ${mau} falha(s)`);
+  process.exit(mau ? 1 : 0);
+})();

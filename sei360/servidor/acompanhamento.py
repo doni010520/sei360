@@ -1076,6 +1076,30 @@ def quantos_pendentes(cx, usuario_id, instancia, so_novos=False):
         _fila_params(usuario_id, instancia, agora())).fetchone()[0]
 
 
+def devolver_tentativas(cx, usuario_id, instancia, protocolos):
+    """Desfaz a cobrança de uma entrega que NÃO CHEGOU AO SEI. Devolve quantas.
+
+    `pendentes` cobra a tentativa na ENTREGA — de propósito, para cobrir a
+    estação que morre sem relatar nada. Mas no servidor sabe-se quando a volta
+    falhou antes de ler um processo sequer (sem credencial, navegador que não
+    subiu, coletor morto): medido em 15/09/2026, três voltas assim gastavam as
+    três tentativas do dia em seis minutos e a lista INTEIRA do par descansava
+    até a meia-noite, por uma falha que não era de processo nenhum.
+
+    Só devolve para o que continua sem leitura hoje — o que foi lido não deve
+    nada — e nunca abaixo de zero.
+    """
+    if not protocolos:
+        return 0
+    hoje = agora()
+    marc = ",".join("?" * len(protocolos))
+    return cx.execute(
+        f"""UPDATE acompanhado SET tentativas = MAX(COALESCE(tentativas,0) - 1, 0)
+            WHERE usuario_id=? AND instancia=? AND protocolo IN ({marc})
+              AND (lido_em IS NULL OR substr(lido_em,1,10) <> substr(?,1,10))""",
+        [usuario_id, instancia] + list(protocolos) + [hoje]).rowcount
+
+
 def descansando(cx, usuario_id, instancia, na_fila=()):
     """Os itens que o servidor parou de oferecer HOJE, e quantas vezes falharam.
 

@@ -686,8 +686,83 @@ try:
             # a busca não compartilha estado com a coleta, e um erro nela não pode
             # deixar checkpoint de coleta pela metade.
             carregar_motor_da_busca()
+            # A MESA PEDIDA É ATIVADA NO SEI ANTES DE PESQUISAR — era o defeito
+            # dominante das buscas que "não rodavam", confirmado em 15/09/2026.
+            #
+            # O filtro "com tramitação na unidade" faz o resultado ser função da
+            # unidade ATIVA da sessão, e o servidor recusa resultado de mesa que
+            # não é a pedida (`busca.receber`). Mas nada trocava de unidade: a
+            # busca rodava na que o SEI tivesse deixado ativa — a do último uso
+            # manual da pessoa, ou onde a coleta terminou. Numa conta de seis mesas
+            # a mesa padrão da tela é a primeira em ordem alfabética, então a busca
+            # falhava POR PADRÃO, com os itens já lidos jogados fora e a frase "a
+            # mesa ativa no SEI é X, e a busca foi pedida para Y". `trocarMesa` já
+            # existia e é a mesma que a coleta usa, com a mesma confirmação.
+            _mesa_pedida = (PEDIDO_BUSCA.get("mesa") or "").strip()
+            _volta = None
+            if _mesa_pedida:
+                _troca = pg.evaluate("""async (sigla) => {
+                    const N = s => (s || '').replace(/\\s+/g, ' ').trim();
+                    const atual = SEIAuto.unidadeAtual();
+                    if (N(atual) === N(sigla)) return {ok: true, origem: atual, trocou: false};
+                    const mesas = await SEIAuto.descobrirMesas();
+                    const m = (mesas || []).find(x => N(x.sigla) === N(sigla));
+                    if (!m || !m.id) {
+                        return {ok: false, origem: atual,
+                                motivo: 'a mesa ' + sigla + ' nao esta entre as unidades desta conta no SEI'};
+                    }
+                    const doc = await SEIAuto.trocarMesa(m);
+                    if (!doc) {
+                        return {ok: false, origem: atual,
+                                motivo: 'o SEI nao confirmou a troca de unidade para ' + sigla};
+                    }
+                    const v = (mesas || []).find(x => N(x.sigla) === N(atual));
+                    return {ok: true, origem: atual, trocou: true,
+                            volta: v && v.id ? {id: v.id, sigla: v.sigla} : null};
+                }""", _mesa_pedida)
+                if not _troca.get("ok"):
+                    # FALHA DITA, e PERMANENTE para esta busca: pesquisar mesmo
+                    # assim devolveria a carteira de outra mesa. O envelope sai com
+                    # o motivo verdadeiro em vez de o servidor descobrir a
+                    # divergência depois e culpar a unidade ativa.
+                    log(f"busca: {_troca.get('motivo')}")
+                    print("BUSCA_OK " + json.dumps({
+                        "envelope": 1, "busca_id": PEDIDO_BUSCA.get("busca_id"),
+                        "instancia": PEDIDO_BUSCA.get("instancia"),
+                        "mesa_confirmada": _troca.get("origem"), "itens": [],
+                        "total_declarado": None, "paginas_lidas": 0,
+                        "motivo": "nao consegui ativar a mesa pedida: "
+                                  + (_troca.get("motivo") or "motivo desconhecido"),
+                        "motivo_permanente": True,
+                    }, ensure_ascii=False))
+                    ctx.close()
+                    sys.exit(1)
+                if _troca.get("trocou"):
+                    # O DOM DA ABA AINDA MOSTRA A UNIDADE ANTIGA — `trocarMesa` fala
+                    # com o SEI por `fetch`. Recarregar faz o cabeçalho (de onde a
+                    # pesquisa lê `mesa_confirmada`) e o menu (de onde ela tira a URL
+                    # da Pesquisa, com hash vivo) nascerem na unidade nova. Os dois
+                    # motores voltam sozinhos: são `add_init_script`.
+                    _volta = _troca.get("volta")
+                    pg.reload(wait_until="domcontentloaded")
+                    pg.wait_for_timeout(800)
+                    _agora = pg.evaluate("() => SEIAuto.unidadeAtual()")
+                    log(f"busca: unidade ativa {_troca.get('origem')!r} -> {_agora!r}")
             log(f"buscando… (busca {PEDIDO_BUSCA.get('busca_id')})")
             env = pg.evaluate("(p) => SEIBusca.pesquisar(p)", PEDIDO_BUSCA)
+            if _volta:
+                # A CONTA VOLTA PARA ONDE A PESSOA A DEIXOU. A unidade ativa é
+                # estado POR USUÁRIO no SEI: sem esta volta, quem está trabalhando
+                # no próprio navegador acharia a unidade trocada no próximo clique.
+                # Falhar aqui não invalida a busca — o resultado já foi lido na mesa
+                # certa —, então vira log, não motivo.
+                try:
+                    _voltou = pg.evaluate("(m) => SEIAuto.trocarMesa(m).then(d => !!d)", _volta)
+                except Exception as _e:                            # noqa: BLE001
+                    _voltou = False
+                    log(f"busca: a volta de unidade levantou {type(_e).__name__}")
+                if not _voltou:
+                    log(f"busca: a conta NAO voltou para {_volta.get('sigla')!r}")
             # O ENVELOPE VAI PARA STDOUT numa linha, com prefixo. Quem chama lê
             # isso; o log fica no resto das linhas, como sempre.
             print("BUSCA_OK " + json.dumps(env, ensure_ascii=False))

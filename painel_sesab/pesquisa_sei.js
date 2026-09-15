@@ -73,24 +73,64 @@
     return fora;
   }
 
-  async function pegar(url) {
-    const r = await fetch(url, { credentials: 'same-origin' });
-    const t = dec.decode(await r.arrayBuffer());
-    if (/login\.php|Acesso negado|sessão expirad/i.test(t) && !/frmProtocoloPesquisa/i.test(t)) {
-      throw new Error('SESSAO caiu durante a busca');
+  /* FALHA PASSAGEIRA NÃO É RESPOSTA DO SEI, e não pode encerrar a busca.
+
+     Até 15/09/2026 a primeira oscilação de rede — um `fetch` que estoura, um 502
+     do balanceador da PRODEB no meio da paginação — virava `motivo`, e o servidor
+     a transformava em "falhou" definitivo, com as páginas já lidas descartadas e
+     a pessoa tendo de pedir tudo de novo. Repetir a MESMA requisição com o MESMO
+     hash vivo é o que alguém faz ao clicar de novo: não derruba sessão.
+
+     O QUE NÃO SE REPETE: sessão caída. Com a sessão morta, repetir só multiplica
+     requisição inválida contra o SEI do órgão — e o motivo precisa chegar ao
+     servidor como está, porque é outra ação (logar de novo), não esperar. */
+  const ESPERAS_REDE_MS = [1500, 4000];
+
+  async function comRetentativa(o_que, fn) {
+    for (let i = 0; ; i++) {
+      try {
+        return await fn();
+      } catch (e) {
+        const msg = String(e && e.message ? e.message : e);
+        if (/SESSAO caiu/.test(msg) || i >= ESPERAS_REDE_MS.length) throw e;
+        log(`${o_que}: ${semHash(msg).slice(0, 80)} — nova tentativa em `
+            + `${ESPERAS_REDE_MS[i]} ms`, '#a36b1f');
+        await dorme(ESPERAS_REDE_MS[i]);
+      }
     }
-    return t;
+  }
+
+  /* 5xx é o servidor do SEI (ou o balanceador) dizendo "agora não", e `fetch` não
+     o transforma em exceção sozinho — sem esta linha, a página de erro seria lida
+     como resultado sem linhas, e a paginação pararia calada. */
+  function conferirStatus(r) {
+    if (r.status >= 500) throw new Error(`o SEI respondeu ${r.status}`);
+  }
+
+  async function pegar(url) {
+    return comRetentativa('pagina', async () => {
+      const r = await fetch(url, { credentials: 'same-origin' });
+      conferirStatus(r);
+      const t = dec.decode(await r.arrayBuffer());
+      if (/login\.php|Acesso negado|sessão expirad/i.test(t) && !/frmProtocoloPesquisa/i.test(t)) {
+        throw new Error('SESSAO caiu durante a busca');
+      }
+      return t;
+    });
   }
 
   async function postar(action, corpo) {
-    const r = await fetch(action, {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: corpo,
+    return comRetentativa('pesquisa', async () => {
+      const r = await fetch(action, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: corpo,
+      });
+      conferirStatus(r);
+      const t = dec.decode(await r.arrayBuffer());
+      if (/login\.php/i.test(r.url)) throw new Error('SESSAO caiu durante a busca');
+      return new DOMParser().parseFromString(t, 'text/html');
     });
-    const t = dec.decode(await r.arrayBuffer());
-    if (/login\.php/i.test(r.url)) throw new Error('SESSAO caiu durante a busca');
-    return new DOMParser().parseFromString(t, 'text/html');
   }
 
   /* A tela de Pesquisa, alcançada pelo MENU. Devolve o documento. */
@@ -212,7 +252,14 @@
     const m = txt.match(/(\d[\d.]*)\s*(?:registros?|resultados?|itens?)\s*(?:encontrad|localizad)/i)
            || txt.match(/(?:encontrad\w*|localizad\w*)\s*(\d[\d.]*)\s*registros?/i)
            || txt.match(/Lista de .{0,40}?\((\d[\d.]*)\s*registros?/i);
-    if (!m) return null;
+    // NENHUM REGISTRO É UM TOTAL: zero. Sem esta linha a pesquisa que não acha
+    // nada voltava com total nulo, e o servidor a julgava "falhou · o SEI não
+    // declarou o total de registros" — o estado `vazia` existia no veredito e era
+    // inalcançável. A pessoa lia falha onde o SEI tinha respondido.
+    if (!m) {
+      return /nenhum\s+(?:registro|resultado|processo)\s+(?:foi\s+)?(?:encontrad|localizad)/i.test(txt)
+        ? 0 : null;
+    }
     return parseInt(m[1].replace(/\./g, ''), 10);
   }
 
@@ -358,6 +405,7 @@
     return saida;
   }
 
-  window.SEIBusca = { pesquisar, totalDeclarado, linhas, montar, corpoLatin1 };
+  window.SEIBusca = { pesquisar, totalDeclarado, linhas, montar, corpoLatin1,
+                      comRetentativa };
   log('SEIBusca pronto');
 })();

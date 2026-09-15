@@ -133,6 +133,13 @@ SEGUNDOS_TETO = 10 * 60
 # primeira leitura") enquanto o motivo real era outro.
 HORA_SEM_ESPERAR = 12
 
+# Depois de uma volta em que NADA foi lido, o par espera antes da próxima: 15 min,
+# dobrando a cada falha seguida, até 2 h. Sem isto, a falha sistemática (senha
+# errada, SEI fora do ar) era repetida a cada 2 min.
+ESPERA_APOS_FALHA_S = 15 * 60
+ESPERA_MAXIMA_S = 2 * 60 * 60
+_falhas_seguidas = {}          # (usuario_id, instancia) -> (quantas, até quando)
+
 _laco_vivo = threading.Event()
 _thread = None
 
@@ -256,6 +263,13 @@ def cobertura(cx, usuario_id):
         else:
             le.append(inst)
     return le, parado
+
+
+def _conta(cx, usuario_id, instancia):
+    """O login do SEI desta pessoa nesta instalação — a chave da trava de conta."""
+    r = cx.execute("SELECT sei_login FROM config_usuario WHERE usuario_id=? AND sistema=?",
+                   (usuario_id, instancia)).fetchone()
+    return ((r["sei_login"] if r else "") or "").strip() or None
 
 
 # --------------------------------------------------------------- a execução
@@ -423,14 +437,35 @@ def rodada(cx=None):
             pode, _motivo = _devido(cx, usuario_id, instancia, agora_dt)
             if not pode:
                 continue
+            _fs = _falhas_seguidas.get((usuario_id, instancia))
+            if _fs and time.time() < _fs[1]:
+                continue                          # esperando depois de uma volta vazia
+            # A CONTA DO SEI É UMA SÓ para busca, coleta e acompanhamento, e a
+            # unidade ativa lá é estado por usuário. Com a conta ocupada, este
+            # par espera — e sem ter cobrado tentativa de ninguém.
+            conta = _conta(cx, usuario_id, instancia)
+            if conta:
+                import busca as _bmod
+                if _bmod.trava_viva(cx, instancia, conta):
+                    cx.commit()
+                    continue
             # SÓ COMEÇA COM TUDO OCIOSO — nem busca nem coleta em curso. É o
             # mesmo teste de `coleta_servidor.rodada`: `vagas_livres()` igual
             # ao `LIMITE` do atendente é "ninguém usando nenhuma vaga agora".
             if atendente.vagas_livres() != atendente.LIMITE:
                 break
+            # TRABALHO PESADO UM POR VEZ: sem este lock, coleta e acompanhamento
+            # passavam juntos pelo teste de cima e tomavam as duas vagas.
+            if not atendente._pesado.acquire(blocking=False):
+                break
             if not atendente._vagas.acquire(blocking=False):
+                atendente._pesado.release()
                 break                            # perdeu a corrida por uma vaga
+            lista = []
             try:
+                if conta:
+                    _bmod._travar(cx, instancia, conta, None, minutos=SEGUNDOS_TETO // 60 + 2)
+                    cx.commit()
                 # `pendentes` ESCREVE (incrementa `tentativas`) e chama
                 # `reaproveitar` — então só é chamada aqui, com a vaga na mão,
                 # e o commit vem ANTES de decidir: o que a carteira respondeu
@@ -455,8 +490,43 @@ def rodada(cx=None):
                 feitas += 1
                 print(f"acompanhamento(servidor): {g} gravada(s), {ig} ignorada(s)"
                       + (f" — {motivo}" if motivo else ""), flush=True)
+                if g or ig:
+                    _falhas_seguidas.pop((usuario_id, instancia), None)
+                else:
+                    # NADA LIDO: a falha foi da volta, não dos processos. A
+                    # tentativa cobrada na entrega volta, e o par espera.
+                    devolvidas = acmod.devolver_tentativas(cx, usuario_id, instancia, lista)
+                    cx.commit()
+                    n = (_fs[0] if _fs else 0) + 1
+                    espera = min(ESPERA_APOS_FALHA_S * 2 ** (n - 1), ESPERA_MAXIMA_S)
+                    _falhas_seguidas[(usuario_id, instancia)] = (n, time.time() + espera)
+                    print(f"acompanhamento(servidor): volta sem leitura — {devolvidas} "
+                          f"tentativa(s) devolvida(s), próxima em {espera // 60} min",
+                          flush=True)
+            except Exception as ex:                        # noqa: BLE001
+                # UM PAR QUE LEVANTA NÃO DERRUBA A PASSADA dos outros. Antes, a
+                # exceção subia até o laço, e com a ordem fixa dos candidatos o
+                # mesmo par levantava primeiro em toda volta, para sempre.
+                try:
+                    cx.rollback()
+                    if lista:
+                        acmod.devolver_tentativas(cx, usuario_id, instancia, lista)
+                        cx.commit()
+                except Exception:                          # noqa: BLE001
+                    pass
+                _falhas_seguidas[(usuario_id, instancia)] = (
+                    (_fs[0] if _fs else 0) + 1, time.time() + ESPERA_APOS_FALHA_S)
+                print(f"acompanhamento(servidor): conta {usuario_id} · {instancia} "
+                      f"levantou {type(ex).__name__}", flush=True)
             finally:
+                if conta:
+                    try:
+                        _bmod._destravar(cx, instancia, conta)
+                        cx.commit()
+                    except Exception:                      # noqa: BLE001
+                        pass
                 atendente._vagas.release()
+                atendente._pesado.release()
     finally:
         if proprio:
             cx.close()

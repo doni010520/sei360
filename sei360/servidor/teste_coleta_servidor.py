@@ -581,7 +581,13 @@ print("\nU. DUAS PONTAS, UMA JANELA — o container não coleta o que a estaçã
 uidF = novo_usuario("acomp.duas.pontas@sei360.local")
 config_servidor(uidF, "SEI-SESAB")
 agF = novo_agente_servidor(uidF)
-novo_agendamento(agF, ativo=1, horario="00:00")
+# A JANELA É RELATIVA A AGORA, e não "00:00" fixo: com tolerância de 600 min,
+# "00:00" só é devida até as 10h — a cena passava à noite e falhava à tarde.
+# Mesmo critério da cena F (2h atrás, por causa do desvio por agente), com
+# "00:00" antes das 2h, quando "2h atrás" cairia em ontem.
+_agora_u = datetime.now(banco.TZ)
+novo_agendamento(agF, ativo=1, horario=(_agora_u - timedelta(hours=2)).strftime("%H:%M")
+                 if _agora_u.hour >= 2 else "00:00")
 cx.commit()
 # A JANELA SAI DO PRÓPRIO `_decidir`, e não escrita à mão: `janela_devida`
 # carimba data ISO com fuso, e uma janela montada por concatenação não casaria —

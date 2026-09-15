@@ -590,7 +590,12 @@ CREATE TABLE IF NOT EXISTS busca(
   total_declarado INTEGER, colhidos INTEGER,
   paginas_lidas INTEGER, paginas_teto INTEGER,
   execucao_id INTEGER REFERENCES execucao(id) ON DELETE SET NULL,
-  pedida_em TEXT NOT NULL, entregue_em TEXT, terminada_em TEXT, duracao_s INTEGER);
+  pedida_em TEXT NOT NULL, entregue_em TEXT, terminada_em TEXT, duracao_s INTEGER,
+  -- NOVA TENTATIVA (15/09/2026). `tentativas` conta as execuções que já falharam
+  -- por causa PASSAGEIRA (rede, navegador morto, sessão caída); `tentar_apos` é
+  -- quando a próxima pode começar. Falha permanente (login recusado, mesa que a
+  -- conta não tem) não passa por aqui: repeti-la só repete a recusa.
+  tentativas INTEGER DEFAULT 0, tentar_apos TEXT);
 CREATE INDEX IF NOT EXISTS ix_busca_dono ON busca(usuario_id, pedida_em);
 
 -- As linhas do resultado. SÓ o que a tela de resultado do SEI mostra, e nada de

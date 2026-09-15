@@ -81,6 +81,8 @@ import cofre
 import ingestao
 import janelas
 import perfil_sei
+import busca as bmod
+import coleta as coleta_mod
 from coleta import COLETOR, coletar as _coletar
 
 # Nunca paralelizar coletas neste container na primeira versão: o motivo é
@@ -372,6 +374,15 @@ def _executar(agente_id, execucao_id, janela, instancia):
             cx.close()
 
 
+def _conta_do_agente(cx, agente_id, instancia):
+    """O login do SEI do dono deste agente nesta instalação."""
+    r = cx.execute("""SELECT c.sei_login FROM agentes a
+                      JOIN config_usuario c ON c.usuario_id = a.dono_usuario_id
+                                           AND c.sistema = ?
+                      WHERE a.id = ?""", (instancia, agente_id)).fetchone()
+    return ((r["sei_login"] if r else "") or "").strip() or None
+
+
 # ------------------------------------------------------------------- o laço
 def _reavaliar_existentes():
     """Roda uma vez, na subida do laço: destrava quem configurou modo servidor
@@ -417,7 +428,11 @@ def rodada(cx=None):
         # usado para "está tudo livre".
         if atendente.vagas_livres() != atendente.LIMITE:
             return feitas
+        # TRABALHO PESADO UM POR VEZ — ver `atendente._pesado`.
+        if not atendente._pesado.acquire(blocking=False):
+            return feitas
         if not atendente._vagas.acquire(blocking=False):
+            atendente._pesado.release()
             return feitas                        # perdeu a corrida por uma vaga
         try:
             agora_dt = datetime.now(janelas.TZ)
@@ -426,11 +441,33 @@ def rodada(cx=None):
                 cx.commit()
                 if instancia is None:
                     continue                     # `janela` aqui é o motivo da recusa
-                _executar(agente_id, ex, janela, instancia)
+                # A CONTA DO SEI OCUPADA POR UMA BUSCA: a coleta espera. A execução
+                # continua 'entregue' e é retomada na próxima passada — e a busca
+                # não vê a mesa trocada debaixo dela, que desde 15/09/2026 é real:
+                # a busca passou a ativar a mesa pedida.
+                conta = _conta_do_agente(cx, agente_id, instancia)
+                if conta and bmod.trava_viva(cx, instancia, conta):
+                    cx.commit()
+                    continue
+                if conta:
+                    bmod._travar(cx, instancia, conta, None,
+                                 minutos=coleta_mod.TIMEOUT_COLETA_S // 60 + 5)
+                    cx.commit()
+                try:
+                    _executar(agente_id, ex, janela, instancia)
+                finally:
+                    if conta:
+                        _cxl = banco.conectar()
+                        try:
+                            bmod._destravar(_cxl, instancia, conta)
+                            _cxl.commit()
+                        finally:
+                            _cxl.close()
                 feitas += 1
                 break                            # uma por passada: LIMITE=1
         finally:
             atendente._vagas.release()
+            atendente._pesado.release()
     finally:
         if proprio:
             cx.close()
