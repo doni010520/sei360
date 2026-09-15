@@ -69,6 +69,11 @@ _vagas = threading.BoundedSemaphore(LIMITE)
 # E ele é o que permite a `capacidade()` distinguir "vagas perdidas" de "vaga
 # segurada por uma coleta legítima" — as threads dessas não se chamam `busca-*`.
 _pesado = threading.Lock()
+# QUEM É ESTE PROCESSO, para as travas de conta que a coleta e o acompanhamento
+# tomam. Só o executor do container roda os dois; trava de motor com outro token é
+# de um executor que morreu sem soltar (ver `busca.limpar_travas_de_motor`).
+import secrets as _secrets
+TOKEN = _secrets.token_hex(6)
 # De quantas em quantas voltas o laço varre as buscas presas por conta própria.
 # A varredura só rodava quando alguém poleava a tela: fechar a aba deixava busca
 # 'entregue' órfã e a conta travada até outra pessoa abrir a busca.
@@ -234,18 +239,32 @@ def pegar(cx):
     # `tentar_apos`: a nova tentativa espera a sua vez. Sem a condição, a repetição
     # começaria no mesmo segundo da falha — e a falha passageira (rede, SEI lento)
     # ainda estaria lá.
-    r = cx.execute("""SELECT b.* FROM busca b
-                      JOIN config_usuario c
-                        ON c.usuario_id=b.usuario_id AND c.sistema=b.instancia
-                      WHERE b.estado='pedida' AND c.modo_coleta='servidor'
-                        AND (b.tentar_apos IS NULL OR b.tentar_apos <= ?)
-                      ORDER BY b.id LIMIT 1""", (banco.agora(),)).fetchone()
-    if not r:
-        return None
-    cur = cx.execute("UPDATE busca SET estado='entregue', entregue_em=? "
-                     "WHERE id=? AND estado='pedida'", (banco.agora(), r["id"]))
+    for r in cx.execute("""SELECT b.* FROM busca b
+                           JOIN config_usuario c
+                             ON c.usuario_id=b.usuario_id AND c.sistema=b.instancia
+                           WHERE b.estado='pedida' AND c.modo_coleta='servidor'
+                             AND (b.tentar_apos IS NULL OR b.tentar_apos <= ?)
+                           ORDER BY b.id LIMIT 20""", (banco.agora(),)).fetchall():
+        # A CONTA COM OUTRO DONO — uma coleta, um acompanhamento, outra busca da
+        # mesma conta — não recebe esta busca agora. A troca de mesa no SEI é por
+        # usuário: entregar aqui trocaria a mesa debaixo de quem está lá.
+        if bmod.trava_de_outro(cx, r["instancia"], r["conta"], r["id"]):
+            continue
+        cur = cx.execute("UPDATE busca SET estado='entregue', entregue_em=? "
+                         "WHERE id=? AND estado='pedida'", (banco.agora(), r["id"]))
+        if cur.rowcount != 1:
+            cx.commit()
+            continue
+        # A TRAVA É RENOVADA NA ENTREGA, contada da execução e não do pedido. Com a
+        # trava de 20 min contada do pedido, uma busca que esperou 12 min na fila
+        # começava com 8 min de trava para 10 de execução — e a conta ficava livre
+        # para outro pedido e para a coleta no meio da pesquisa.
+        bmod._travar(cx, r["instancia"], r["conta"], r["id"],
+                     minutos=bmod.SEGUNDOS_TETO // 60 + 4)
+        cx.commit()
+        return r
     cx.commit()
-    return r if cur.rowcount == 1 else None
+    return None
 
 
 # --------------------------------------------------------------- a execução
@@ -263,6 +282,7 @@ def executar(cx, r):
     # PASSAGEIRA OU PERMANENTE — é isso que decide se há nova tentativa. Nasce
     # permanente: só o que foi reconhecido como oscilação ganha outra execução.
     passageira = False
+    saida = ""
     inicio = time.time()
     try:
         p = perfil_sei.perfil(r["instancia"])
@@ -294,7 +314,14 @@ def executar(cx, r):
             "busca": {"busca_id": bid, "instancia": r["instancia"],
                       "mesa": r["mesa"], "filtros": json.loads(r["filtros"]),
                       "campos": p["campos_busca"],
-                      "paginas_teto": r["paginas_teto"] or bmod.PAGINAS_TETO},
+                      "paginas_teto": r["paginas_teto"] or bmod.PAGINAS_TETO,
+                      # Para onde devolver a conta depois — a origem da PRIMEIRA
+                      # execução, quando houver. Ver `busca.mesa_origem`.
+                      "volta_para": r["mesa_origem"] if "mesa_origem" in r.keys() else None,
+                      # O motor JS para de paginar antes do teto de fora e devolve
+                      # o que já leu: busca grande vira 'parcial' com itens, e não
+                      # 'falhou' sem nada depois de 10 min de SEI.
+                      "prazo_ms": max(60, bmod.SEGUNDOS_TETO - 90) * 1000},
         }
         # ALLOWLIST, não denylist. Negar por prefixo deixa passar tudo o que
         # ninguém lembrou de negar — `SEI360_SEGREDO`, `SMTP_PASS`, tokens, e o
@@ -335,25 +362,33 @@ def executar(cx, r):
         except subprocess.TimeoutExpired:
             proc.kill()
             try:
-                proc.communicate(timeout=30)
+                saida, _ = proc.communicate(timeout=30)
             except Exception:                          # noqa: BLE001
                 pass
             envelope["motivo"] = f"o servidor não devolveu resultado em {teto // 60} min"
-            passageira = True
+            # UMA repetição só. O motor JS agora devolve o que leu antes do teto, então
+            # estourar o relógio de fora é requisição pendurada — passageira. Mas se
+            # já estourou numa tentativa anterior, é o tamanho da pergunta, e repetir
+            # seriam mais 10 min de pesquisa pesada no SEI do órgão para o mesmo fim.
+            passageira = not (r["tentativas"] if "tentativas" in r.keys() else 0)
             return None
         del pedido, senha
-        veio = False
+        veio = ilegivel = False
         for linha in (saida or "").splitlines():
             if linha.startswith("BUSCA_OK "):
                 try:
                     envelope = json.loads(linha[len("BUSCA_OK "):])
                     veio = True
                 except ValueError:
-                    envelope["motivo"] = "o coletor devolveu um envelope ilegível"
-                    passageira = True
+                    ilegivel = True
         if veio and "itens" not in envelope:
             envelope.setdefault("itens", [])
-        if not veio:
+        if not veio and ilegivel:
+            # A LINHA CHEGOU CORTADA — escrita grande no pipe não é atômica. É
+            # passageira, e o motivo diz isso em vez de "saiu sem resultado" citando
+            # a linha de log que conta os itens que se perderam.
+            envelope["motivo"], passageira = "o coletor devolveu um envelope ilegível", True
+        elif not veio:
             # A CAUSA REAL, e não "o servidor não chegou a executar a busca". Esse
             # texto era o do envelope inicial, que já nascia com a chave 'itens' —
             # então o ramo que usaria o código de saída e o log nunca rodava, e
@@ -374,6 +409,15 @@ def executar(cx, r):
         passageira = type(ex).__name__ == "OperationalError"
     finally:
         envelope.setdefault("duracao_s", round(time.time() - inicio, 1))
+        # A ORIGEM DA MESA, gravada assim que o coletor a anuncia — antes de
+        # qualquer veredito, e mesmo quando ele morre depois.
+        try:
+            for _l in (saida or "").splitlines():
+                if _l.startswith("MESA_ORIGEM "):
+                    bmod.registrar_origem(cx, bid, _l[len("MESA_ORIGEM "):].strip())
+                    break
+        except Exception:                                      # noqa: BLE001
+            pass
         # NOVA TENTATIVA, antes de gravar o veredito. Só para o que foi reconhecido
         # como passageiro e só enquanto houver execução sobrando; a última falha
         # sai como 'falhou', com o motivo dela e o número de tentativas.
@@ -467,8 +511,13 @@ def _causa(codigo, saida):
         return ("o navegador foi encerrado pelo sistema no meio da busca "
                 "(provável falta de memória no servidor)"), True
     if codigo == 4:
+        # NEM TODO 4 É OSCILAÇÃO. O coletor também sai 4 quando falta um arquivo
+        # do motor ou o pedido veio malformado — defeito da imagem ou de quem
+        # chamou, que se repetiria igual nas três tentativas.
+        permanente = _re.search(r"nao achei|exige|stdin|instalacao desconhecida|"
+                                r"credencial em stdin", ultima, _re.I)
         return ("falha de infraestrutura no navegador ou na rede"
-                + (f": {ultima[:120]}" if ultima else "")), True
+                + (f": {ultima[:120]}" if ultima else "")), not permanente
     if codigo == 5:
         return "o coletor foi morto pelo relógio", True
     return (f"o coletor saiu com código {codigo} sem resultado"
@@ -575,6 +624,7 @@ def laco():
                 _cxv = banco.conectar()
                 try:
                     bmod.varrer(_cxv)
+                    bmod.limpar_travas_de_motor(_cxv, TOKEN)
                     _cxv.commit()
                 finally:
                     _cxv.close()

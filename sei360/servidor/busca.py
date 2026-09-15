@@ -356,25 +356,95 @@ def trava_viva(cx, instancia, conta, agora_dt=None):
                       (instancia, conta)).fetchone()
 
 
-def _travar(cx, instancia, conta, busca_id, agora_dt=None, minutos=None):
-    """`busca_id` None é trava de COLETA ou ACOMPANHAMENTO da mesma conta.
+def _travar(cx, instancia, conta, busca_id, agora_dt=None, minutos=None, dono=None):
+    """Toma (ou renova) a trava da conta. Devolve True se ela ficou COM ESTE DONO.
 
-    As três execuções usam a mesma conta do SEI, e a unidade ativa lá é estado
-    POR USUÁRIO: desde que a busca passou a trocar para a mesa pedida, uma busca
-    rodando no meio de uma coleta trocaria a mesa debaixo dela. Uma trava só,
-    por conta, para os três.
+    O dono é a busca (`busca_id`) ou um motor (`dono`, com `busca_id` None: coleta
+    ou acompanhamento). As três execuções usam a mesma conta do SEI, e a unidade
+    ativa lá é estado POR USUÁRIO — uma trava só, por conta, para os três.
+
+    NUNCA TOMA A TRAVA DE OUTRO DONO VIVO. A versão anterior fazia upsert cego:
+    a varredura, reenfileirando uma busca órfã, trocava a trava de uma coleta em
+    curso pela da busca — e a busca era entregue e trocava a mesa no meio da
+    coleta. Trava vencida continua podendo ser tomada; é para isso que ela vence.
     """
     from datetime import datetime
     agora_dt = agora_dt or datetime.now(TZ)
+    agora_iso = agora_dt.isoformat(timespec="seconds")
     ate = (agora_dt + timedelta(minutes=minutos or TRAVA_MIN)).isoformat(timespec="seconds")
-    cx.execute("""INSERT INTO busca_trava(instancia,conta,busca_id,ate) VALUES(?,?,?,?)
+    cx.execute("""INSERT INTO busca_trava(instancia,conta,busca_id,ate,dono) VALUES(?,?,?,?,?)
                   ON CONFLICT(instancia,conta) DO UPDATE SET
-                    busca_id=excluded.busca_id, ate=excluded.ate""",
-               (instancia, conta, busca_id, ate))
+                    busca_id=excluded.busca_id, ate=excluded.ate, dono=excluded.dono
+                  WHERE busca_trava.ate < ?
+                     OR (busca_trava.busca_id IS excluded.busca_id
+                         AND busca_trava.dono IS excluded.dono)""",
+               (instancia, conta, busca_id, ate, dono, agora_iso))
+    r = cx.execute("SELECT busca_id, dono FROM busca_trava WHERE instancia=? AND conta=?",
+                   (instancia, conta)).fetchone()
+    return bool(r) and r["busca_id"] == busca_id and r["dono"] == dono
 
 
-def _destravar(cx, instancia, conta):
-    cx.execute("DELETE FROM busca_trava WHERE instancia=? AND conta=?", (instancia, conta))
+def _destravar(cx, instancia, conta, busca_id=None, dono=None):
+    """Solta a trava da conta SE ela for deste dono. Devolve quantas soltou.
+
+    Pelo dono, e não pela conta: `receber()` de uma busca apagava a trava da conta
+    inteira — inclusive a de uma coleta que tinha começado depois —, e o resto da
+    coleta seguia sem trava, aceitando busca na mesma conta.
+    """
+    return cx.execute("""DELETE FROM busca_trava WHERE instancia=? AND conta=?
+                         AND busca_id IS ? AND dono IS ?""",
+                      (instancia, conta, busca_id, dono)).rowcount
+
+
+def trava_de_outro(cx, instancia, conta, busca_id=None, dono=None, agora_dt=None):
+    """A trava viva desta conta, se o dono não for este. Ou None."""
+    t = trava_viva(cx, instancia, conta, agora_dt)
+    if not t or (t["busca_id"] == busca_id and t["dono"] == dono):
+        return None
+    return t
+
+
+def soltar_conta(instancia, conta, busca_id=None, dono=None, tentativas=5):
+    """`_destravar` com conexão própria e insistência. Para quem solta num `finally`.
+
+    "database is locked" é o caso ordinário neste banco (a faxina faz VACUUM de
+    ~8,5 s; a ingestão escreve mil linhas num commit), e o destravar sem
+    repetição levantava, a exceção era engolida, e a conta ficava recusando busca
+    por 35 min depois de a coleta já ter terminado.
+    """
+    import time as _t
+
+    import banco as _banco
+    for i in range(tentativas):
+        cx = None
+        try:
+            cx = _banco.conectar()
+            _destravar(cx, instancia, conta, busca_id, dono)
+            cx.commit()
+            return True
+        except Exception:                                      # noqa: BLE001
+            _t.sleep(1 + 2 * i)
+        finally:
+            if cx is not None:
+                try:
+                    cx.close()
+                except Exception:                              # noqa: BLE001
+                    pass
+    return False
+
+
+def limpar_travas_de_motor(cx, token_vivo):
+    """Apaga trava de coleta/acompanhamento deixada por um processo que MORREU.
+
+    Só o processo executor do container roda coleta e acompanhamento, e ele carimba
+    a trava com o próprio token (`atendente.TOKEN`). Trava de motor com outro token
+    é de um executor anterior — morto por redeploy, falta de memória ou reinício
+    —, e nenhum `finally` a soltou. Sem esta limpeza ela segurava a retomada da
+    própria coleta e recusava a busca da pessoa com "a coleta está rodando", o que
+    era falso desde a morte.
+    """
+    return cx.execute("""DELETE FROM busca_trava WHERE dono LIKE 'motor:%'
+                         AND dono NOT LIKE ?""", (f"motor:{token_vivo}:%",)).rowcount
 
 
 # ------------------------------------------------------------------- pedir
@@ -397,8 +467,10 @@ def pedir(cx, usuario_id, instancia, conta, mesa, filtros, ip=None):
     if em_curso and em_curso["busca_id"] is None:
         # A CONTA ESTÁ COM A COLETA OU O ACOMPANHAMENTO no SEI. Dizer "já há uma
         # busca em curso" mandava a pessoa procurar uma busca que não existe.
-        return None, ("a coleta desta conta está rodando no SEI agora — peça a "
-                      "busca de novo quando ela terminar"), None
+        oque = ("o acompanhamento" if (em_curso["dono"] or "").endswith(":acompanhamento")
+                else "a coleta")
+        return None, (f"{oque} desta conta está rodando no SEI agora — peça a "
+                      "busca de novo em alguns minutos"), None
     if em_curso:
         # DEGRADA, não bloqueia: devolve qual busca está em curso, para a tela
         # mostrar o progresso dela em vez de um erro sem saída.
@@ -496,7 +568,7 @@ def receber(cx, busca_id, envelope, ip=None):
         # varredura — e o coletor só agora devolveu. É exatamente aqui que se
         # sabe que ninguém está mais logado naquela conta. Sem isto, todo
         # cancelamento deixaria a conta presa os 20 min inteiros de TRAVA_MIN.
-        _destravar(cx, r["instancia"], r["conta"])
+        _destravar(cx, r["instancia"], r["conta"], busca_id)
         return r["estado"], "esta busca já foi encerrada"
 
     itens = envelope.get("itens") or []
@@ -509,7 +581,12 @@ def receber(cx, busca_id, envelope, ip=None):
     # na unidade" faz o resultado ser função da unidade ATIVA da sessão, e a
     # unidade ativa é estado de servidor. Se o que o SEI relatou não é o que foi
     # pedido, o resultado é de outra mesa — e isso é falha, não um detalhe.
-    if r["mesa"] and confirmada and confirmada != r["mesa"]:
+    # SEM ITENS E COM MOTIVO DO COLETOR, o motivo dele é o verdadeiro: é o caso da
+    # troca de mesa que falhou ("nao consegui ativar a mesa pedida"), e trocá-lo
+    # pela divergência de mesa devolvia à pessoa exatamente a frase enganosa que a
+    # troca existe para eliminar. Com itens, a divergência continua mandando: são
+    # itens de outra mesa.
+    if r["mesa"] and confirmada and confirmada != r["mesa"] and (itens or not motivo_ag):
         estado, motivo = "falhou", (f"a mesa ativa no SEI é {confirmada}, e a busca "
                                     f"foi pedida para {r['mesa']}")
         itens = []
@@ -544,7 +621,7 @@ def receber(cx, busca_id, envelope, ip=None):
                   terminada_em=?, duracao_s=? WHERE id=?""",
                (estado, motivo, confirmada, total, len(itens), paginas,
                 agora(), envelope.get("duracao_s"), busca_id))
-    _destravar(cx, r["instancia"], r["conta"])
+    _destravar(cx, r["instancia"], r["conta"], busca_id)
     registrar(cx, r["usuario_id"], "busca_resultado",
               alvo=(f"busca {busca_id} · {estado} · {len(itens)}/{total} · "
                     f"{paginas} pág · {envelope.get('duracao_s')} s"),
@@ -556,7 +633,7 @@ def pode_repetir(cx, busca_id):
     """Esta busca ainda tem direito a outra execução? (só modo servidor)"""
     r = cx.execute("SELECT usuario_id, instancia, tentativas, estado FROM busca "
                    "WHERE id=?", (busca_id,)).fetchone()
-    if not r or r["estado"] in ("completa", "parcial", "vazia", "cancelada"):
+    if not r or r["estado"] in ("completa", "parcial", "vazia", "cancelada", "pedida"):
         return False
     if not _modo_servidor(cx, r["usuario_id"], r["instancia"]):
         return False
@@ -589,6 +666,9 @@ def reenfileirar(cx, busca_id, motivo, agora_dt=None):
                        WHERE id=? AND estado IN ('entregue','em_curso','falhou')""",
                     (n, apos, texto, busca_id)).rowcount == 1
     if ok:
+        # Se a conta está com OUTRO dono vivo (uma coleta que começou no meio), a
+        # busca volta para a fila SEM trava e espera: `atendente.pegar` não entrega
+        # busca cuja conta está com outro. Tomar à força era o defeito.
         _travar(cx, r["instancia"], r["conta"], busca_id, agora_dt,
                 minutos=TRAVA_MIN + espera // 60 + 1)
         registrar(cx, r["usuario_id"], "busca_nova_tentativa",
@@ -597,7 +677,21 @@ def reenfileirar(cx, busca_id, motivo, agora_dt=None):
     return ok
 
 
+def registrar_origem(cx, busca_id, sigla):
+    """A unidade em que a conta estava antes da PRIMEIRA troca. Só a primeira vale."""
+    if sigla:
+        cx.execute("UPDATE busca SET mesa_origem=COALESCE(mesa_origem, ?) WHERE id=?",
+                   (sigla, busca_id))
+
+
 def cancelar(cx, busca_id, usuario_id, ip=None):
+    # O LOCK DE ESCRITA ANTES DA LEITURA. Ler o estado e só depois escrever deixava
+    # uma janela: o executor reenfileirava a busca (estado 'pedida', trava renovada)
+    # entre as duas operações, o cancelamento gravava 'cancelada' por cima e não
+    # soltava a conta, porque o estado que ele tinha lido era 'entregue'. A conta
+    # ficava presa ~21 min por uma busca cancelada. O UPDATE neutro toma o lock.
+    cx.execute("UPDATE busca SET estado=estado WHERE id=? AND usuario_id=?",
+               (busca_id, usuario_id))
     r = cx.execute("SELECT * FROM busca WHERE id=? AND usuario_id=?",
                    (busca_id, usuario_id)).fetchone()
     if not r:
@@ -613,7 +707,7 @@ def cancelar(cx, busca_id, usuario_id, ip=None):
     # o SEI. Quando ja pegaram, a trava cai em `receber()`, que e o instante em
     # que se sabe que ninguem esta mais logado naquela conta.
     if r["estado"] == "pedida":
-        _destravar(cx, r["instancia"], r["conta"])
+        _destravar(cx, r["instancia"], r["conta"], busca_id)
     registrar(cx, usuario_id, "busca_cancelada", alvo=f"busca {busca_id}",
               unidade=r["mesa"], ip=ip)
     return True
@@ -700,10 +794,13 @@ def varrer(cx, agora_dt=None):
                   f"{PEGAR_TETO_S} s" if no_servidor else
                   f"nenhuma estação pegou o pedido em {PEGAR_TETO_S} s — "
                   f"o agente não está rodando")
-        cx.execute("""UPDATE busca SET estado='falhou', motivo=?, terminada_em=?
-                      WHERE id=?""", (motivo, agora(), b["id"]))
-        _destravar(cx, b["instancia"], b["conta"])
-        n += 1
+        # COM GUARDA DE ESTADO: outra varredura (outro worker, ou o laço do
+        # executor) pode ter agido sobre esta linha entre o SELECT e aqui.
+        if cx.execute("""UPDATE busca SET estado='falhou', motivo=?, terminada_em=?
+                         WHERE id=? AND estado='pedida'""",
+                      (motivo, agora(), b["id"])).rowcount == 1:
+            _destravar(cx, b["instancia"], b["conta"], b["id"])
+            n += 1
     corte_exec = (agora_dt - timedelta(seconds=SEGUNDOS_TETO + FOLGA_VARREDURA_S)
                   ).isoformat(timespec="seconds")
     for b in cx.execute("""SELECT * FROM busca WHERE estado IN ('entregue','em_curso')
@@ -719,13 +816,16 @@ def varrer(cx, agora_dt=None):
                                  agora_dt)):
             n += 1
             continue
-        cx.execute("""UPDATE busca SET estado='falhou', motivo=?, terminada_em=?
-                      WHERE id=?""",
-                   ((f"o executor de busca deste servidor não devolveu resultado "
-                     f"em {SEGUNDOS_TETO // 60} min"
-                     if _modo_servidor(cx, b["usuario_id"], b["instancia"]) else
-                     f"a estação pegou o pedido e não devolveu resultado em "
-                     f"{SEGUNDOS_TETO // 60} min"), agora(), b["id"]))
-        _destravar(cx, b["instancia"], b["conta"])
-        n += 1
+        # COM GUARDA DE ESTADO, pelo mesmo motivo de cima e com um efeito pior sem
+        # ela: medido na revisão, a segunda varredura simultânea desfazia a nova
+        # tentativa que a primeira acabara de agendar, gravando 'falhou' por cima.
+        if cx.execute("""UPDATE busca SET estado='falhou', motivo=?, terminada_em=?
+                         WHERE id=? AND estado IN ('entregue','em_curso')""",
+                      ((f"o executor de busca deste servidor não devolveu resultado "
+                        f"em {SEGUNDOS_TETO // 60} min"
+                        if _modo_servidor(cx, b["usuario_id"], b["instancia"]) else
+                        f"a estação pegou o pedido e não devolveu resultado em "
+                        f"{SEGUNDOS_TETO // 60} min"), agora(), b["id"])).rowcount == 1:
+            _destravar(cx, b["instancia"], b["conta"], b["id"])
+            n += 1
     return n

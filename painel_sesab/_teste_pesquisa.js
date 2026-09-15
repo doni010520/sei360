@@ -210,6 +210,15 @@ console.log('\nFALHA PASSAGEIRA GANHA NOVA TENTATIVA; SESSAO CAIDA NAO');
   } catch (e) { fim = e.message; }
   checar('falha que persiste desiste depois de 3 tentativas e diz o motivo',
          k === 3 && /502/.test(fim), `${k} ${fim}`);
+  // "Failed to fetch" com a pagina redirecionando para o login: sessao caida disfarcada.
+  caixa.fetch = async () => ({ type: 'opaqueredirect', status: 0 });
+  let q = 0, virou = null;
+  try {
+    await B.comRetentativa('teste', async () => { q++; throw new TypeError('Failed to fetch'); });
+  } catch (e) { virou = e.message; }
+  checar('Failed to fetch com a sessao morta vira SESSAO caiu, sem repetir',
+         q === 1 && /SESSAO/.test(virou), `${q} ${virou}`);
+  caixa.fetch = () => { throw new Error('sem rede no teste'); };
   console.log(`\n${ok} verificacoes, ${mau} falha(s)`);
   process.exit(mau ? 1 : 0);
 })();

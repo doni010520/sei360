@@ -330,19 +330,211 @@ try:
         asv._executar = _exec_real
         asv._falhas_seguidas.clear()
 
-    print("\nL. A BUSCA ATIVA A MESA PEDIDA ANTES DE PESQUISAR")
+    print("\nL. A BUSCA ATIVA A MESA PEDIDA ANTES DE PESQUISAR — e devolve a conta")
     _col = (SCRATCH.parent.parent / "painel_sesab" / "coletor_sesab.py").read_text(encoding="utf-8")
     _i_busca = _col.index("if BUSCAR:")
     _i_pesq = _col.index('SEIBusca.pesquisar(p)', _i_busca)
     _trecho = _col[_i_busca:_i_pesq]
+    _bloco = _col[_i_busca:_col.index("# Zera os checkpoints.", _i_busca)]
     checar("o modo --buscar troca de unidade (trocarMesa) ANTES da pesquisa",
            "SEIAuto.trocarMesa(m)" in _trecho and "descobrirMesas" in _trecho)
-    checar("e recarrega a aba para o cabeçalho refletir a unidade nova",
-           "pg.reload(" in _trecho)
-    checar("e devolve a conta para onde a pessoa a deixou",
-           "SEIAuto.trocarMesa(m).then" in _col[_i_pesq:_i_pesq + 1500])
-    checar("mesa que a conta não tem sai como falha PERMANENTE",
-           '"motivo_permanente": True' in _trecho)
+    checar("a origem é ANUNCIADA antes de trocar (MESA_ORIGEM), para sobreviver à morte",
+           _trecho.index('print("MESA_ORIGEM "') < _trecho.index("SEIAuto.trocarMesa(m)"))
+    checar("e a origem guardada pela primeira execução manda (volta_para)",
+           "volta_para" in _trecho)
+    checar("navega para o link da unidade NOVA em vez de recarregar a URL velha",
+           "pg.goto(_troca[\"url\"]" in _trecho)
+    checar("e CONFERE a unidade depois da troca, em vez de só registrar",
+           "_N(_agora) != _N(_mesa_pedida)" in _trecho)
+    checar("a volta roda num finally — também quando a pesquisa levanta",
+           _bloco.index("finally:") < _bloco.index("SEIAuto.trocarMesa(m).then"))
+    checar("lista de unidades que não veio (sem ids) NÃO é 'a conta não tem a mesa'",
+           "permanente: false" in _trecho and "nao consegui ler as unidades" in _trecho)
+    checar("o envelope de falha da troca sai com mesa_confirmada nula",
+           '"mesa_confirmada": None' in _trecho)
+
+    print("\nM. A TRAVA TEM DONO — ninguém toma nem solta a de outro")
+    cx.execute("DELETE FROM busca_trava")
+    cx.commit()
+    DONO_COLETA = f"motor:{at.TOKEN}:coleta"
+    checar("a coleta toma a conta livre", bmod._travar(cx, "SEI-SESAB", CONTA, None,
+                                                        minutos=30, dono=DONO_COLETA))
+    cx.commit()
+    _bx = cx.execute("""INSERT INTO busca(usuario_id,instancia,conta,mesa,filtros,estado,
+                        pedida_em,entregue_em) VALUES(?,?,?,?,?,'entregue',?,?)""",
+                     (UID, "SEI-SESAB", CONTA, "SESAB/SAIS/DGGUP/DGESS", "{}", agora(),
+                      agora())).lastrowid
+    cx.commit()
+    checar("a busca NÃO toma a trava viva da coleta",
+           bmod._travar(cx, "SEI-SESAB", CONTA, _bx) is False
+           and bmod.trava_viva(cx, "SEI-SESAB", CONTA)["dono"] == DONO_COLETA)
+    checar("reenfileirar a busca não troca o dono da trava",
+           bmod.reenfileirar(cx, _bx, "teste") and
+           bmod.trava_viva(cx, "SEI-SESAB", CONTA)["dono"] == DONO_COLETA)
+    cx.execute("UPDATE busca SET tentar_apos=NULL WHERE id=?", (_bx,))
+    cx.commit()
+    checar("pegar NÃO entrega busca cuja conta está com a coleta", at.pegar(cx) is None)
+    bmod.receber(cx, _bx, {"itens": [], "total_declarado": 0,
+                           "mesa_confirmada": "SESAB/SAIS/DGGUP/DGESS"})
+    cx.commit()
+    checar("o fim de uma busca não apaga a trava de OUTRO dono",
+           (bmod.trava_viva(cx, "SEI-SESAB", CONTA) or {})["dono"] == DONO_COLETA)
+    checar("trava de motor de um executor MORTO (outro token) é limpa",
+           cx.execute("UPDATE busca_trava SET dono='motor:tokenmorto:coleta'").rowcount == 1
+           and bmod.limpar_travas_de_motor(cx, at.TOKEN) == 1
+           and bmod.trava_viva(cx, "SEI-SESAB", CONTA) is None)
+    checar("e a do executor vivo, não",
+           bmod._travar(cx, "SEI-SESAB", CONTA, None, minutos=30, dono=DONO_COLETA)
+           and bmod.limpar_travas_de_motor(cx, at.TOKEN) == 0)
+    checar("soltar_conta solta pelo dono, com conexão própria",
+           (cx.commit() or True) and bmod.soltar_conta("SEI-SESAB", CONTA, None, DONO_COLETA)
+           and bmod.trava_viva(cx, "SEI-SESAB", CONTA) is None)
+    b = nova_busca()
+    _r = at.pegar(cx)
+    _t = bmod.trava_viva(cx, "SEI-SESAB", CONTA)
+    checar("pegar RENOVA a trava a partir da entrega, e com o dono certo",
+           _r and _t and _t["busca_id"] == b
+           and _t["ate"] > (datetime.now(TZ) + timedelta(minutes=bmod.SEGUNDOS_TETO // 60 + 2)
+                            ).isoformat(timespec="seconds"), dict(_t) if _t else None)
+    cx.execute("UPDATE busca SET estado='cancelada' WHERE id=?", (b,))
+    cx.execute("DELETE FROM busca_trava")
+    cx.commit()
+
+    print("\nN. VARREDURA E CANCELAMENTO NÃO DESFAZEM O QUE O OUTRO ACABOU DE FAZER")
+    b = nova_busca()
+    at.pegar(cx)
+    _velha = (datetime.now(TZ) - timedelta(seconds=bmod.SEGUNDOS_TETO + bmod.FOLGA_VARREDURA_S + 5)
+              ).isoformat(timespec="seconds")
+    cx.execute("UPDATE busca SET entregue_em=? WHERE id=?", (_velha, b))
+    cx.commit()
+    import banco as _banco_n
+
+    class _CxComCorrida:
+        """Uma conexão que, logo depois de listar as órfãs, deixa OUTRA varredura agir."""
+        def __init__(self, real):
+            self.real, self.feito = real, False
+
+        def execute(self, sql, *a):
+            cur = self.real.execute(sql, *a)
+            if not self.feito and "estado IN ('entregue','em_curso')" in sql and sql.lstrip().startswith("SELECT"):
+                linhas = cur.fetchall()
+                self.feito = True
+                outra = _banco_n.conectar()
+                bmod.reenfileirar(outra, b, "a outra varredura chegou antes")
+                outra.commit()
+                outra.close()
+                return type("C", (), {"fetchall": lambda _s: linhas})()
+            return cur
+
+        def __getattr__(self, n):
+            return getattr(self.real, n)
+
+    bmod.varrer(_CxComCorrida(cx))
+    cx.commit()
+    L = linha(b)
+    checar("a segunda varredura não grava 'falhou' por cima da nova tentativa da primeira",
+           L["estado"] == "pedida" and L["tentativas"] == 1, (L["estado"], L["motivo"]))
+    checar("e a trava da busca continua", bmod.trava_viva(cx, "SEI-SESAB", CONTA) is not None)
+    checar("cancelar a busca que voltou para a fila solta a conta",
+           bmod.cancelar(cx, b, UID) and (cx.commit() or True)
+           and bmod.trava_viva(cx, "SEI-SESAB", CONTA) is None)
+
+    print("\nO. CLASSIFICAÇÃO: o que se repete e o que não")
+    checar("arquivo do motor ausente (código 4) NÃO é passageiro",
+           at._causa(4, "ERRO: nao achei /app/painel_sesab/pesquisa_sei.js")[1] is False)
+    checar("rede caída (código 4) continua passageira",
+           at._causa(4, "ERRO DE INFRAESTRUTURA: net::ERR_CONNECTION_RESET")[1] is True)
+    coletor_falso("print('BUSCA_OK {\"busca_id\": 1, \"itens\": [{\"protoc')\nsys.exit(0)\n")
+    b = nova_busca()
+    rodar(b)
+    L = linha(b)
+    checar("envelope cortado no pipe é passageiro e diz 'ilegível'",
+           L["estado"] == "pedida" and "ilegível" in (L["motivo"] or ""), (L["estado"], L["motivo"]))
+    cx.execute("UPDATE busca SET estado='cancelada' WHERE id=?", (b,))
+    cx.execute("DELETE FROM busca_trava")
+    cx.commit()
+
+    print("\nP. A ORIGEM DA MESA SOBREVIVE À EXECUÇÃO QUE MORREU")
+    _visto_pedido = SCRATCH / "_pedido_visto.json"
+    coletor_falso(
+        "open(r'" + str(_visto_pedido) + "', 'w', encoding='utf-8').write(json.dumps(pedido))\n"
+        "print('MESA_ORIGEM SESAB/SAIS/DGGUP/DGESS/ORIGEM', flush=True)\n"
+        "print('ERRO DE INFRAESTRUTURA: Target closed')\nsys.exit(4)\n")
+    b = nova_busca()
+    rodar(b)
+    L = linha(b)
+    checar("a origem anunciada fica gravada mesmo com o coletor morrendo depois",
+           L["mesa_origem"] == "SESAB/SAIS/DGGUP/DGESS/ORIGEM", L["mesa_origem"])
+    cx.execute("UPDATE busca SET tentar_apos=NULL WHERE id=?", (b,))
+    cx.commit()
+    rodar(b)
+    _ped = json.loads(_visto_pedido.read_text(encoding="utf-8"))
+    checar("e a tentativa seguinte recebe essa origem para devolver a conta",
+           _ped["busca"].get("volta_para") == "SESAB/SAIS/DGGUP/DGESS/ORIGEM", _ped["busca"])
+    checar("o pedido leva o prazo do motor, para busca grande virar parcial",
+           (_ped["busca"].get("prazo_ms") or 0) > 0)
+    _visto_pedido.unlink(missing_ok=True)
+    cx.execute("UPDATE busca SET estado='cancelada' WHERE id=?", (b,))
+    cx.execute("DELETE FROM busca_trava")
+    cx.commit()
+
+    print("\nQ. O MOTIVO DA TROCA QUE FALHOU NÃO É TROCADO PELA FRASE ANTIGA")
+    coletor_falso(
+        "print('BUSCA_OK ' + json.dumps({'busca_id': pedido['busca']['busca_id'], 'itens': [],"
+        " 'total_declarado': None, 'mesa_confirmada': None,"
+        " 'motivo': 'nao consegui ativar a mesa pedida: a mesa X nao esta entre as unidades desta conta no SEI',"
+        " 'motivo_permanente': True}))\nsys.exit(1)\n")
+    b = nova_busca()
+    rodar(b)
+    L = linha(b)
+    checar("a pessoa lê que não conseguiu ativar a mesa, e não 'a mesa ativa no SEI é X'",
+           "nao consegui ativar" in (L["motivo"] or "") and "mesa ativa no SEI" not in (L["motivo"] or ""),
+           L["motivo"])
+    checar("mesmo com mesa_confirmada divergente e sem itens, o motivo do coletor manda",
+           bmod.receber(cx, nova_busca(), {"itens": [], "total_declarado": None,
+                                           "mesa_confirmada": "SESAB/OUTRA",
+                                           "motivo": "SESSAO caiu durante a busca"})[1]
+           == "SESSAO caiu durante a busca")
+    cx.execute("DELETE FROM busca_trava")
+    cx.commit()
+
+    print("\nR. ACOMPANHAMENTO: falha do PROCESSO conta; falha da VOLTA não")
+    asv._falhas_seguidas.clear()
+    cx.execute("UPDATE acompanhado SET tentativas=0, tentativa_em=NULL, lido_em=NULL WHERE usuario_id=?",
+               (UID,))
+    cx.commit()
+    _ex_real2 = asv._executar
+    asv._executar = lambda u, i, p: (0, 0, "a busca devolveu 2 linha(s), nenhuma com este numero", True)
+    try:
+        asv.rodada(cx)
+        _t = cx.execute("SELECT tentativas FROM acompanhado WHERE usuario_id=? AND protocolo=?",
+                        (UID, "019.7001.2026.0000001-11")).fetchone()[0]
+        checar("o SEI respondeu com falha do processo: a tentativa FICA (o item descansa depois de 3)",
+               _t == 1, _t)
+        checar("e o par não entra em espera por isso",
+               (UID, "SEI-SESAB") not in asv._falhas_seguidas, asv._falhas_seguidas)
+        asv._executar = lambda u, i, p: (0, 0, "o coletor não devolveu leitura nenhuma", False)
+        import time as _time_r
+        asv._falhas_seguidas[(UID, "SEI-SESAB")] = (3, _time_r.time() + 3600,
+                                                   datetime.now(TZ).date(),
+                                                   (datetime.now(TZ) - timedelta(minutes=5)
+                                                    ).isoformat(timespec="seconds"))
+        acmod.adicionar(cx, UID, "019.7002.2026.0000002-22", "SEI-SESAB")
+        cx.commit()
+        _antes = len(asv._falhas_seguidas)
+        _n = asv.rodada(cx)
+        checar("item recém colado não fica refém da espera do par ('ao adicionar')", _n == 1, _n)
+        asv._falhas_seguidas[(UID, "SEI-SESAB")] = (5, _time_r.time() + 3600,
+                                                   (datetime.now(TZ) - timedelta(days=1)).date(),
+                                                   agora())
+        cx.execute("UPDATE acompanhado SET estado='lido', lido_em=NULL WHERE usuario_id=?", (UID,))
+        cx.commit()
+        asv.rodada(cx)
+        checar("a espera de ONTEM não vale hoje", (asv._falhas_seguidas.get((UID, "SEI-SESAB")) or (0,))[0] <= 1,
+               asv._falhas_seguidas.get((UID, "SEI-SESAB")))
+    finally:
+        asv._executar = _ex_real2
+        asv._falhas_seguidas.clear()
 finally:
     at.COLETOR = _coletor_real
     (SCRATCH / "_coletor_falso_busca.py").unlink(missing_ok=True)

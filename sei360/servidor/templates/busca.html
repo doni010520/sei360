@@ -174,6 +174,7 @@
   const CAMPOS = ['tipo_processo', 'especificacao', 'contato', 'assunto',
                   'observacao', 'numero_sei', 'data_de', 'data_ate'];
   const ESPERA_MAX = {{ espera_max_s }};
+  const NO_SERVIDOR = {{ (estacao == "este servidor")|tojson }};
   let atual = null, relogio = null, soluços = 0;
 
   const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
@@ -249,9 +250,14 @@
            "aguardando" sobre uma busca que já tinha falhado uma vez. */
         situacao(b.motivo || 'tentando de novo…', true);
       } else if (b.estado === 'pedida') {
-        situacao(`aguardando o executor pegar o pedido… ${desde}s`
-                 + (desde > 20 ? ' — se passar de ' + ESPERA_MAX + 's sem ninguém pegar,'
-                                 + ' o executor de busca não está rodando' : ''));
+        /* QUEM PEGA depende do modo: no servidor é o executor dele; na estação, o
+           agente da pessoa. A frase de um modo é falsa no outro. */
+        situacao(NO_SERVIDOR
+          ? `aguardando o executor do servidor pegar o pedido… ${desde}s`
+            + (desde > 20 ? ' — a busca espera a vez na fila' : '')
+          : `aguardando a estação pegar o pedido… ${desde}s`
+            + (desde > 20 ? ' — se passar de ' + ESPERA_MAX + 's sem ninguém pegar,'
+                            + ' é porque o agente não está rodando' : ''));
       } else {
         situacao(`a estação pegou e está pesquisando no SEI… ${desde}s`);
       }
@@ -316,6 +322,19 @@
     const bt = document.getElementById('btRepetir');
     if (!bt) return;
     bt.addEventListener('click', () => {
+      /* OUTRA INSTALAÇÃO É OUTRA TELA: o formulário desta página só pede na
+         instalação dela, e repetir aqui mandaria a pergunta para o SEI errado com
+         a mesa padrão. A tela certa abre e repete ela mesma. */
+      if (b.instancia !== $('#instancia').value) {
+        location.href = '/busca?instancia=' + encodeURIComponent(b.instancia)
+                      + '&repetir=' + encodeURIComponent(b.id);
+        return;
+      }
+      const mesaSel = $('#mesa');
+      if (b.mesa && mesaSel && !Array.from(mesaSel.options).some(o => o.value === b.mesa)) {
+        situacao('a mesa desta busca (' + b.mesa + ') não está mais entre as suas — escolha outra e peça de novo', true);
+        return;
+      }
       const f = b.filtros || {};
       CAMPOS.forEach(k => { const el = $('#' + k); if (el) el.value = f[k] || ''; });
       if ($('#tramitacao_unidade')) $('#tramitacao_unidade').checked = !!f.tramitacao_unidade;
@@ -340,6 +359,20 @@
     ev.preventDefault();
     olhar(a.getAttribute('data-abrir'));
   }));
+  /* ?repetir=<id>: a tela veio de "Tentar de novo" numa busca de outra instalação. */
+  (async () => {
+    const rep = new URLSearchParams(location.search).get('repetir');
+    if (!rep) return;
+    const r = await fetch('/api/busca/' + encodeURIComponent(rep));
+    if (!r.ok) return;
+    const b = await r.json();
+    if (b.instancia !== $('#instancia').value) return;
+    history.replaceState(null, '', '/busca?instancia=' + encodeURIComponent(b.instancia));
+    mostrar(b);
+    const bt = document.getElementById('btRepetir');
+    if (bt) bt.click();
+  })();
+
   $('#instancia').addEventListener('change', () => {
     location.href = '/busca?instancia=' + encodeURIComponent($('#instancia').value);
   });

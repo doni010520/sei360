@@ -95,6 +95,7 @@ from datetime import datetime
 import acompanhamento as acmod
 import atendente
 import banco
+from banco import agora
 import cofre
 import janelas
 import perfil_sei
@@ -138,7 +139,7 @@ HORA_SEM_ESPERAR = 12
 # errada, SEI fora do ar) era repetida a cada 2 min.
 ESPERA_APOS_FALHA_S = 15 * 60
 ESPERA_MAXIMA_S = 2 * 60 * 60
-_falhas_seguidas = {}          # (usuario_id, instancia) -> (quantas, até quando)
+_falhas_seguidas = {}          # (usuario_id, instancia) -> (quantas, até quando, dia, desde)
 
 _laco_vivo = threading.Event()
 _thread = None
@@ -322,7 +323,7 @@ def _executar(usuario_id, instancia, protocolos):
         # inclusive quando a leitura falha depois.
         cx.commit()
         if not senha:
-            return 0, 0, f"não há credencial guardada para {instancia}"
+            return 0, 0, f"não há credencial guardada para {instancia}", False
         pedido = {
             "usuario": login, "senha": senha,
             "perfil": perfil_sei.envelope_do_coletor(instancia),
@@ -364,7 +365,7 @@ def _executar(usuario_id, instancia, protocolos):
             # falhou", então publicar o nada gravaria zero e nada mais. Os
             # itens continuam pendentes e a próxima volta tenta de novo — o
             # recuo por `tentativas` é o que impede isso de virar martelada.
-            return 0, 0, motivo or "o coletor não devolveu leitura nenhuma"
+            return 0, 0, motivo or "o coletor não devolveu leitura nenhuma", False
         # PEDAÇO POR PEDAÇO, e cada um comitado por si. Publicar só o último
         # gravaria 20 de 100 sem erro nenhum; comitar só no fim perderia tudo
         # se o terceiro pedaço fosse recusado.
@@ -389,9 +390,9 @@ def _executar(usuario_id, instancia, protocolos):
                 # requisições ao SEI cada uma.
                 cx.rollback()
                 motivo = f"pedaço {i}/{len(envelopes)} recusado ({type(ex).__name__})"
-        return gravadas, ignoradas, (None if gravadas else motivo)
+        return gravadas, ignoradas, (None if gravadas else motivo), True
     except Exception as ex:                                    # noqa: BLE001
-        return gravadas, ignoradas, f"falha no executor ({type(ex).__name__})"
+        return gravadas, ignoradas, f"falha no executor ({type(ex).__name__})", False
     finally:
         try:
             banco.registrar(cx, usuario_id, "acompanhamento_servidor",
@@ -438,15 +439,32 @@ def rodada(cx=None):
             if not pode:
                 continue
             _fs = _falhas_seguidas.get((usuario_id, instancia))
-            if _fs and time.time() < _fs[1]:
-                continue                          # esperando depois de uma volta vazia
+            if _fs and _fs[2] != agora_dt.date():
+                # O CONTADOR É DO DIA: a falha de ontem não faz a primeira volta de
+                # hoje esperar duas horas.
+                _falhas_seguidas.pop((usuario_id, instancia), None)
+                _fs = None
+            # SÓ O ITEM COLADO DEPOIS DA FALHA fura a espera. Um 'novo' que estava na
+            # volta que falhou é justamente o que falha — deixá-lo furar fazia a
+            # espera nunca valer para ele, e o Chromium subia a cada 2 min.
+            if (_fs and time.time() < _fs[1]
+                    and not cx.execute("""SELECT 1 FROM acompanhado WHERE usuario_id=?
+                                          AND instancia=? AND estado='novo'
+                                          AND adicionado_em > ? LIMIT 1""",
+                                       (usuario_id, instancia, _fs[3])).fetchone()):
+                # esperando depois de uma volta vazia — mas item recém colado não
+                # espera: o gatilho "ao adicionar" não pode ficar refém de uma falha
+                # de outro item do mesmo par.
+                continue
             # A CONTA DO SEI É UMA SÓ para busca, coleta e acompanhamento, e a
             # unidade ativa lá é estado por usuário. Com a conta ocupada, este
             # par espera — e sem ter cobrado tentativa de ninguém.
             conta = _conta(cx, usuario_id, instancia)
+            dono = f"motor:{atendente.TOKEN}:acompanhamento"
+            import busca as _bmod
             if conta:
-                import busca as _bmod
-                if _bmod.trava_viva(cx, instancia, conta):
+                _bmod.limpar_travas_de_motor(cx, atendente.TOKEN)
+                if _bmod.trava_de_outro(cx, instancia, conta, None, dono):
                     cx.commit()
                     continue
             # SÓ COMEÇA COM TUDO OCIOSO — nem busca nem coleta em curso. É o
@@ -464,7 +482,10 @@ def rodada(cx=None):
             lista = []
             try:
                 if conta:
-                    _bmod._travar(cx, instancia, conta, None, minutos=SEGUNDOS_TETO // 60 + 2)
+                    if not _bmod._travar(cx, instancia, conta, None,
+                                         minutos=SEGUNDOS_TETO // 60 + 2, dono=dono):
+                        cx.commit()
+                        continue
                     cx.commit()
                 # `pendentes` ESCREVE (incrementa `tentativas`) e chama
                 # `reaproveitar` — então só é chamada aqui, com a vaga na mão,
@@ -486,11 +507,17 @@ def rodada(cx=None):
                     continue
                 print(f"acompanhamento(servidor): conta {usuario_id} · {instancia} · "
                       f"{len(lista)} processo(s) no SEI", flush=True)
-                g, ig, motivo = _executar(usuario_id, instancia, lista)
+                _res = _executar(usuario_id, instancia, lista)
+                g, ig, motivo = _res[0], _res[1], _res[2]
+                # CHEGOU AO SEI? Envelope que voltou — mesmo só com falhas por
+                # processo — é o SEI respondendo sobre aqueles processos, e aí a
+                # tentativa cobrada vale: o item que falha sempre descansa depois de
+                # três. Só a volta que NÃO trouxe envelope nenhum é falha da volta.
+                chegou = bool(_res[3]) if len(_res) > 3 else bool(g or ig)
                 feitas += 1
                 print(f"acompanhamento(servidor): {g} gravada(s), {ig} ignorada(s)"
                       + (f" — {motivo}" if motivo else ""), flush=True)
-                if g or ig:
+                if chegou:
                     _falhas_seguidas.pop((usuario_id, instancia), None)
                 else:
                     # NADA LIDO: a falha foi da volta, não dos processos. A
@@ -499,7 +526,8 @@ def rodada(cx=None):
                     cx.commit()
                     n = (_fs[0] if _fs else 0) + 1
                     espera = min(ESPERA_APOS_FALHA_S * 2 ** (n - 1), ESPERA_MAXIMA_S)
-                    _falhas_seguidas[(usuario_id, instancia)] = (n, time.time() + espera)
+                    _falhas_seguidas[(usuario_id, instancia)] = (n, time.time() + espera,
+                                                                 agora_dt.date(), agora())
                     print(f"acompanhamento(servidor): volta sem leitura — {devolvidas} "
                           f"tentativa(s) devolvida(s), próxima em {espera // 60} min",
                           flush=True)
@@ -515,16 +543,17 @@ def rodada(cx=None):
                 except Exception:                          # noqa: BLE001
                     pass
                 _falhas_seguidas[(usuario_id, instancia)] = (
-                    (_fs[0] if _fs else 0) + 1, time.time() + ESPERA_APOS_FALHA_S)
+                    (_fs[0] if _fs else 0) + 1, time.time() + ESPERA_APOS_FALHA_S,
+                    agora_dt.date(), agora())
                 print(f"acompanhamento(servidor): conta {usuario_id} · {instancia} "
                       f"levantou {type(ex).__name__}", flush=True)
             finally:
                 if conta:
                     try:
-                        _bmod._destravar(cx, instancia, conta)
-                        cx.commit()
+                        cx.rollback()                      # nada pendente desta volta
                     except Exception:                      # noqa: BLE001
                         pass
+                    _bmod.soltar_conta(instancia, conta, None, dono)
                 atendente._vagas.release()
                 atendente._pesado.release()
     finally:

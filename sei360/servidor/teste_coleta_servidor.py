@@ -429,7 +429,7 @@ try:
                       tentativa_em=NULL WHERE usuario_id=? AND instancia='SEI-SESAB'""",
                    (uidA,))
         cx.commit()
-        _g, _ig, _mot = asv._executar(uidA, "SEI-SESAB", ["019.5001.2026.0000001-11"])
+        _g, _ig, _mot = asv._executar(uidA, "SEI-SESAB", ["019.5001.2026.0000001-11"])[:3]
         checar("a leitura é publicada", _g == 1, (_g, _ig, _mot))
         _linha = cx.execute("""SELECT estado, lido_em FROM acompanhado
                                WHERE usuario_id=? AND protocolo=?""",
@@ -444,7 +444,7 @@ try:
                _leitura and _leitura["documentos"] == 3
                and _leitura["movimentos"] == 7, dict(_leitura) if _leitura else None)
         # SEM CREDENCIAL não se inventa leitura: a recusa é dita e nada é gravado.
-        _g2, _ig2, _mot2 = asv._executar(uidA, "SEI-FESF", ["019.5002.2026.0000002-22"])
+        _g2, _ig2, _mot2 = asv._executar(uidA, "SEI-FESF", ["019.5002.2026.0000002-22"])[:3]
         checar("sem credencial para a instalação, recusa com o motivo e grava nada",
                _g2 == 0 and _mot2 and "credencial" in _mot2, (_g2, _mot2))
 finally:

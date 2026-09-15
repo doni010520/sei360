@@ -595,7 +595,12 @@ CREATE TABLE IF NOT EXISTS busca(
   -- por causa PASSAGEIRA (rede, navegador morto, sessão caída); `tentar_apos` é
   -- quando a próxima pode começar. Falha permanente (login recusado, mesa que a
   -- conta não tem) não passa por aqui: repeti-la só repete a recusa.
-  tentativas INTEGER DEFAULT 0, tentar_apos TEXT);
+  tentativas INTEGER DEFAULT 0, tentar_apos TEXT,
+  -- A unidade em que a conta estava ANTES de a primeira execução trocar de mesa.
+  -- Guardada na busca, e não lida de novo a cada tentativa: se a execução morre
+  -- depois de trocar, a seguinte leria a mesa pedida como origem e nunca
+  -- devolveria a conta para onde a pessoa a deixou.
+  mesa_origem TEXT);
 CREATE INDEX IF NOT EXISTS ix_busca_dono ON busca(usuario_id, pedida_em);
 
 -- As linhas do resultado. SÓ o que a tela de resultado do SEI mostra, e nada de
@@ -624,6 +629,10 @@ CREATE TABLE IF NOT EXISTS busca_trava(
   instancia TEXT NOT NULL, conta TEXT NOT NULL,
   busca_id INTEGER REFERENCES busca(id) ON DELETE CASCADE,
   ate TEXT NOT NULL,
+  -- QUEM segura, quando não é uma busca: 'motor:<token do processo>:coleta' ou
+  -- ':acompanhamento'. Sem dono, uma trava de coleta morta com o worker era
+  -- indistinguível de uma coleta viva, e a conta recusava busca por 35 min.
+  dono TEXT,
   PRIMARY KEY(instancia, conta));
 
 CREATE TABLE IF NOT EXISTS alerta(

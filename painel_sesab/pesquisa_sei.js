@@ -86,6 +86,21 @@
      servidor como está, porque é outra ação (logar de novo), não esperar. */
   const ESPERAS_REDE_MS = [1500, 4000];
 
+  /* "Failed to fetch" TAMBÉM É SESSÃO CAÍDA, disfarçada. Quando a sessão morre, o
+     SEI redireciona para o login do SIP, que é OUTRA origem e não manda CORS: o
+     `fetch` lança TypeError em vez de mostrar login.php na URL. Sem esta pergunta,
+     a queda de sessão era tratada como rede e repetida duas vezes contra a sessão
+     morta. A pergunta é um GET da própria página aberta, sem seguir redirecionamento:
+     sessão viva responde 200; morta, redireciona. */
+  async function sessaoCaiu() {
+    try {
+      const r = await fetch(location.href, { credentials: 'same-origin', redirect: 'manual' });
+      return r.type === 'opaqueredirect';
+    } catch (e) {
+      return false;
+    }
+  }
+
   async function comRetentativa(o_que, fn) {
     for (let i = 0; ; i++) {
       try {
@@ -93,6 +108,9 @@
       } catch (e) {
         const msg = String(e && e.message ? e.message : e);
         if (/SESSAO caiu/.test(msg) || i >= ESPERAS_REDE_MS.length) throw e;
+        if (/Failed to fetch|NetworkError|Load failed/i.test(msg) && await sessaoCaiu()) {
+          throw new Error('SESSAO caiu durante a busca');
+        }
         log(`${o_que}: ${semHash(msg).slice(0, 80)} — nova tentativa em `
             + `${ESPERAS_REDE_MS[i]} ms`, '#a36b1f');
         await dorme(ESPERAS_REDE_MS[i]);
@@ -389,6 +407,13 @@
         // diferentes. Quem decide o estado é o servidor, comparando com o total
         // declarado — aqui só se registra o que houve.
         if (!prox || novos === 0) break;
+        // O PRAZO É DO MOTOR, e ele devolve o que já leu. Antes, o relógio de fora
+        // matava o coletor aos 10 min e a busca grande terminava sem item nenhum;
+        // agora ela para antes, com motivo, e o servidor a julga 'parcial'.
+        if (pedido.prazo_ms && Date.now() - t0 > pedido.prazo_ms) {
+          saida.motivo = `prazo da busca: ${pg} pagina(s) lidas, a pesquisa tinha mais`;
+          break;
+        }
         const j = pares.findIndex(x => x[0] === prox.nome);
         if (j >= 0) pares[j][1] = prox.valor; else pares.push([prox.nome, prox.valor]);
         await dorme(240);

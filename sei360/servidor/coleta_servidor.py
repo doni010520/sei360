@@ -453,23 +453,24 @@ def rodada(cx=None):
                 # não vê a mesa trocada debaixo dela, que desde 15/09/2026 é real:
                 # a busca passou a ativar a mesa pedida.
                 conta = _conta_do_agente(cx, agente_id, instancia)
-                if conta and bmod.trava_viva(cx, instancia, conta):
-                    cx.commit()
-                    continue
+                dono = f"motor:{atendente.TOKEN}:coleta"
                 if conta:
-                    bmod._travar(cx, instancia, conta, None,
-                                 minutos=coleta_mod.TIMEOUT_COLETA_S // 60 + 5)
+                    # Trava de motor de um executor que já morreu não segura nada.
+                    bmod.limpar_travas_de_motor(cx, atendente.TOKEN)
+                    if not bmod._travar(cx, instancia, conta, None,
+                                        minutos=coleta_mod.TIMEOUT_COLETA_S // 60 + 5,
+                                        dono=dono):
+                        cx.commit()
+                        continue                 # conta com outro dono: retomada depois
                     cx.commit()
                 try:
                     _executar(agente_id, ex, janela, instancia)
                 finally:
                     if conta:
-                        _cxl = banco.conectar()
-                        try:
-                            bmod._destravar(_cxl, instancia, conta)
-                            _cxl.commit()
-                        finally:
-                            _cxl.close()
+                        # COM INSISTÊNCIA e pelo dono: um "database is locked" aqui
+                        # deixava a conta recusando busca por 35 min depois de a
+                        # coleta já ter terminado.
+                        bmod.soltar_conta(instancia, conta, None, dono)
                 feitas += 1
                 break                            # uma por passada: LIMITE=1
         finally:

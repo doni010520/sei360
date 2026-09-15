@@ -360,7 +360,9 @@ checar("a trava da conta e liberada junto",
 
 _b2, _, _ = bmod.pedir(cx, _uid, "SEI-SESAB", "a@x", None, {"assunto": "y"})
 cx.execute("UPDATE busca SET estado='entregue', entregue_em=? WHERE id=?",
-           ((datetime.now(TZ) - timedelta(seconds=bmod.SEGUNDOS_TETO + 5))
+           # + FOLGA_VARREDURA_S: a varredura espera o teto do executor e mais a
+           # folga, para ele encerrar a própria execução primeiro (15/09/2026).
+           ((datetime.now(TZ) - timedelta(seconds=bmod.SEGUNDOS_TETO + bmod.FOLGA_VARREDURA_S + 5))
             .isoformat(timespec="seconds"), _b2))
 cx.commit()
 bmod.varrer(cx)
@@ -389,6 +391,12 @@ _uid = 1
 cx.execute("DELETE FROM busca"); cx.execute("DELETE FROM busca_trava")
 cx.execute("DELETE FROM agentes WHERE dono_usuario_id=?", (_uid,))
 cx.execute("UPDATE config_usuario SET modo_coleta='servidor' WHERE usuario_id=?", (_uid,))
+# O MODO SERVIDOR EXIGE A SENHA NO COFRE desde 15/09/2026: aceitar pedido que o
+# servidor não tem com que executar era travar a conta e dizer "pesquisando". A
+# suíte guarda uma, com commit — a de `_duas_credenciais` morria no rollback.
+import cofre as _cofre_srv                                          # noqa: E402
+cx.execute("DELETE FROM credencial WHERE usuario_id=? AND sistema='SEI-SESAB'", (_uid,))
+_cofre_srv.guardar(cx, _uid, "SEI-SESAB", "a@x", "senha-do-teste")
 cx.commit()
 
 _pode, _motivo_cap = _at.capacidade()
