@@ -64,6 +64,22 @@ PEGAR_TETO_S = 90
 ESTACAO_SILENCIO_MIN = 45
 # Prazo do resultado. É lista de trabalho, não acervo.
 DIAS = 30
+# NOVA TENTATIVA, só no modo servidor e só para falha PASSAGEIRA. Três execuções
+# no total: a primeira e duas repetições, com espera crescente. Até 15/09/2026
+# não havia nenhuma — a primeira oscilação de rede, o navegador morto por falta
+# de memória ou a sessão do SEI caindo no meio viravam 'falhou' definitivo, e a
+# pessoa tinha de refazer o pedido sem saber se valia a pena.
+MAX_EXECUCOES = 3
+ESPERAS_S = (30, 120)
+# Folga da varredura sobre o teto do executor. Com os dois prazos iguais, a
+# varredura marcava 'falhou' segundos antes de o executor terminar pelo próprio
+# relógio — e o resultado que chegava em seguida era descartado como "busca já
+# encerrada". O executor tem de ser quem encerra a própria execução.
+FOLGA_VARREDURA_S = 120
+# Quanto uma busca pode esperar na fila quando HÁ executor vivo neste processo
+# com vaga livre. Ele a pega em segundos; se não pegou em 15 min, a fila está
+# presa por outro motivo e dizer isso vale mais que esperar para sempre.
+FILA_TETO_S = 15 * 60
 
 # Os filtros que a tela oferece. `tipo` diz como o valor é validado aqui — o que
 # chega ao SEI é decidido pelo perfil da instância, que sabe os ids de cada versão.
@@ -188,6 +204,20 @@ def quem_executa(cx, usuario_id, agora_dt=None, instancia=None):
         except Exception as ex:                                # noqa: BLE001
             pode, motivo = False, (f"o executor de busca deste servidor não "
                                    f"carregou ({type(ex).__name__})")
+        # SEM A SENHA DESTA INSTALAÇÃO NO COFRE, O SERVIDOR NÃO TEM COM QUE
+        # ENTRAR — e aceitar o pedido era travar a conta e mostrar "pesquisando"
+        # até o executor descobrir o óbvio. Recusar aqui diz a coisa certa na
+        # hora, e diz o que fazer.
+        if pode and instancia and not cx.execute(
+                "SELECT 1 FROM credencial WHERE usuario_id=? AND sistema=?",
+                (usuario_id, instancia)).fetchone():
+            pode, motivo = False, (f"a senha do SEI para {instancia} não está "
+                                   "guardada no servidor")
+            if not _estacao_viva(cx, usuario_id, agora_dt):
+                return None, motivo, (
+                    "Guarde a senha do SEI desta instalação em Configuração → "
+                    "Acesso. A busca roda com o seu login, e sem ele o servidor "
+                    "não tem como entrar.")
         if pode:
             return ({"nome_estacao": "este servidor", "servidor": True,
                      "id": None, "token_sha256": None}, None, None)
@@ -326,18 +356,95 @@ def trava_viva(cx, instancia, conta, agora_dt=None):
                       (instancia, conta)).fetchone()
 
 
-def _travar(cx, instancia, conta, busca_id, agora_dt=None):
+def _travar(cx, instancia, conta, busca_id, agora_dt=None, minutos=None, dono=None):
+    """Toma (ou renova) a trava da conta. Devolve True se ela ficou COM ESTE DONO.
+
+    O dono é a busca (`busca_id`) ou um motor (`dono`, com `busca_id` None: coleta
+    ou acompanhamento). As três execuções usam a mesma conta do SEI, e a unidade
+    ativa lá é estado POR USUÁRIO — uma trava só, por conta, para os três.
+
+    NUNCA TOMA A TRAVA DE OUTRO DONO VIVO. A versão anterior fazia upsert cego:
+    a varredura, reenfileirando uma busca órfã, trocava a trava de uma coleta em
+    curso pela da busca — e a busca era entregue e trocava a mesa no meio da
+    coleta. Trava vencida continua podendo ser tomada; é para isso que ela vence.
+    """
     from datetime import datetime
     agora_dt = agora_dt or datetime.now(TZ)
-    ate = (agora_dt + timedelta(minutes=TRAVA_MIN)).isoformat(timespec="seconds")
-    cx.execute("""INSERT INTO busca_trava(instancia,conta,busca_id,ate) VALUES(?,?,?,?)
+    agora_iso = agora_dt.isoformat(timespec="seconds")
+    ate = (agora_dt + timedelta(minutes=minutos or TRAVA_MIN)).isoformat(timespec="seconds")
+    cx.execute("""INSERT INTO busca_trava(instancia,conta,busca_id,ate,dono) VALUES(?,?,?,?,?)
                   ON CONFLICT(instancia,conta) DO UPDATE SET
-                    busca_id=excluded.busca_id, ate=excluded.ate""",
-               (instancia, conta, busca_id, ate))
+                    busca_id=excluded.busca_id, ate=excluded.ate, dono=excluded.dono
+                  WHERE busca_trava.ate < ?
+                     OR (busca_trava.busca_id IS excluded.busca_id
+                         AND busca_trava.dono IS excluded.dono)""",
+               (instancia, conta, busca_id, ate, dono, agora_iso))
+    r = cx.execute("SELECT busca_id, dono FROM busca_trava WHERE instancia=? AND conta=?",
+                   (instancia, conta)).fetchone()
+    return bool(r) and r["busca_id"] == busca_id and r["dono"] == dono
 
 
-def _destravar(cx, instancia, conta):
-    cx.execute("DELETE FROM busca_trava WHERE instancia=? AND conta=?", (instancia, conta))
+def _destravar(cx, instancia, conta, busca_id=None, dono=None):
+    """Solta a trava da conta SE ela for deste dono. Devolve quantas soltou.
+
+    Pelo dono, e não pela conta: `receber()` de uma busca apagava a trava da conta
+    inteira — inclusive a de uma coleta que tinha começado depois —, e o resto da
+    coleta seguia sem trava, aceitando busca na mesma conta.
+    """
+    return cx.execute("""DELETE FROM busca_trava WHERE instancia=? AND conta=?
+                         AND busca_id IS ? AND dono IS ?""",
+                      (instancia, conta, busca_id, dono)).rowcount
+
+
+def trava_de_outro(cx, instancia, conta, busca_id=None, dono=None, agora_dt=None):
+    """A trava viva desta conta, se o dono não for este. Ou None."""
+    t = trava_viva(cx, instancia, conta, agora_dt)
+    if not t or (t["busca_id"] == busca_id and t["dono"] == dono):
+        return None
+    return t
+
+
+def soltar_conta(instancia, conta, busca_id=None, dono=None, tentativas=5):
+    """`_destravar` com conexão própria e insistência. Para quem solta num `finally`.
+
+    "database is locked" é o caso ordinário neste banco (a faxina faz VACUUM de
+    ~8,5 s; a ingestão escreve mil linhas num commit), e o destravar sem
+    repetição levantava, a exceção era engolida, e a conta ficava recusando busca
+    por 35 min depois de a coleta já ter terminado.
+    """
+    import time as _t
+
+    import banco as _banco
+    for i in range(tentativas):
+        cx = None
+        try:
+            cx = _banco.conectar()
+            _destravar(cx, instancia, conta, busca_id, dono)
+            cx.commit()
+            return True
+        except Exception:                                      # noqa: BLE001
+            _t.sleep(1 + 2 * i)
+        finally:
+            if cx is not None:
+                try:
+                    cx.close()
+                except Exception:                              # noqa: BLE001
+                    pass
+    return False
+
+
+def limpar_travas_de_motor(cx, token_vivo):
+    """Apaga trava de coleta/acompanhamento deixada por um processo que MORREU.
+
+    Só o processo executor do container roda coleta e acompanhamento, e ele carimba
+    a trava com o próprio token (`atendente.TOKEN`). Trava de motor com outro token
+    é de um executor anterior — morto por redeploy, falta de memória ou reinício
+    —, e nenhum `finally` a soltou. Sem esta limpeza ela segurava a retomada da
+    própria coleta e recusava a busca da pessoa com "a coleta está rodando", o que
+    era falso desde a morte.
+    """
+    return cx.execute("""DELETE FROM busca_trava WHERE dono LIKE 'motor:%'
+                         AND dono NOT LIKE ?""", (f"motor:{token_vivo}:%",)).rowcount
 
 
 # ------------------------------------------------------------------- pedir
@@ -357,6 +464,13 @@ def pedir(cx, usuario_id, instancia, conta, mesa, filtros, ip=None):
     if not _ag:
         return None, f"{_motivo}. {_como}", None
     em_curso = trava_viva(cx, instancia, conta)
+    if em_curso and em_curso["busca_id"] is None:
+        # A CONTA ESTÁ COM A COLETA OU O ACOMPANHAMENTO no SEI. Dizer "já há uma
+        # busca em curso" mandava a pessoa procurar uma busca que não existe.
+        oque = ("o acompanhamento" if (em_curso["dono"] or "").endswith(":acompanhamento")
+                else "a coleta")
+        return None, (f"{oque} desta conta está rodando no SEI agora — peça a "
+                      "busca de novo em alguns minutos"), None
     if em_curso:
         # DEGRADA, não bloqueia: devolve qual busca está em curso, para a tela
         # mostrar o progresso dela em vez de um erro sem saída.
@@ -418,8 +532,16 @@ def veredito(total_declarado, colhidos, paginas, teto, motivo_agente):
     de completo é afirmar o que ninguém mediu.
     """
     if motivo_agente:
+        # MOTIVO COM ITENS JÁ COLHIDOS É PARCIAL, não falha: as páginas lidas antes
+        # do problema são resultado do SEI, e jogá-las fora como "falhou" fazia a
+        # pessoa refazer o que já tinha vindo.
+        if colhidos:
+            return "parcial", f"{motivo_agente} — vieram {colhidos} antes disso"
         return "falhou", motivo_agente
     if total_declarado is None:
+        if colhidos:
+            return "parcial", (f"o SEI não declarou o total de registros; vieram "
+                               f"{colhidos}, sem como conferir se é tudo")
         return "falhou", "o SEI não declarou o total de registros"
     if total_declarado == 0 and not colhidos:
         return "vazia", None
@@ -435,12 +557,18 @@ def receber(cx, busca_id, envelope, ip=None):
     r = cx.execute("SELECT * FROM busca WHERE id=?", (busca_id,)).fetchone()
     if not r:
         return None, "busca não encontrada"
-    if r["estado"] in ("completa", "parcial", "vazia", "falhou", "cancelada"):
+    # RESULTADO QUE CHEGA DEPOIS DA VARREDURA É RESULTADO. A varredura marca
+    # 'falhou' pelo prazo; se o executor ainda assim devolveu, o SEI respondeu, e
+    # descartar isso como "busca já encerrada" jogava fora exatamente o que a
+    # pessoa pediu. Só vale para a falha POR PRAZO — cancelada continua cancelada.
+    tardio = (r["estado"] == "falhou"
+              and "não devolveu resultado em" in (r["motivo"] or ""))
+    if r["estado"] in ("completa", "parcial", "vazia", "falhou", "cancelada") and not tardio:
         # DESTRAVA MESMO ASSIM. A busca acabou — cancelada, ou morta pela
         # varredura — e o coletor só agora devolveu. É exatamente aqui que se
         # sabe que ninguém está mais logado naquela conta. Sem isto, todo
         # cancelamento deixaria a conta presa os 20 min inteiros de TRAVA_MIN.
-        _destravar(cx, r["instancia"], r["conta"])
+        _destravar(cx, r["instancia"], r["conta"], busca_id)
         return r["estado"], "esta busca já foi encerrada"
 
     itens = envelope.get("itens") or []
@@ -453,13 +581,27 @@ def receber(cx, busca_id, envelope, ip=None):
     # na unidade" faz o resultado ser função da unidade ATIVA da sessão, e a
     # unidade ativa é estado de servidor. Se o que o SEI relatou não é o que foi
     # pedido, o resultado é de outra mesa — e isso é falha, não um detalhe.
-    if r["mesa"] and confirmada and confirmada != r["mesa"]:
+    # SEM ITENS E COM MOTIVO DO COLETOR, o motivo dele é o verdadeiro: é o caso da
+    # troca de mesa que falhou ("nao consegui ativar a mesa pedida"), e trocá-lo
+    # pela divergência de mesa devolvia à pessoa exatamente a frase enganosa que a
+    # troca existe para eliminar. Com itens, a divergência continua mandando: são
+    # itens de outra mesa.
+    if r["mesa"] and confirmada and confirmada != r["mesa"] and (itens or not motivo_ag):
         estado, motivo = "falhou", (f"a mesa ativa no SEI é {confirmada}, e a busca "
                                     f"foi pedida para {r['mesa']}")
         itens = []
     else:
         estado, motivo = veredito(total, len(itens), paginas,
                                   r["paginas_teto"] or PAGINAS_TETO, motivo_ag)
+        # FILTRO QUE O SEI NÃO ACEITOU MUDA A PERGUNTA. O motor declara em
+        # `filtros_recusados` o campo que não casou, e a busca rodava SEM o
+        # critério — devolvendo a resposta a outra pergunta com cara de completa.
+        recusados = [f.get("campo") if isinstance(f, dict) else str(f)
+                     for f in (envelope.get("filtros_recusados") or [])]
+        if recusados and estado in ("completa", "vazia"):
+            estado, motivo = "parcial", (
+                "o SEI não aceitou o(s) filtro(s) " + ", ".join(filter(None, recusados))
+                + " — o resultado NÃO aplica esse critério")
 
     # OS ITENS PRIMEIRO, O VEREDITO POR ÚLTIMO. A ordem inversa publicava
     # "completa · 5 de 5" com dois itens gravados quando um INSERT do laço
@@ -479,7 +621,7 @@ def receber(cx, busca_id, envelope, ip=None):
                   terminada_em=?, duracao_s=? WHERE id=?""",
                (estado, motivo, confirmada, total, len(itens), paginas,
                 agora(), envelope.get("duracao_s"), busca_id))
-    _destravar(cx, r["instancia"], r["conta"])
+    _destravar(cx, r["instancia"], r["conta"], busca_id)
     registrar(cx, r["usuario_id"], "busca_resultado",
               alvo=(f"busca {busca_id} · {estado} · {len(itens)}/{total} · "
                     f"{paginas} pág · {envelope.get('duracao_s')} s"),
@@ -487,7 +629,69 @@ def receber(cx, busca_id, envelope, ip=None):
     return estado, motivo
 
 
+def pode_repetir(cx, busca_id):
+    """Esta busca ainda tem direito a outra execução? (só modo servidor)"""
+    r = cx.execute("SELECT usuario_id, instancia, tentativas, estado FROM busca "
+                   "WHERE id=?", (busca_id,)).fetchone()
+    if not r or r["estado"] in ("completa", "parcial", "vazia", "cancelada", "pedida"):
+        return False
+    if not _modo_servidor(cx, r["usuario_id"], r["instancia"]):
+        return False
+    return (r["tentativas"] or 0) + 1 < MAX_EXECUCOES
+
+
+def reenfileirar(cx, busca_id, motivo, agora_dt=None):
+    """Devolve a busca à fila com espera crescente. Devolve True se voltou.
+
+    A TRAVA DA CONTA CONTINUA COM ELA, renovada: soltar entre uma tentativa e
+    outra deixaria a coleta — ou um segundo pedido — entrar na mesma conta do
+    SEI no intervalo, e a troca de mesa lá é por usuário.
+
+    O MOTIVO FICA VISÍVEL enquanto espera. Sem ele a tela diria "aguardando" sobre
+    uma busca que já falhou uma vez, e a pessoa não saberia que o sistema está
+    tentando de novo — nem por quê.
+    """
+    from datetime import datetime
+    agora_dt = agora_dt or datetime.now(TZ)
+    r = cx.execute("SELECT * FROM busca WHERE id=?", (busca_id,)).fetchone()
+    if not r:
+        return False
+    n = (r["tentativas"] or 0) + 1
+    espera = ESPERAS_S[min(n - 1, len(ESPERAS_S) - 1)]
+    apos = (agora_dt + timedelta(seconds=espera)).isoformat(timespec="seconds")
+    texto = (f"nova tentativa {n + 1} de {MAX_EXECUCOES} em {espera} s — "
+             f"a anterior falhou: {motivo}")[:300]
+    ok = cx.execute("""UPDATE busca SET estado='pedida', tentativas=?, tentar_apos=?,
+                       motivo=?, entregue_em=NULL
+                       WHERE id=? AND estado IN ('entregue','em_curso','falhou')""",
+                    (n, apos, texto, busca_id)).rowcount == 1
+    if ok:
+        # Se a conta está com OUTRO dono vivo (uma coleta que começou no meio), a
+        # busca volta para a fila SEM trava e espera: `atendente.pegar` não entrega
+        # busca cuja conta está com outro. Tomar à força era o defeito.
+        _travar(cx, r["instancia"], r["conta"], busca_id, agora_dt,
+                minutos=TRAVA_MIN + espera // 60 + 1)
+        registrar(cx, r["usuario_id"], "busca_nova_tentativa",
+                  alvo=f"busca {busca_id} · tentativa {n + 1}/{MAX_EXECUCOES} · {motivo[:120]}",
+                  unidade=r["mesa"])
+    return ok
+
+
+def registrar_origem(cx, busca_id, sigla):
+    """A unidade em que a conta estava antes da PRIMEIRA troca. Só a primeira vale."""
+    if sigla:
+        cx.execute("UPDATE busca SET mesa_origem=COALESCE(mesa_origem, ?) WHERE id=?",
+                   (sigla, busca_id))
+
+
 def cancelar(cx, busca_id, usuario_id, ip=None):
+    # O LOCK DE ESCRITA ANTES DA LEITURA. Ler o estado e só depois escrever deixava
+    # uma janela: o executor reenfileirava a busca (estado 'pedida', trava renovada)
+    # entre as duas operações, o cancelamento gravava 'cancelada' por cima e não
+    # soltava a conta, porque o estado que ele tinha lido era 'entregue'. A conta
+    # ficava presa ~21 min por uma busca cancelada. O UPDATE neutro toma o lock.
+    cx.execute("UPDATE busca SET estado=estado WHERE id=? AND usuario_id=?",
+               (busca_id, usuario_id))
     r = cx.execute("SELECT * FROM busca WHERE id=? AND usuario_id=?",
                    (busca_id, usuario_id)).fetchone()
     if not r:
@@ -503,7 +707,7 @@ def cancelar(cx, busca_id, usuario_id, ip=None):
     # o SEI. Quando ja pegaram, a trava cai em `receber()`, que e o instante em
     # que se sabe que ninguem esta mais logado naquela conta.
     if r["estado"] == "pedida":
-        _destravar(cx, r["instancia"], r["conta"])
+        _destravar(cx, r["instancia"], r["conta"], busca_id)
     registrar(cx, usuario_id, "busca_cancelada", alvo=f"busca {busca_id}",
               unidade=r["mesa"], ip=ip)
     return True
@@ -556,9 +760,25 @@ def varrer(cx, agora_dt=None):
     n = 0
     corte_pegar = (agora_dt - timedelta(seconds=PEGAR_TETO_S)).isoformat(timespec="seconds")
     fila_cheia = _fila_pode_estar_cheia()
-    for b in cx.execute("SELECT * FROM busca WHERE estado='pedida' AND pedida_em < ?",
+    corte_fila = (agora_dt - timedelta(seconds=FILA_TETO_S)).isoformat(timespec="seconds")
+    try:
+        import atendente as _at
+        executor_aqui = _at.vivo()
+    except Exception:                                          # noqa: BLE001
+        executor_aqui = False
+    # O PRAZO CONTA DE QUANDO A BUSCA PODIA COMEÇAR: numa nova tentativa, é
+    # `tentar_apos`, e não o pedido original — senão toda repetição nasceria vencida.
+    for b in cx.execute("""SELECT * FROM busca WHERE estado='pedida'
+                           AND COALESCE(tentar_apos, pedida_em) < ?""",
                         (corte_pegar,)).fetchall():
         no_servidor = _modo_servidor(cx, b["usuario_id"], b["instancia"])
+        # O EXECUTOR ESTÁ NESTE PROCESSO e a busca esperou por uma vaga: ele a
+        # pega na próxima volta do laço, em segundos. Matá-la aqui era o defeito
+        # medido: a vaga se soltava, a busca que tinha esperado mais de 90 s na
+        # fila morria na janela de até 3 s antes da rodada seguinte. Só quando a
+        # espera passa de FILA_TETO_S a fila está presa de verdade.
+        if no_servidor and executor_aqui and (b["tentar_apos"] or b["pedida_em"]) >= corte_fila:
+            continue
         # FILA CHEIA NÃO É PEDIDO ABANDONADO. No modo servidor, `pedida` com as
         # vagas todas ocupadas significa que a busca está na fila — ela nem
         # chegou a ser tentada. Matá-la aos 90 s manda a pessoa procurar um
@@ -574,21 +794,38 @@ def varrer(cx, agora_dt=None):
                   f"{PEGAR_TETO_S} s" if no_servidor else
                   f"nenhuma estação pegou o pedido em {PEGAR_TETO_S} s — "
                   f"o agente não está rodando")
-        cx.execute("""UPDATE busca SET estado='falhou', motivo=?, terminada_em=?
-                      WHERE id=?""", (motivo, agora(), b["id"]))
-        _destravar(cx, b["instancia"], b["conta"])
-        n += 1
-    corte_exec = (agora_dt - timedelta(seconds=SEGUNDOS_TETO)).isoformat(timespec="seconds")
+        # COM GUARDA DE ESTADO: outra varredura (outro worker, ou o laço do
+        # executor) pode ter agido sobre esta linha entre o SELECT e aqui.
+        if cx.execute("""UPDATE busca SET estado='falhou', motivo=?, terminada_em=?
+                         WHERE id=? AND estado='pedida'""",
+                      (motivo, agora(), b["id"])).rowcount == 1:
+            _destravar(cx, b["instancia"], b["conta"], b["id"])
+            n += 1
+    corte_exec = (agora_dt - timedelta(seconds=SEGUNDOS_TETO + FOLGA_VARREDURA_S)
+                  ).isoformat(timespec="seconds")
     for b in cx.execute("""SELECT * FROM busca WHERE estado IN ('entregue','em_curso')
                            AND COALESCE(entregue_em, pedida_em) < ?""",
                         (corte_exec,)).fetchall():
-        cx.execute("""UPDATE busca SET estado='falhou', motivo=?, terminada_em=?
-                      WHERE id=?""",
-                   ((f"o executor de busca deste servidor não devolveu resultado "
-                     f"em {SEGUNDOS_TETO // 60} min"
-                     if _modo_servidor(cx, b["usuario_id"], b["instancia"]) else
-                     f"a estação pegou o pedido e não devolveu resultado em "
-                     f"{SEGUNDOS_TETO // 60} min"), agora(), b["id"]))
-        _destravar(cx, b["instancia"], b["conta"])
-        n += 1
+        # ÓRFÃ DE UM EXECUTOR QUE MORREU (redeploy, falta de memória, reinício do
+        # worker) no modo servidor: o SEI nunca recusou nada. Volta para a fila, se
+        # ainda houver tentativa, em vez de virar falha por um motivo que não é da
+        # busca.
+        if (_modo_servidor(cx, b["usuario_id"], b["instancia"])
+                and pode_repetir(cx, b["id"])
+                and reenfileirar(cx, b["id"], "o executor parou no meio da execução",
+                                 agora_dt)):
+            n += 1
+            continue
+        # COM GUARDA DE ESTADO, pelo mesmo motivo de cima e com um efeito pior sem
+        # ela: medido na revisão, a segunda varredura simultânea desfazia a nova
+        # tentativa que a primeira acabara de agendar, gravando 'falhou' por cima.
+        if cx.execute("""UPDATE busca SET estado='falhou', motivo=?, terminada_em=?
+                         WHERE id=? AND estado IN ('entregue','em_curso')""",
+                      ((f"o executor de busca deste servidor não devolveu resultado "
+                        f"em {SEGUNDOS_TETO // 60} min"
+                        if _modo_servidor(cx, b["usuario_id"], b["instancia"]) else
+                        f"a estação pegou o pedido e não devolveu resultado em "
+                        f"{SEGUNDOS_TETO // 60} min"), agora(), b["id"])).rowcount == 1:
+            _destravar(cx, b["instancia"], b["conta"], b["id"])
+            n += 1
     return n

@@ -139,6 +139,7 @@ SEI360_CHAVE_MESTRA=<32B base64>         # AES-256-GCM do cofre — SEM ELA não
 SEI360_BUSCAS_SIMULTANEAS=2              # teto de MEMÓRIA: ~0,45 GB por busca
 SEI360_ATENDENTE=1                       # 0 desliga o executor de busca neste container
 SEI360_COLETA_SERVIDOR=0                 # 1 liga a coleta diária p/ modo servidor (nasce OFF — §3.7)
+SEI360_ACOMPANHAMENTO_SERVIDOR=1         # 0 desliga SÓ o acompanhamento; por padrão segue a linha acima
 SEI360_COLETOR=/app/painel_sesab/coletor_sesab.py
 SEI_PERFIL_DIR=/dados/_perfil_sei        # perfil do navegador, no volume
 SEI_SEM_SANDBOX=1                        # so em container (ver abaixo)
@@ -365,7 +366,19 @@ Este parágrafo dizia "NÃO implementar agora" e condicionava tudo a uma conta d
 
 **Desde 08/09/2026, também a coleta diária de quem está em modo servidor** (`coleta_servidor.py`) — atrás de um interruptor que nasce **desligado** (`SEI360_COLETA_SERVIDOR`, ao contrário de `SEI360_ATENDENTE`): a busca já tinha decisão formal antes de subir; a coleta automática ainda não teve carga real medida (6 mesas × N pessoas de Chromium num VPS de 2 GB continua sem número), e ligar por padrão repetiria o erro que este próprio parágrafo já registrou uma vez. Duas defesas herdadas do atendente, não inventadas de novo: a coleta só começa com a busca ociosa, e enquanto roda segura uma vaga do MESMO semáforo de memória — os dois moram na mesma thread de processo de propósito (ver o cabeçalho de `coleta_servidor.py`), porque o semáforo não atravessa processo do gunicorn. No máximo uma coleta por vez no container.
 
-**O que continua na estação:** modo estação inteiro (senha nunca sai da máquina da pessoa), e qualquer coleta enquanto `SEI360_COLETA_SERVIDOR` estiver desligado.
+**Desde 12/09/2026, também o ACOMPANHAMENTO** (`acompanhamento_servidor.py`), e este não é uma melhoria — é um motor que **não existia**. O módulo de Acompanhamento subiu em 11/09/2026 com um caminho só para a metade caro (ler no SEI processo que não está em mesa nenhuma da pessoa): as duas rotas `/api/agente/acompanhamento`, que existem para uma ESTAÇÃO buscar trabalho por HTTP. Medido pela leitura do código: `acompanhamento.pendentes` e `.receber` tinham **um chamador cada**, essas rotas, e `coleta_servidor.py` não conhecia o módulo. Neste container, portanto, o processo acompanhado entrava na lista, ficava `novo` e **nunca era lido** — a tela dizia "aguardando primeira leitura" para sempre, e a frase era verdadeira. Nenhuma linha vermelha em lugar nenhum.
+
+O laço novo é o de `coleta_servidor.py` com três diferenças que importam, e todas as três são ganho que a estação não tem:
+
+| | estação | container |
+|---|---|---|
+| instalações por ciclo | **uma** — ela faz login numa por vez, e o item da outra ficava `novo` para sempre (medido: três ciclos) | **as duas**, no mesmo ciclo: o cofre guarda credencial por instalação e o atendente já mantém um perfil de navegador por pessoa **e** por instalação |
+| quando lê | a cada 30 min, por relógio próprio | **depois da coleta do dia** — é ela que responde de graça o que está na carteira (`reaproveitar`); ler antes é pagar 6 requisições por processo pelo que ia chegar sozinho. Item recém colado não espera (o gatilho "ao adicionar"), e ninguém espera depois das 12h |
+| quanto custa perguntar | sobe o Chromium para descobrir | um `COUNT(*)` (`acompanhamento.quantos_pendentes`), e a vaga de memória só é tomada depois dele |
+
+**Interruptor: o mesmo da coleta.** `SEI360_COLETA_SERVIDOR` liga os dois, porque a decisão é uma — "este container lê o SEI sozinho, com senha guardada". Um segundo interruptor seria uma segunda coisa para esquecer, e a falha de esquecer é silenciosa (item parado, tela dizendo a verdade). Quem precisar desligar só o acompanhamento tem `SEI360_ACOMPANHAMENTO_SERVIDOR=0`. As defesas de memória são as de lá, não reinventadas: só começa com busca e coleta ociosas, segura uma vaga do MESMO semáforo, no máximo uma leitura por vez, e mora no processo que venceu a eleição do atendente.
+
+**O que continua na estação:** modo estação inteiro (senha nunca sai da máquina da pessoa), e qualquer coleta ou acompanhamento enquanto `SEI360_COLETA_SERVIDOR` estiver desligado. As duas rotas do agente continuam de pé e atendem essas contas — `acompanhamento_servidor._candidatos` ignora de propósito quem está em `modo_coleta='estacao'`, porque a senha dessa conta não está aqui.
 
 **O que continua verdadeiro deste parágrafo:** o único caminho que traz execução para dentro do container **sem** colocar credencial nominal de terceiro num host alugado continua sendo a **conta de serviço institucional criada formalmente pela TIC/PRODEB**, com escopo de leitura, termo de uso e log próprio. Isso deixou de ser pré-requisito e passou a ser **dívida**: enquanto não existir, cada busca feita pelo VPS é imputada, no log do SEI, à pessoa cuja credencial o cofre guardou.
 
@@ -643,6 +656,45 @@ O agente **sempre puxa**. A estação está atrás de NAT e firewall corporativo
 - Autenticação de cada chamada: Bearer sobre HTTPS **mais** HMAC-SHA256 do corpo com o token (`X-SEI360-Ts`, `X-SEI360-Assinatura`), rejeitando timestamp fora de ±5 min e nonce já visto. É `hmac` da stdlib e sobrevive a um proxy do órgão que termine o TLS.
 - **Sem autoatualização do agente.** O `/tarefa` informa `versao_disponivel` e o painel mostra "agente desatualizado"; a troca é comando manual. Autoatualização transformaria o servidor em canal de execução remota de código na única máquina que tem a credencial — exatamente o que este desenho evita.
 - **Teto local, no lado que detém a credencial:** o agente recusa executar mais de `N` vezes por dia e fora da faixa horária configurada **localmente**, independentemente do que o servidor pedir. É o único limite que sobrevive ao comprometimento do servidor.
+
+### 7.1-bis Os três trabalhos do ciclo, e a ordem entre eles
+
+Desde 11/09/2026 o agente tem três trabalhos por batida, nesta ordem:
+
+1. **`GET /api/agente/busca`** — a busca avançada, primeiro porque **alguém está
+   olhando a tela**. Uma coleta de 14 minutos na frente de uma busca de 20 segundos
+   transforma "pesquisar" em "pesquisar amanhã".
+2. **a coleta**, pelo `GET /api/agente/tarefa`.
+3. **`GET /api/agente/acompanhamento`** — os processos acompanhados que estão fora da
+   carteira (§5-quindecies de `SPECS.md`).
+
+O acompanhamento vem **por último, e isso é decisão medida, não arranjo**. Ele
+começou na frente da coleta, pelo mesmo argumento da busca, e a revisão desmontou:
+não existe plantão de acompanhamento (`atender()` só chama `buscar`), a latência já
+é de 0 a 30 min de qualquer jeito, e há trava de uma leitura por dia por item — a
+posição na frente comprava zero. Em troca, expunha a coleta diária a dois modos de
+falha provados: linha de resultado corrompida levantando `JSONDecodeError` não
+capturado (e `stderr` funde no mesmo pipe sem buffer, então uma linha do Chromium no
+meio de um envelope de dezenas de KB basta), e filho pendurado segurando a Trava
+indefinidamente, porque o teto de relógio só é avaliado quando chega uma linha. Nos
+dois casos a coleta do dia não era pedida, e a batida seguinte via o PID vivo e saía.
+
+Hoje o acompanhamento roda depois da coleta, dentro de `try/except`, e a asserção que
+a suíte cobra é essa: **a coleta é pedida mesmo quando o acompanhamento falha.**
+
+Contrato dos dois endpoints novos, mesma autenticação dos demais (Bearer + HMAC):
+
+| | |
+|---|---|
+| `GET /api/agente/acompanhamento` | devolve `{ler, instancia, protocolos[], perfil}` ou `{ler:false, motivo}`. **Não** manda a nota que a pessoa escreveu (texto de gente, pode citar nome), nem o tamanho da lista. |
+| `POST /api/agente/acompanhamento` | recebe `{instancia, leituras[]}`. O **dono e a instalação saem do token**, nunca do envelope: a instância do corpo é apenas conferida, e divergência devolve 409 sem gravar. Estado inventado é recusado, não traduzido. |
+
+**Recuo:** falha técnica não carimba leitura, então o item continua pendente — e sem
+contador isso o reofereceria a cada 30 min. Uma falha sistemática que não derrube a
+sessão custaria 100 processos × 5 requisições × 34 ciclos ≈ 17 mil requisições por
+dia contra o SEI do órgão, três vezes a coleta inteira, sem nada perceber. Por isso
+`acompanhado.tentativas`: três entregas sem resposta no mesmo dia e o item descansa
+até o dia virar, com o motivo dito no log do agente.
 
 ### 7.2 Janelas — números medidos, não estimados
 

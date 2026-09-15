@@ -176,17 +176,40 @@ def _travar(nome, destino):
     atexit.register(lambda: trava.unlink(missing_ok=True))
 
 
-def isolar(quem, copiar=True):
+def isolar(quem, copiar=True, exige_dados=False):
     """Aponta SEI360_DADOS para um diretório temporário.
 
     `copiar=True` leva uma cópia do banco atual — é o que permite às suítes
     contarem com os 1.165 processos reais sem tocar neles. `copiar=False` começa
     do zero, para quem testa instalação nova.
 
+    `exige_dados=True` é OUTRA COISA, e a diferença custou caro nas duas
+    direções. Copiar é oportunista: se o banco de trabalho estiver lá, a suíte
+    aproveita; se não, ela semeia o que precisa e roda igual (é o caso de
+    `teste_configuracao.py` e `teste_acesso.py`, 192 verificações que não
+    dependem de coleta nenhuma). EXIGIR é para quem mede CONTRA os dados de uma
+    coleta real e não tem o que medir sem eles — `teste_relatorios.py` afere os
+    14 relatórios, `testes.py` e `teste_multiusuario.py` recortam por unidade
+    corrente, `teste_busca.py` conta com a conta semeada. Sem o banco, essas
+    quatro morrem onde procuram a primeira unidade (`UNIDADES[0]`, IndexError)
+    ou numa FK sem a quem apontar — e o relatório as mostrava como "FALHOU":
+    quatro linhas vermelhas que não eram defeito, ao lado das que eram. É o jeito
+    mais rápido de ensinar alguém a ignorar o verificador.
+
     Devolve o diretório. O chamador não precisa limpar: o diretório fica em
     TEMP, e a próxima execução o recria.
     """
     nome = Path(quem).stem
+    # PRECISA DO BANCO E NÃO O TEM: não é falha da suíte, e não pode ser contada
+    # como uma. O porquê está na docstring, junto de quem escolhe a flag.
+    #
+    # A FRASE É CONTRATO com `rodar_testes.ler_saida`, como a da trava: é ela que
+    # faz a suíte cair em NÃO RODOU em vez de FALHOU. Mudar o texto aqui sem
+    # mudar lá devolve as quatro linhas vermelhas.
+    if exige_dados and not ORIGEM.exists():
+        print(f"{nome}: sem banco de trabalho para copiar ({ORIGEM}) — esta suíte "
+              "mede contra os dados de uma coleta real e não tem o que medir.")
+        sys.exit(3)
     destino = Path(tempfile.gettempdir()) / f"sei360_teste_{nome}"
     _travar(nome, destino)
     shutil.rmtree(destino, onerror=_destrancar)

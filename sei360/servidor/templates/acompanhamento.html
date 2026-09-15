@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Acompanhamento</title>
+{% include '_cabeca.html' %}
+</head><body>
+
+{% with pagina='acompanhamento' %}{% include '_nav.html' %}{% endwith %}
+
+<div class="folha" style="max-width:1180px">
+  <h1 style="font-family:var(--display);font-size:27px;margin:0 0 6px;font-weight:600">Acompanhamento</h1>
+  <div style="color:var(--ink-2);margin-bottom:20px;max-width:74ch">
+    Processos que você segue, <b>onde eles estiverem</b> — inclusive fora das suas mesas.
+    O que já está na sua carteira é respondido pela própria coleta, sem ida ao SEI.
+  </div>
+
+  {% if recusados %}
+  {# Linha que não é número volta com o texto ORIGINAL: quem colou precisa
+     reconhecer o que não entrou para poder corrigir. #}
+  <div class="destaque" style="border-left-color:var(--alerta);background:var(--alerta-soft)">
+    <b>{{ recusados|length }} linha(s) não entraram</b> — não parecem número de processo:
+    {% for t in recusados %}<code>{{ t }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+
+  {% if sem_espaco %}
+  {# MOTIVO CERTO, ou a pessoa age errado. A linha barrada pelo TETO voltava no
+     mesmo balde das malformadas e recebia este carimbo: "não parece número de
+     processo" sobre número correto. Quem lê vai conferir o dígito e não vai
+     achar nada — a ação aqui é outra, abrir espaço na lista. #}
+  <div class="destaque" style="border-left-color:var(--espera);background:var(--espera-soft)">
+    <b>{{ sem_espaco|length }} linha(s) não entraram: a lista está cheia</b>
+    ({{ itens|length }} de {{ teto }}) — pare de acompanhar algum processo para abrir espaço.
+    {% for t in sem_espaco %}<code>{{ t }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="cartao" style="margin-bottom:18px">
+    <form method="post" action="/acompanhamento/adicionar">
+      <input type="hidden" name="csrf" class="csrf">
+      <label for="numeros">Colar um número, ou vários (um por linha)</label>
+      <textarea name="numeros" id="numeros" rows="3" style="width:100%;font-family:var(--mono);
+        font-size:12px;padding:9px;border:1px solid var(--rule);border-radius:var(--r);
+        background:var(--card);color:var(--ink)"
+        placeholder="019.5120.2026.0161681-50"></textarea>
+      <label for="nota" style="margin-top:8px">Por que você está seguindo (opcional)</label>
+      <input name="nota" id="nota" placeholder="Repactuação HECC" style="width:100%">
+      {# O DESTINO FICA DITO, em vez de aplicado em silêncio — a regra de
+         `ingestao.py` e de `coleta.py`, e o motivo de `acompanhado.instancia`
+         ter nascido sem DEFAULT. Quem mexeu na FESF por último cola aqui um
+         número que entra como da FESF, e antes a tela não dizia nada. #}
+      <div style="color:var(--ink-3);font-size:12px;margin-top:9px">
+        vai entrar em <b>{{ instancia_rotulo }}</b> ({{ instancia_ativa }}), a instalação
+        da sua configuração ativa — <a href="/configuracao">trocar</a>
+      </div>
+      <div style="margin-top:10px"><button class="bt forte" type="submit">Acompanhar</button>
+        <span style="color:var(--ink-3);font-size:12px;margin-left:8px">{{ itens|length }} de {{ teto }}</span></div>
+    </form>
+  </div>
+
+  {# UMA CÉLULA DA FICHA. Macro, e não vinte blocos copiados: com a marcação
+     repetida, o dia em que alguém acrescenta um campo é o dia em que um deles
+     nasce sem a classe `nulo` — e aí "—" fica com a cor do dado real, dizendo
+     "vazio" com a mesma tinta com que os outros dizem "é isto".
+
+     `vazio` é `None` ou `''`, NUNCA `0`: `documentos = 0` é contagem coletada, e
+     tratá-la como ausência imprimiria "—" sobre um processo que de fato não tem
+     documento nenhum. É a mesma regra que `_contagem()` aplica do outro lado.
+
+     Nada de `|safe` aqui nem em lugar nenhum deste arquivo: especificação,
+     anotação e interessados são texto que um servidor escreveu, e o escape
+     padrão do Jinja é a única coisa entre ele e o navegador de quem abre a
+     lista. #}
+  {% macro cel(rotulo, valor, mono=False, largo=False) %}
+    {%- set vazio = valor is none or valor == '' -%}
+    <div class="acomp-cel{% if largo %} acomp-largo{% endif %}">
+      <div class="k">{{ rotulo }}</div>
+      <div class="v{% if mono %} mono{% endif %}{% if vazio %} nulo{% endif %}">{{ '—' if vazio else valor }}</div>
+    </div>
+  {% endmacro %}
+
+  {# UMA CÉLULA DE LISTA (assuntos, interessados, anexados). Separada do macro
+     acima de propósito: juntar os itens com `<br>` exigiria devolver marcação
+     pronta, e marcação pronta com texto de gente dentro é o caminho para o
+     `|safe` que este arquivo não tem. Aqui o laço é do Jinja, e cada item passa
+     pelo escape sozinho. #}
+  {# TRÊS ESTADOS, como o `Já visualizado` logo abaixo — não dois. `[]` é "a tela
+     do SEI existia e não trazia nenhum" e None é "não observado" (a tela
+     Consultar/Alterar pode não existir para aquele processo, e o coletor já
+     distingue os dois com `alterar_disponivel`). `_lista_texto` se dá o trabalho
+     de preservar a diferença nas duas pontas, e o `{% if not itens_ %}` que
+     estava aqui a apagava na última: os dois saíam como "—", e "processo sem
+     interessado" ficava idêntico a "não deu para olhar". #}
+  {% macro cel_lista(rotulo, itens_) %}
+    <div class="acomp-cel acomp-largo">
+      <div class="k">{{ rotulo }}</div>
+      <div class="v{% if itens_ is none %} nulo{% endif %}">
+        {%- if itens_ %}{% for v in itens_ %}{{ v }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+        {%- elif itens_ is none %}—
+        {%- else %}nenhum — a tela do SEI existia e não trazia nenhum{% endif -%}
+      </div>
+    </div>
+  {% endmacro %}
+
+  {% for x in itens %}
+  <div class="cartao" style="margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline">
+      <span style="display:flex;gap:7px;align-items:baseline;flex-wrap:wrap">
+        <span class="mono" style="font-size:13px">{{ x.protocolo }}</span>
+        {# DE QUAL INSTALAÇÃO É ESTA LINHA, e só quando há mais de uma na lista.
+           Sem isto, o item colado na instalação errada era indistinguível do
+           certo — e é justamente ele que nunca vai casar com a coleta. #}
+        {% if multi_instancia %}<span class="tag"
+          title="instalação do SEI a que este processo pertence">{{ x.instancia_rotulo }}</span>{% endif %}
+      </span>
+      {# QUATRO SITUAÇÕES, não duas. `mudou` nulo cobria três coisas — primeira
+         observação, medição que não avançou, e comparação sem mudança — e este
+         lugar afirmava a terceira para todas: dizia "sem mudança" sobre processo
+         que nunca foi comparado com nada. `comparacao` (ver `banco.py`) diz qual
+         foi, e cada uma tem frase própria.
+
+         A ORDEM IMPORTA, e agora é a que este comentário sempre disse ser:
+         estado de recusa ANTES de qualquer conversa sobre comparação — `mudou`
+         inclusive, que é conversa sobre comparação e estava na frente de todas.
+         Com a leitura no SEI (`acompanhamento.receber`) a combinação virou real:
+         o item tem delta da leitura de ontem e HOJE o SEI recusou o processo a
+         este login. O cartão saía com a etiqueta do que mudou ontem em cima e
+         "Nada foi lido" embaixo — duas afirmações contrárias na mesma linha, que
+         é o mesmo defeito que `texto_da_procedencia` cala em estado de recusa. #}
+      {% if x.estado == 'sem_acesso' %}<span class="tag al">sem acesso</span>
+      {% elif x.estado == 'nao_encontrado' %}<span class="tag al">número não encontrado</span>
+      {% elif x.mudou %}<span class="tag al">{{ x.texto_mudou }}</span>
+      {% elif x.estado == 'novo' %}<span class="tag es">aguardando primeira leitura</span>
+      {% elif x.comparacao == 'primeira' %}<span class="tag es"
+        title="é a primeira observação deste processo: o que mudou só aparece a partir da segunda">nada a comparar ainda</span>
+      {% elif x.comparacao == 'sem_avanco' %}<span class="tag es"
+        title="a leitura mais recente não trouxe medição mais nova que a anterior — não houve observação nova para comparar">sem dado novo</span>
+      {% elif not x.fonte %}<span class="tag es"
+        title="a série de leituras guarda 180 dias (ver o expurgo); a última leitura deste processo saiu do histórico, e o item volta para a fila na próxima leitura">leitura fora do histórico — volta para a fila</span>
+      {% elif x.comparacao == 'comparada' %}<span style="color:var(--ink-3);font-size:12px">sem mudança</span>
+      {# NENHUM RAMO MUDO. Item 'lido' cuja última leitura foi expurgada (180
+         dias) não casava com nenhum dos seis acima e o cartão saía SÓ COM O
+         NÚMERO — a única linha da tela que não dizia nada. O ramo de cima é o
+         desse caso, e este é o do que ninguém previu: dizer "não sei" é o
+         mínimo, e é o que separa estado novo de tela quebrada. #}
+      {% else %}<span class="tag es"
+        title="a leitura existe, mas não registrou contra o que foi comparada">leitura sem comparação registrada</span>
+      {% endif %}
+    </div>
+    {# QUAL PROCESSO É ESTE — a pergunta do pedido, respondida na linha FECHADA.
+       O desenho (§11.3) põe a especificação no expandir, e ela continua lá; o
+       que sobe para cá é a linha de identificação, porque sem ela a lista volta
+       a ser o que o pedido reclamou: cem números de 25 dígitos, e para
+       reconhecer um é preciso abrir cem. O painel faz o mesmo na linha dele
+       (`ideia()`, painel_v2.html): especificação na frente, tipo atrás.
+
+       Uma linha só, cortada por CSS (`.acomp-titulo`), com o texto inteiro no
+       `title` — que o Jinja também escapa. #}
+    {% if x.especificacao or x.tipo_processo %}
+    <div class="acomp-titulo" title="{{ x.especificacao or 'sem especificação nesta leitura' }}{% if x.tipo_processo %} — {{ x.tipo_processo }}{% endif %}">
+      {%- if x.especificacao %}{{ x.especificacao }}
+      {%- else %}<span class="sem">sem especificação nesta leitura</span>{% endif %}
+      {%- if x.tipo_processo %} <span class="tp">— {{ x.tipo_processo }}</span>{% endif -%}
+    </div>
+    {% endif %}
+    {% if x.nota %}<div style="color:var(--ink-2);font-size:13px;margin-top:3px">{{ x.nota }}</div>{% endif %}
+
+    {% if x.estado == 'sem_acesso' %}
+      <div style="color:var(--alerta);font-size:13px;margin-top:8px">
+        O SEI não mostra este processo ao seu login. Nada foi lido.</div>
+    {% elif x.estado == 'nao_encontrado' %}
+      <div style="color:var(--alerta);font-size:13px;margin-top:8px">
+        Número não encontrado nesta instalação do SEI — confira o dígito.</div>
+    {% elif x.aberto_em %}
+      <div style="font-size:13px;margin-top:8px">aberto em
+        <b>{% for u in x.aberto_em %}{{ u.split('/')|last }}{% if not loop.last %}, {% endif %}{% endfor %}</b>
+        {% if x.aberto_em_fonte != 'arvore' %}
+        <span class="tag es" title="as unidades foram derivadas do andamento, não da árvore do SEI">não confirmado pela árvore</span>
+        {% endif %}
+      </div>
+      {% if x.ultimo_movimento %}
+      <div style="color:var(--ink-2);font-size:13px">{{ x.ultimo_movimento.dh }} ·
+        {{ x.ultimo_movimento.de }}</div>
+      {% endif %}
+    {% elif x.fonte and x.aberto_em is not none %}
+      {# LIDO, e a leitura não trouxe unidade nenhuma. `[]` e "nunca lido" são
+         coisas diferentes: a lista vazia quer dizer que a coleta daquele dia não
+         disse onde o processo está — árvore que não parseou —, nunca que ele não
+         está aberto em lugar nenhum. Sem esta linha, o item aparecia idêntico ao
+         que ainda não foi lido. #}
+      <div style="color:var(--ink-3);font-size:13px;margin-top:8px">
+        a leitura não trouxe unidade nenhuma</div>
+    {% endif %}
+
+    {# POR QUE ESTE ITEM NÃO VAI SER LIDO — quando não vai. A fila da estação é a
+       da instalação ATIVA (a rota do agente pede `instancia_do_agente`), e a
+       estação faz login numa instalação só: o item da outra nunca é oferecido.
+       Medido em 11/09/2026: três ciclos completos, o item da FESF continuou
+       'novo' e o cartão dizia "aguardando primeira leitura" — a mesma frase de
+       quem vai ser lido hoje à noite. O texto vem pronto de
+       `texto_fora_da_fila`, que cala para o item em dia. #}
+    {% if x.fora_da_fila %}
+    <div style="color:var(--ink-2);font-size:12.5px;margin-top:6px">
+      {{ x.fora_da_fila }} — <a href="/configuracao">trocar a instalação ativa</a>
+    </div>
+    {% endif %}
+
+    {# PROCEDÊNCIA: dado da carteira pode ser de dias atrás, e dizer "lido hoje"
+       sobre ele seria mentir no carimbo. O texto vem pronto de
+       `texto_da_procedencia` — aqui se fatiava `medido_em`, que aceita nulo, e
+       fatiar nulo derrubava a tela INTEIRA em vez da linha. Ele também cala em
+       estado de recusa (o cartão dizia "Nada foi lido" e, embaixo, "pela sua
+       coleta de 11/09") e mostra o ano quando não é o corrente. #}
+    {% if x.procedencia %}
+    <div style="color:var(--ink-3);font-size:11.5px;margin-top:6px">{{ x.procedencia }}</div>
+    {% endif %}
+
+    {# A FICHA COMPLETA, atrás de um expandir NA PRÓPRIA LINHA.
+
+       SÓ QUANDO HOUVE LEITURA (`x.fonte`). Item 'novo' não tem ficha nenhuma, e
+       um expandir que abrisse vinte traços seria pior do que não existir: diria
+       "este processo não tem tipo, não tem autuação, não tem interessado" sobre
+       um processo que ninguém leu ainda.
+
+       O CARIMBO VEM PRIMEIRO, dentro da ficha. A procedência do rodapé do cartão
+       fala das unidades; esta fala de TUDO o que está abaixo dela. Se a linha é
+       da coleta de 27/08, o marcador também é de 27/08 — e o marcador é
+       justamente o campo que alguém lê para decidir o que fazer hoje. #}
+    {% if x.fonte %}
+    <details class="acomp-mais">
+      <summary>ficha completa</summary>
+      <div class="acomp-ficha">
+        <div class="acomp-de">{{ x.ficha_de }}</div>
+
+        <div class="acomp-sub">do processo</div>
+        <div class="acomp-grade">
+          {{ cel('Tipo do processo', x.tipo_processo) }}
+          {{ cel('Especificação no SEI', x.especificacao) }}
+          {{ cel('Autuação', x.autuacao, mono=True) }}
+          {{ cel('Unidade geradora', x.gerador_unidade, mono=True) }}
+          {{ cel('Usuário gerador', x.gerador_usuario) }}
+          {{ cel('Nível de acesso', x.nivel_acesso) }}
+          {{ cel('Hipótese legal', x.hipotese_legal) }}
+          {{ cel('Documentos', x.documentos, mono=True) }}
+          {{ cel('Movimentos', x.movimentos, mono=True) }}
+          {{ cel('E-mails enviados', x.emails_enviados, mono=True) }}
+          {{ cel('Assinaturas externas', x.assinatura_externa, mono=True) }}
+          {{ cel_lista('Assuntos', x.assuntos) }}
+          {{ cel_lista('Interessados', x.interessados) }}
+          {{ cel_lista('Processos anexados', x.anexados) }}
+        </div>
+
+        <div class="acomp-sub">da sua mesa</div>
+        {% if x.sem_mesa %}
+        {# AUSÊNCIA COM MOTIVO, e não vinte traços. Ver `texto_sem_mesa`. #}
+        <div class="acomp-semmesa">{{ x.sem_mesa }}</div>
+        {% else %}
+          {% if x.mesa_indeterminada %}
+          {# O MESMO CUIDADO QUE A CARTEIRA JÁ TEM. `mesa_indeterminada` vem da
+             linha da coleta e quer dizer que a unidade dela não apareceu na
+             custódia: os cinco campos são "não sei", nunca "não houve". #}
+          <div class="acomp-semmesa" style="margin-bottom:11px">a unidade desta linha não
+            apareceu na custódia da coleta: entrada, recebimento e envio abaixo são
+            <b>não sei</b>, não “sem movimentação”</div>
+          {% endif %}
+        <div class="acomp-grade">
+          <div class="acomp-cel">
+            <div class="k">Marcador</div>
+            <div class="v{% if not x.marcador %} nulo{% endif %}">
+              {%- if x.marcador %}{{ x.marcador }}
+                {%- if x.marcador_cor %} <span class="pq">({{ x.marcador_cor }})</span>{% endif %}
+              {%- else %}—{% endif -%}
+            </div>
+          </div>
+          {{ cel('Responsável', x.atribuido_nome or x.atribuido_login) }}
+          <div class="acomp-cel">
+            <div class="k">Já visualizado</div>
+            {# TRÊS ESTADOS, não dois: nulo é "a coleta não disse", e é diferente
+               de "ninguém abriu". O painel marca o não-visualizado como "novo"
+               justamente porque é dele que sai providência. #}
+            <div class="v{% if x.visualizado is none %} nulo{% endif %}">
+              {%- if x.visualizado is none %}—
+              {%- elif x.visualizado %}sim
+              {%- else %}não — ninguém abriu ainda{% endif -%}
+            </div>
+          </div>
+          {{ cel('Entrada nesta unidade', x.marco_unidade, mono=True) }}
+          {{ cel('Recebido em', x.recebimento, mono=True) }}
+          {{ cel('Recebido por', x.recebimento_por) }}
+          {{ cel('Enviado em', x.envio, mono=True) }}
+          {{ cel('Enviado para', x.unidade_envio, mono=True) }}
+          <div class="acomp-cel acomp-largo">
+            <div class="k">Anotação</div>
+            <div class="v{% if not x.anotacao %} nulo{% endif %}">
+              {%- if x.anotacao %}{{ x.anotacao }}
+                <span class="pq">— {{ x.anotacao_autor or 'autor não registrado' }}
+                {%- if x.anotacao_data %} · {{ x.anotacao_data }}{% endif %}</span>
+              {%- else %}—{% endif -%}
+            </div>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </details>
+    {% endif %}
+
+    <form method="post" action="/acompanhamento/remover" style="margin-top:8px">
+      <input type="hidden" name="csrf" class="csrf">
+      <input type="hidden" name="protocolo" value="{{ x.protocolo }}">
+      <input type="hidden" name="instancia" value="{{ x.instancia }}">
+      {# A ÚNICA PERDA IRREVERSÍVEL DESTA TELA, e até aqui ela era silenciosa. O
+         histórico de leituras sai junto por FK em cascata (foi decisão do
+         desenho: leitura sem item na lista é dado pessoal sem uso), e recolar o
+         número devolve o item — nunca a série. Quem clica precisa saber disso
+         ANTES, não depois. #}
+      <button class="bt" type="submit"
+              title="Tira o processo da sua lista e apaga o histórico de leituras dele; recolar o número traz o item de volta, mas não o histórico.">Parar de acompanhar</button>
+    </form>
+  </div>
+  {% else %}
+  <div class="vazio-msg">Nenhum processo acompanhado ainda. Cole um número acima.</div>
+  {% endfor %}
+</div>
+
+<script>
+const c=(document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'';
+document.querySelectorAll('.csrf').forEach(i=>i.value=c);
+</script>
+</body></html>

@@ -1833,7 +1833,292 @@ function limparCache() {
   log('cache de coleta limpo (credencial preservada)');
 }
 
+// ------------------------------------------------------------ acompanhamento
+/* A REGUA DE IDENTIDADE DO PROCESSO: so os digitos; a pontuacao e apresentacao.
+
+   E o espelho de `digitos()`, em `acompanhamento.py`, e tem de continuar sendo:
+   as duas pontas comparam o MESMO numero, e regua diferente de cada lado e como
+   a lista deixa de casar com a carteira.
+
+   `[^0-9]` E ASCII de proposito, como o `'0' <= c <= '9'` de la, e nao `\D` — que
+   em JavaScript tambem e ASCII, mas nao diz que e. Numero que a regua nao
+   representa vira string vazia, e string vazia nao casa com protocolo nenhum:
+   duas linhas exoticas nunca passam a ser "o mesmo processo". */
+const soDigitos = s => String(s == null ? '' : s).replace(/[^0-9]/g, '');
+
+/* ACOMPANHAMENTO — ler UM processo por numero, fora de qualquer mesa.
+
+   E COMPOSICAO, nao leitura nova: a pesquisa por numero (`SEIBusca.pesquisar`)
+   devolve o link, `urlHistorico` traz a arvore e a URL do andamento, `pegar`
+   traz o andamento e `derivar` produz o registro inteiro.
+
+   SEIS REQUISICOES POR PROCESSO, medido em 11/09/2026 e nao estimado:
+   GET da tela de Pesquisa, POST da pesquisa, GET do processo, GET da arvore,
+   GET do andamento, GET da tela Consultar/Alterar. A conta original dizia tres e
+   esquecia o par da pesquisa — a tela e reaberta a cada protocolo, e
+   CORRETAMENTE: `abrirPesquisa` sai do MENU vivo a cada vez, e reusar o
+   formulario da vez anterior e exatamente o risco de `infra_hash` morto, que nao
+   devolve erro — derruba a sessao de quem esta trabalhando. A sexta e a da ficha,
+   e cai para cinco quando o processo nao tem a acao Consultar/Alterar. E pouco
+   acima do que `custo()` publica para a coleta (5 por processo), e o teste conta
+   as requisicoes da fixture para este numero nao envelhecer sozinho.
+
+   O RESULTADO E FILTRADO, E A LISTA DE CAMPOS E EXPLICITA. `derivar` tambem
+   calcula os cinco campos de custodia (`marco_unidade`, `recebimento`,
+   `recebimento_por`, `envio`, `unidade_envio`) por `camposDaMesa(mov, UNIDADE)`
+   — derivados para a mesa em que a estacao esta parada, que NAO e a mesa deste
+   processo. Manda-los ao servidor seria mandar o dado de outra mesa com o nome
+   deste processo. Junto com eles viria `mov_custodia`, que carrega nome e login
+   de quem movimentou. Por isso a lista aqui e escrita a mao, e nunca um
+   espalhamento do objeto: campo novo em `derivar` nao vaza por acidente.
+
+   A FICHA DO PROCESSO SOBE; A DA MESA, NAO — e a segunda metade e o ponto.
+   Valem dentro e fora da mesa: tipo, especificacao, autuacao, quem gerou, nivel
+   de acesso, hipotese legal, assuntos, interessados, anexados, contagens. NAO
+   valem fora dela: marcador, anotacao, responsavel atribuido, "ja visualizado" e
+   os cinco de custodia — todos saem da LINHA da tabela de Controle de Processos
+   daquela mesa (`linha5` por `aria-label`, `linha4` por tooltip), e para processo
+   que nao esta em mesa nenhuma da conta essa linha NAO EXISTE. Nao e decisao de
+   desenho: e o que o SEI expoe. A tela do servidor diz "nao existe fora da mesa"
+   em vez de imprimir campo em branco, e para isso ela precisa que eles cheguem
+   NULOS — o que so acontece se esta funcao nao os mandar.
+
+   DE ONDE VEM CADA UM:
+     * `derivar(doc, arvore)` — autuacao, gerador_unidade, gerador_usuario,
+       nivel_acesso, hipotese_legal, anexados, emails_enviados e
+       assinatura_externa, alem das contagens e do ultimo movimento;
+     * a LINHA DO RESULTADO da busca — tipo_processo e especificacao, os dois do
+       MESMO `aria-label`, sem requisicao nova;
+     * `dadosCadastro(acoes.procedimento_alterar)` — assuntos e interessados. E a
+       SEXTA requisicao, e a unica que a ficha acrescentou a leitura.
+
+   TEXTO LIVRE: `especificacao` e `interessados` podem citar paciente, e sobem por
+   decisao explicita do usuario em 11/09/2026, registrada na secao 11.2 do plano e
+   em SPECS 5-quindecies, com data e autor. O alcance e so deste modulo.
+
+   OS ESTADOS, E NENHUM SILENCIOSO
+     'lido'           — leu, e a ficha do processo vai junto;
+     'nao_encontrado' — a pesquisa por numero, COM o filtro do numero aplicado,
+                        nao devolveu linha nenhuma;
+     'sem_acesso'     — o SEI devolveu a pagina SEM o conteudo que so aparece
+                        para quem pode ver o processo. E o que os `throw` de
+                        `urlHistorico` significam aqui.
+   Ficha vazia com cara de "processo sem novidade" seria pior que os tres.
+
+   FALHA TECNICA NAO E ESTADO. Rede que caiu, sessao que morreu, pagina que nao
+   parseou: nenhuma delas vira 'sem_acesso'. O item volta com `falha` e SEM
+   estado, e quem monta o envelope o deixa de fora — o servidor grava zero para
+   ele e ele continua pendente. Carimbar 'sem_acesso' numa falha de rede mentiria
+   na tela ("o SEI recusou") E queimaria a chance do dia, porque o servidor
+   atualiza `lido_em` em toda recusa.
+
+   E A BUSCA TEM DE TER PERGUNTADO O QUE SE QUER SABER. Duas conferencias antes
+   de olhar o resultado, as duas de defeito MEDIDO em 11/09/2026:
+
+     1. O FILTRO DO NUMERO FOI APLICADO? `montar()` (em `pesquisa_sei.js`) recusa
+        em silencio o campo `numero_sei` quando o mapa de ids nao casa, e o
+        coletor entrega `PERFIL_SEI.get("campos_busca") or {}` — vazio quando o
+        perfil nao traz o mapa. O POST entao sai com `txtProtocoloPesquisa=`
+        VAZIO (medido, literal), o SEI devolve a mesa inteira, e a primeira linha
+        e um processo qualquer. Sem esta conferencia, a ficha DE OUTRO PROCESSO
+        entrava com o numero pedido, marcada 'lido': id 777, "apuracao sobre
+        servidor", interessado com nome de paciente — texto livre de processo de
+        unidade nenhuma da pessoa, na tela dela, com `lido_em` queimado.
+     2. A LINHA E A PEDIDA? Comparada por DIGITOS, nunca por texto: o 4.0 da FESF
+        e o 5.0.4 da SESAB imprimem o mesmo numero com pontuacao diferente, e
+        quem cola cola o que viu. E a mesma regua de `digitos()`, em
+        `acompanhamento.py`, dos dois lados do fio. O campo de numero do SEI nao
+        promete linha unica, entao a escolha e por casamento, e nao `itens[0]` —
+        que era o que estava escrito, e que a mutacao `[0]` -> `[length-1]`
+        atravessava sem matar teste nenhum.
+
+     3. A LINHA TROUXE O LINK? Ele so sai de `linhas()` com `com_reservados`, e a
+        estacao pode estar com um `pesquisa_sei.js` anterior a esse parametro.
+        Medido com o arquivo de 20/08, que e o implantado: TODO processo seguido
+        voltava 'nao_encontrado'.
+
+   NENHUMA DAS TRES E 'nao_encontrado'. Sao falha NOSSA — perfil defasado,
+   implantacao velha, pergunta mal feita —, e 'nao_encontrado' e afirmacao sobre
+   o SEI: a tela a imprime como "numero nao encontrado neste SEI, confira o
+   digito". Mandar conferir um digito que esta certo, e queimar a chance do dia
+   para dizer isso, e pior que o item ficar pendente. */
+async function acompanhar(protocolo, campos) {
+  if (!window.SEIBusca) return { protocolo, falha: 'pesquisa_sei.js nao carregado' };
+  // `pesquisar` NAO lanca: ele devolve `motivo` preenchido. Tratar excecao aqui e
+  // deixar de tratar o caso que acontece.
+  const env = await SEIBusca.pesquisar({
+    filtros: { numero_sei: protocolo },
+    // SEM `tramitacao_unidade`: o processo acompanhado esta, por definicao, fora
+    // das mesas de quem procura. Com o filtro ligado, a busca voltaria vazia e o
+    // modulo inteiro diria "nao encontrado" para tudo que existe.
+    campos: campos || {}, paginas_teto: 1,
+    // O href e a especificacao, so aqui e so agora — ver o comentario de
+    // `linhas()` em `pesquisa_sei.js`. O href morre no fim desta funcao; a
+    // especificacao sobe porque este modulo tem autorizacao propria para ela.
+    com_reservados: true,
+  });
+  if (env.motivo) return { protocolo, falha: 'busca: ' + env.motivo };
+  /* 1. O FILTRO DO NUMERO FOI APLICADO? `filtros_recusados` e onde `montar()`
+     declara o que nao pegou — ler so o resultado e nao ver a diferenca entre
+     "este processo" e "a mesa inteira". A segunda metade da condicao cobre o
+     campo que sumiu do `aplicados` por outro caminho: ausencia tambem e recusa. */
+  const recusado = (env.filtros_recusados || []).find(f => f && f.campo === 'numero_sei');
+  const pedidoAoSei = (env.filtros_aplicados || {}).numero_sei;
+  // `alvo` vazio e numero sem digito nenhum — nao ha o que casar, e sem esta
+  // guarda ele casaria com QUALQUER linha cujo protocolo tambem nao tenha digito.
+  const alvo = soDigitos(protocolo);
+  if (recusado || !alvo || soDigitos(pedidoAoSei) !== alvo) {
+    return { protocolo, falha: 'a busca saiu SEM o filtro do numero ('
+      + ((recusado && recusado.motivo) || 'o campo nao foi preenchido')
+      + '): o resultado seria de outro processo' };
+  }
+  /* 2. A LINHA E A PEDIDA? Zero linha com o filtro aplicado e resposta do SEI, e
+     ai sim 'nao_encontrado'. Linha que veio e nao casa e OUTRA pergunta
+     respondida: nao da para afirmar nada sobre o numero pedido a partir dela. */
+  const itens = env.itens || [];
+  if (!itens.length) return { protocolo, estado: 'nao_encontrado' };
+  const item = itens.find(x => soDigitos(x.protocolo) === alvo);
+  if (!item) {
+    return { protocolo, falha: `a busca devolveu ${itens.length} linha(s), `
+      + 'nenhuma com este numero' };
+  }
+  /* O LINK E A UNICA COISA QUE NAO DA PARA RECUPERAR AQUI, e a sua falta NAO diz
+     nada sobre o processo. Ele so sai de `linhas()` com `com_reservados`, e a
+     estacao pode estar com um `pesquisa_sei.js` anterior a esse parametro — foi o
+     que se mediu: com o arquivo de 20/08 implantado, TODO processo seguido
+     voltava 'nao_encontrado', que a tela imprime como "numero nao encontrado
+     neste SEI, confira o digito". Falha de implantacao virando afirmacao
+     definitiva sobre o SEI, e mandando a pessoa conferir um digito certo. */
+  if (!item.link) {
+    return { protocolo, falha: 'a linha veio SEM o link (pesquisa_sei.js da '
+      + 'estacao nao conhece com_reservados?)' };
+  }
+  let url, arvore, acoes;
+  try {
+    ({ url, arvore, acoes } = await urlHistorico(item.link));
+  } catch (e) {
+    const m = String(e && e.message ? e.message : e);
+    // SO estas duas mensagens sao recusa do SEI. Qualquer outra e falha nossa ou
+    // da rede, e nao pode virar afirmacao sobre o acesso da pessoa.
+    if (m === 'sem arvore' || m === 'sem historico') {
+      return { protocolo, estado: 'sem_acesso' };
+    }
+    return { protocolo, falha: m.slice(0, 80) };
+  }
+  let d;
+  try {
+    d = derivar(new DOMParser().parseFromString(await pegar(url), 'text/html'), arvore);
+  } catch (e) {
+    return { protocolo, falha: String(e && e.message ? e.message : e).slice(0, 80) };
+  }
+  /* A SEXTA REQUISICAO, e a unica opcional. `null` e `[]` sao coisas diferentes
+     aqui, e a ficha mostra a diferenca: `[]` e "a tela existia e nao havia
+     assunto nenhum", `null` e "nao deu para olhar". Duas razoes para o segundo,
+     e as duas acontecem:
+
+       * a acao `procedimento_alterar` nao esta na arvore deste processo — e o
+         coletor ja trata isso na coleta, com `alterar_disponivel`;
+       * a requisicao caiu.
+
+     NO SEGUNDO CASO A LEITURA NAO SE PERDE. A arvore e o historico ja vieram: o
+     processo FOI lido, e descartar tudo jogaria fora cinco requisicoes de
+     trabalho para, no ciclo seguinte, provavelmente falhar no mesmo lugar. Nao e
+     em paralelo com nada, como a coleta faz: aqui o laco inteiro e serial de
+     proposito, e uma rajada de duas contra processo de outra unidade e
+     exatamente o que derruba a sessao de trabalho de quem esta usando o SEI. */
+  let cadastro = null;
+  if (acoes && acoes.procedimento_alterar) {
+    try {
+      cadastro = await dadosCadastro(acoes.procedimento_alterar);
+    } catch (e) {
+      cadastro = null;
+    }
+  }
+  return {
+    // O PROTOCOLO QUE ENTROU, nunca o que o SEI imprime. O servidor casa a
+    // resposta por TEXTO (`receber`, em `acompanhamento.py`), porque foi ele quem
+    // mandou este numero; devolver a forma pontuada da tela faria a leitura
+    // inteira ser ignorada em silencio quando a pessoa tivesse colado sem ponto.
+    protocolo, estado: 'lido', id_sei: item.id_sei || null,
+    aberto_em: (d.mesas || []).map(x => x.unidade),
+    aberto_em_fonte: d.mesas_fonte || 'andamento',
+    ultimo_movimento: d.ultimo_movimento || null,
+    documentos: d.documentos, movimentos: d.movimentos,
+    // --- a ficha DO PROCESSO. Cada campo com a fonte dita acima; nenhum da mesa.
+    tipo_processo: item.tipo_processo || null,
+    // `|| null` e nao `|| ''`: ausente e vazio sao coisas diferentes, e no 4.0
+    // este campo e ausente de verdade — nao ha `aria-label` de onde tira-lo.
+    especificacao: item.especificacao || null,
+    autuacao: d.autuacao || null,
+    gerador_unidade: d.gerador_unidade || null,
+    gerador_usuario: d.gerador_usuario || null,
+    nivel_acesso: d.nivel_acesso || null,
+    hipotese_legal: d.hipotese_legal || null,
+    anexados: d.anexados || null,
+    emails_enviados: d.emails_enviados,
+    assinatura_externa: d.assinatura_externa,
+    assuntos: cadastro ? cadastro.assuntos : null,
+    interessados: cadastro ? cadastro.interessados : null,
+  };
+}
+
+/* A lista inteira, UM DE CADA VEZ. Devolve o envelope que o servidor espera.
+
+   EM SERIE, NUNCA EM PARALELO. A coleta usa `CONC = 4` porque la o que se lê e a
+   carteira da propria pessoa e o custo de uma queda e um checkpoint; aqui a
+   rajada seria contra processos de outras unidades, e o SEI derruba sessao sob
+   rajada — a sessao de TRABALHO da pessoa, que e a mesma. A pausa e a mesma
+   `dorme(240)` da paginacao da busca.
+
+   TETO DE RELOGIO PROPRIO, e nao o do agente. O agente mata o coletor por relogio
+   de parede e nao fica com nada; aqui, parar sozinho devolve o que JA foi lido, e
+   o resto continua pendente para a proxima volta. Cem processos a seis
+   requisicoes cada (ver o cabecalho de `acompanhar`) nao cabem num numero que
+   alguem adivinhe: o teto existe para o
+   envelope chegar, nao para a lista acabar. */
+async function acompanharLista(pedido) {
+  const protocolos = (pedido && pedido.protocolos) || [];
+  const campos = (pedido && pedido.campos) || {};
+  // 9 min, debaixo do teto de 10 do agente: o objetivo e RESPONDER antes de ser
+  // morto, porque morto nao devolve envelope nenhum.
+  const teto = (pedido && pedido.teto_ms) || 9 * 60 * 1000;
+  const saida = { instancia: (pedido && pedido.instancia) || null,
+                  leituras: [], falhas: [], motivo: null, pedidos: protocolos.length };
+  /* O MOTIVO DA FALHA ATRAVESSA A REDE, e por isso passa por aqui antes.
+     Ele e mensagem de excecao truncada, e excecao de `fetch` pode carregar a URL
+     que falhou — que leva `infra_hash` de sessao. O servidor nao persiste este
+     campo hoje, mas "hoje nao persiste" nao e lugar para guardar segredo de
+     sessao: o que nao precisa sair, nao sai. */
+  const semHash = m => String(m || '').replace(/infra_hash=[^&\s'"]*/gi, 'infra_hash=…');
+  const t0 = Date.now();
+  for (let i = 0; i < protocolos.length; i++) {
+    if (i) await dorme(240);
+    const r = await acompanhar(protocolos[i], campos);
+    if (r.falha) {
+      saida.falhas.push({ protocolo: r.protocolo, motivo: semHash(r.falha) });
+      // SESSAO CAIDA PARA TUDO. Insistir so multiplica requisicao invalida contra
+      // o SEI, e — pior — todo processo seguinte falharia do mesmo jeito, o que
+      // encheria `falhas` de ruido escondendo qual foi a causa.
+      if (/SESSAO/i.test(r.falha)) {
+        saida.motivo = `sessao caiu apos ${saida.leituras.length} de ${protocolos.length}`;
+        break;
+      }
+    } else {
+      saida.leituras.push(r);
+    }
+    if (Date.now() - t0 > teto) {
+      saida.motivo = `teto de tempo da estacao (${Math.round(teto / 60000)} min): `
+                   + `${i + 1} de ${protocolos.length}`;
+      break;
+    }
+  }
+  log(`acompanhamento: ${saida.leituras.length} lido(s), ${saida.falhas.length} falha(s)`
+      + (saida.motivo ? ` — ${saida.motivo}` : ''));
+  return saida;
+}
+
 window.SEIAuto = { rodar, rodarTodasAsMesas, listarTodasAsMesas, detalharTodasAsMesas,
+                   acompanhar, acompanharLista,
                    descobrirMesas, trocarMesa, listar, coletarDatas,
                    consertarTruncados, exportar, credencial, esquecer, limparCache,
                    mesasPorArvore, mesasPorAndamento, camposDaMesa,  // expostos para conferencia

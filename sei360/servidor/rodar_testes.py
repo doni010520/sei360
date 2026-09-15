@@ -26,6 +26,11 @@ SUITES = [
     ("teste_deploy_novo.py", "primeiro deploy, do volume vazio"),
     ("teste_poco.py", "poço: reaproveitar sem vazar a visão de ninguém"),
     ("teste_busca.py", "busca avançada, instância e cofre por instalação"),
+    ("teste_acompanhamento.py", "acompanhamento: lista por pessoa, fora da mesa"),
+    ("teste_recebimento_coleta.py", "o que a coleta FAZ ao SEI, nao so o que le"),
+    ("teste_coleta_servidor.py", "o motor do VPS: coleta e acompanhamento"),
+    ("teste_busca_servidor.py", "busca no VPS: causa, nova tentativa, conta"),
+    ("../agente/_teste_agente.py", "o laco do agente na estacao"),
     ("teste_acesso.py", "recuperação de senha e segundo fator por e-mail"),
 ]
 CONTAINER = ("teste_container.py", "imagem Docker (exige Docker instalado)")
@@ -77,6 +82,14 @@ def ler_saida(saida, returncode):
         # Não rodou: outra execução da mesma suíte segurava a trava de
         # `ambiente_teste.isolar`. Não é falha do sistema, e não é sucesso.
         return "BLOQUEADA", 0, 0
+    if "sem banco de trabalho para copiar" in saida:
+        # Também não rodou, e por outro motivo: a suíte mede contra os dados de
+        # uma coleta REAL (`isolar(copiar=True)`) e esta máquina não tem o banco
+        # de trabalho. Quatro das doze suítes caem aqui numa máquina de
+        # desenvolvimento — contá-las como falha punha quatro linhas vermelhas
+        # que não são defeito ao lado das que são, que é como se ensina alguém a
+        # ignorar o verificador.
+        return "SEM DADOS", 0, 0
     m = re.search(r"(\d+) verificações OK, (\d+) falha", saida)
     if not m:
         return "FALHOU", 0, 1          # morreu antes do resumo — conta como falha
@@ -103,6 +116,9 @@ def conferir_contagem(silencioso=False):
          ("FALHOU", 5, 1)),
         ("bloqueada por outra execução",
          "outra execução de teste_x está em curso (pid 42).", 1, ("BLOQUEADA", 0, 0)),
+        ("sem o banco de trabalho para copiar",
+         "teste_x: sem banco de trabalho para copiar (C:\\...\\sei360.db) — esta "
+         "suíte mede contra os dados de uma coleta real.", 3, ("SEM DADOS", 0, 0)),
     ]
     mau = 0
     for nome, saida, rc, esperado in casos:
@@ -151,6 +167,12 @@ for arquivo, sobre in alvos:
     total_ok += n_ok
     if estado == "BLOQUEADA":
         nao_rodaram.append((arquivo, "outra execução desta suíte está em curso"))
+    elif estado == "SEM DADOS":
+        # AÇÃO DIFERENTE DA DO BLOQUEIO, e por isso o motivo vem escrito: bloqueio
+        # manda esperar a outra execução; este manda rodar onde o banco de
+        # trabalho existe (o servidor, ou uma cópia dele aqui).
+        nao_rodaram.append((arquivo, "precisa do banco de trabalho, que não existe "
+                                     "nesta máquina — rode onde ele está"))
     else:
         total_falhas += n_falha
     print(f"{estado:9} {arquivo:26} {n_ok:>4} verificações  {dt:>5.0f}s   {sobre}")

@@ -539,6 +539,10 @@ CREATE TABLE IF NOT EXISTS poco_conferencia(
 -- CESS ha grupos com nome de pessoa alimentados so por ela. Fica por dono ate o
 -- teste de duas contas na mesma mesa dizer o contrario. Custa ~19 s por pessoa
 -- por dia — a apolice mais barata do desenho.
+--
+-- Nao confundir com a tabela `acompanhado` (mais abaixo, fora do poco): aquela
+-- e a lista PESSOAL da pessoa, atravessando mesas; esta e cache da tela do SEI,
+-- por mesa e por dono.
 CREATE TABLE IF NOT EXISTS poco_acompanhamento(
   id_sei TEXT NOT NULL, instancia TEXT NOT NULL DEFAULT 'SEI-SESAB',
   mesa TEXT NOT NULL,
@@ -586,7 +590,17 @@ CREATE TABLE IF NOT EXISTS busca(
   total_declarado INTEGER, colhidos INTEGER,
   paginas_lidas INTEGER, paginas_teto INTEGER,
   execucao_id INTEGER REFERENCES execucao(id) ON DELETE SET NULL,
-  pedida_em TEXT NOT NULL, entregue_em TEXT, terminada_em TEXT, duracao_s INTEGER);
+  pedida_em TEXT NOT NULL, entregue_em TEXT, terminada_em TEXT, duracao_s INTEGER,
+  -- NOVA TENTATIVA (15/09/2026). `tentativas` conta as execuções que já falharam
+  -- por causa PASSAGEIRA (rede, navegador morto, sessão caída); `tentar_apos` é
+  -- quando a próxima pode começar. Falha permanente (login recusado, mesa que a
+  -- conta não tem) não passa por aqui: repeti-la só repete a recusa.
+  tentativas INTEGER DEFAULT 0, tentar_apos TEXT,
+  -- A unidade em que a conta estava ANTES de a primeira execução trocar de mesa.
+  -- Guardada na busca, e não lida de novo a cada tentativa: se a execução morre
+  -- depois de trocar, a seguinte leria a mesa pedida como origem e nunca
+  -- devolveria a conta para onde a pessoa a deixou.
+  mesa_origem TEXT);
 CREATE INDEX IF NOT EXISTS ix_busca_dono ON busca(usuario_id, pedida_em);
 
 -- As linhas do resultado. SÓ o que a tela de resultado do SEI mostra, e nada de
@@ -615,6 +629,10 @@ CREATE TABLE IF NOT EXISTS busca_trava(
   instancia TEXT NOT NULL, conta TEXT NOT NULL,
   busca_id INTEGER REFERENCES busca(id) ON DELETE CASCADE,
   ate TEXT NOT NULL,
+  -- QUEM segura, quando não é uma busca: 'motor:<token do processo>:coleta' ou
+  -- ':acompanhamento'. Sem dono, uma trava de coleta morta com o worker era
+  -- indistinguível de uma coleta viva, e a conta recusava busca por 35 min.
+  dono TEXT,
   PRIMARY KEY(instancia, conta));
 
 CREATE TABLE IF NOT EXISTS alerta(
@@ -622,6 +640,160 @@ CREATE TABLE IF NOT EXISTS alerta(
   execucao_id INTEGER, unidade TEXT, texto TEXT,
   reconhecido_por INTEGER, reconhecido_em TEXT);
 CREATE INDEX IF NOT EXISTS ix_alerta_ts ON alerta(ts);
+
+-- ============================================================ ACOMPANHAMENTO
+-- A lista de processos que a pessoa segue mesmo FORA das mesas dela. Tabela
+-- separada de `processo` de propósito: processo acompanhado não é carteira,
+-- não vira snapshot e não entra em relatório nenhum. Se entrasse, todo número
+-- do produto passaria a misturar "o que é meu" com "o que eu observo".
+--
+-- A chave é o PROTOCOLO, não o `id_sei`: o número é o que a pessoa tem na mão,
+-- e o id interno do SEI só se conhece depois da primeira leitura.
+--
+-- Não confundir com `poco_acompanhamento` (linha ~542): aquele é cache da tela
+-- "Acompanhamento Especial" do SEI, por mesa e por dono; esta é a lista
+-- pessoal da pessoa, atravessando mesas — nome parecido, coisas diferentes.
+CREATE TABLE IF NOT EXISTS acompanhado(
+  usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  -- SEM default, ao contrário das tabelas antigas deste arquivo. `coleta.py`,
+  -- `configuracao.py` e `ingestao.py` cada um documenta um defeito medido em que
+  -- cair calado em 'SEI-SESAB' carimbou dado da FESF como SESAB. As tabelas que
+  -- ainda têm o default o carregam como bagagem de linhas anteriores à FESF
+  -- existir; esta nasce hoje, e quem grava resolve a instância explicitamente.
+  instancia TEXT NOT NULL,
+  protocolo TEXT NOT NULL,
+  id_sei TEXT,
+  origem TEXT NOT NULL,                   -- 'manual'|'painel'|'sei_acompanhamento'
+  nota TEXT,
+  adicionado_em TEXT NOT NULL,
+  estado TEXT NOT NULL DEFAULT 'novo'
+    CHECK(estado IN ('novo','lido','sem_acesso','nao_encontrado')),
+  -- É a ÚLTIMA leitura, valor que se atualiza a cada leitura — como
+  -- `ultimo_contato_em` — e não um carimbo de transição de estado.
+  lido_em TEXT,
+  -- QUANTAS VEZES ESTE ITEM FOI ENTREGUE À ESTAÇÃO HOJE SEM VOLTAR LEITURA.
+  -- Zerado assim que uma leitura chega, de qualquer fonte.
+  --
+  -- Sem isto, falha TÉCNICA — que de propósito não carimba `lido_em`, para o
+  -- item continuar pendente — reoferecia o mesmo processo a cada batida do
+  -- agendador: 34 ciclos por dia x 100 itens x 5 requisições ≈ 17 mil
+  -- requisições diárias contra o SEI do órgão, três vezes a coleta inteira, cada
+  -- ciclo abrindo um Chromium, e nada no sistema percebendo. Queda de sessão já
+  -- era barata (a estação para no primeiro `SESSAO`); o caro era a falha
+  -- sistemática que NÃO é sessão — parse, DOMException, rede intermitente.
+  --
+  -- CONTA ENTREGA, NÃO FALHA RELATADA, e isso é deliberado: a estação que morre
+  -- com o Chromium aberto depois de ler 100 processos não relata nada, e é
+  -- justamente esse o caso que custa as 500 requisições. Contar o que o servidor
+  -- ENTREGOU cobre os dois, e não depende de campo novo vindo de fora.
+  tentativas INTEGER NOT NULL DEFAULT 0,
+  -- QUANDO foi a última entrega. É o que faz `tentativas` significar "hoje": sem
+  -- data, um item que falhou três vezes numa terça ficaria parado para sempre, e
+  -- o recuo viraria desistência silenciosa.
+  tentativa_em TEXT,
+  PRIMARY KEY(usuario_id, instancia, protocolo));
+
+-- O HISTÓRICO: uma linha por leitura. Existe para "o que mudou" ser DIFERENÇA
+-- MEDIDA, e não texto escrito à mão em algum lugar. É também a primeira série
+-- temporal do produto — todos os relatórios são retrato de um instante, e o
+-- snapshot velho é expurgado em 30 dias.
+--
+-- `fonte` e `medido_em` não são enfeite: a leitura pode vir da carteira, que
+-- pode ser de dias atrás (medido: nove dias úteis, em 10/09/2026). Carimbar isso
+-- como "lido hoje" seria mentir.
+CREATE TABLE IF NOT EXISTS acompanhado_leitura(
+  id INTEGER PRIMARY KEY,
+  usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  instancia TEXT NOT NULL,
+  protocolo TEXT NOT NULL,
+  lido_em TEXT NOT NULL,
+  fonte TEXT NOT NULL,                    -- 'carteira' | 'sei'
+  medido_em TEXT,
+  aberto_em TEXT,                         -- JSON: lista de unidades
+  -- 'arvore' aqui é a linha "Processo aberto nas unidades: ..." que o próprio SEI
+  -- publica no topo da árvore (`Nos[0].html`), e NÃO a lista histórica de
+  -- unidades dos metadados — que é a que o projeto irmão `sei_sistema` corrige
+  -- computando do andamento. Medido em 10/09/2026 sobre 15 coletas do SEI360,
+  -- com a própria lista da mesa como terceira fonte: em 1.278 discordâncias
+  -- observáveis entre a linha da árvore e a máquina de estados do andamento, a
+  -- árvore bateu com a mesa em 100% dos casos e o andamento em 0%.
+  aberto_em_fonte TEXT,                   -- 'arvore' | 'andamento'
+  ultimo_movimento TEXT,                  -- JSON {dh, un, de}
+  documentos INTEGER,
+  movimentos INTEGER,
+  mudou TEXT,                             -- JSON do delta; NULL na 1a leitura
+  -- POR QUE `mudou` está nulo — que são TRÊS coisas diferentes: 'primeira' (não
+  -- havia leitura anterior), 'sem_avanco' (havia, mas esta medição não é mais
+  -- nova que a dela, então não há observação nova a comparar) e 'comparada'
+  -- (comparou, e o processo não mudou).
+  --
+  -- Sem esta coluna a tela afirmava a TERCEIRA para as três: imprimia "sem
+  -- mudança" sobre item que nunca foi comparado. É o espelho exato da falsidade
+  -- que `delta()` se recusa a cometer ao devolver None na primeira leitura — e
+  -- quem lê a tela decide com base nisso.
+  comparacao TEXT CHECK(comparacao IN ('primeira','sem_avanco','comparada')),
+  -- ======================================================= A FICHA COMPLETA
+  -- Acrescentada em 11/09/2026, a pedido do usuário: "deve aparecer as
+  -- informações completas do processo, como aparece no controle de processo,
+  -- para que possa entender qual é cada processo". Lista de números de 25
+  -- dígitos é ilegível — nenhum deles diz qual processo é qual.
+  --
+  -- A FICHA É GUARDADA, não relida: ela pertence À LEITURA, e cada linha desta
+  -- tabela é um retrato de um instante. Guardar só o ponteiro para `processo`
+  -- faria a ficha de 27/08 aparecer com o marcador de hoje — e a série, que é o
+  -- valor deste módulo, deixaria de descrever o que foi observado. É o mesmo
+  -- motivo de `medido_em` e `fonte` existirem, aplicado ao resto dos campos.
+  --
+  -- OS CAMPOS DO PROCESSO — valem DENTRO e FORA da mesa, e é por isso que a
+  -- leitura no SEI (outra tarefa) consegue preenchê-los para processo de fora.
+  tipo_processo TEXT, autuacao TEXT,
+  gerador_unidade TEXT, gerador_usuario TEXT,
+  nivel_acesso TEXT, hipotese_legal TEXT,
+  assuntos TEXT, anexados TEXT,           -- JSON: listas
+  emails_enviados INTEGER, assinatura_externa INTEGER,
+  -- OS CAMPOS DA MESA. Medido no coletor: `linha5`/`linha4` os tiram da LINHA da
+  -- tabela de Controle de Processos daquela mesa (aria-label no 5.x, tooltip no
+  -- 4.0). Para processo que NÃO está em mesa da conta essa linha não existe —
+  -- não é decisão de desenho, é o que o SEI expõe. Nulo aqui, portanto, tem dois
+  -- significados diferentes, e é `fonte` quem os separa: 'carteira' => havia
+  -- linha de mesa, e nulo é "não tem"; 'sei' => não havia, e nulo é "não
+  -- existe". A tela diz qual dos dois (`acompanhamento.texto_sem_mesa`), no
+  -- espírito de `acomp_lido` e `mesa_indeterminada`.
+  marcador TEXT, marcador_cor TEXT,
+  atribuido_nome TEXT, atribuido_login TEXT,
+  visualizado INTEGER,
+  marco_unidade TEXT, recebimento TEXT, recebimento_por TEXT,
+  envio TEXT, unidade_envio TEXT,
+  -- Copiado da linha da carteira, e não recalculado: lá ele já significa "a
+  -- unidade desta linha não aparece na custódia, então os cinco campos acima são
+  -- 'não sei', nunca 'sem movimentação'". Sem trazê-lo junto, os cinco nulos
+  -- perderiam o motivo no caminho.
+  mesa_indeterminada INTEGER,
+  -- O TEXTO LIVRE. Mora em `processo_texto` na carteira — a tabela que o esquema
+  -- separou por ser "onde estão os campos que podem citar paciente" —, e o
+  -- painel só o mostra para processo NAS unidades da pessoa, onde o
+  -- consentimento por unidade vale. Aqui ele aparece para processo FORA delas.
+  --
+  -- DECISÃO DO USUÁRIO, 11/09/2026, perguntado explicitamente: mostrar para
+  -- todos. Registrada em PLANO_ACOMPANHAMENTO_2026-09-11.md §11.2 e em SPECS.md
+  -- §5-quindecies, com data e autor, porque é o tipo de decisão que alguém vai
+  -- querer reconstituir. O ALCANCE É SÓ DESTE MÓDULO: a busca avançada continua
+  -- excluindo `especificacao` com o motivo escrito dela, e ampliar aquilo
+  -- exigiria uma decisão própria.
+  --
+  -- `anotacao` é da MESA tanto quanto `marcador` (o SEI a guarda por unidade);
+  -- ela está neste grupo por morar em `processo_texto`, não por ser de outra
+  -- camada de disponibilidade.
+  especificacao TEXT, interessados TEXT,  -- interessados: JSON
+  anotacao TEXT, anotacao_autor TEXT, anotacao_data TEXT,
+  -- A leitura morre com a lista. `remover()` já apaga as duas, mas a FK é o que
+  -- garante isso quando o DELETE vier de outro lugar — do expurgo, de um
+  -- ON DELETE CASCADE de `usuarios`, ou da mão de alguém no shell. É o mesmo
+  -- par lista/detalhe de `busca`/`busca_item` e `snapshot`/`processo`.
+  FOREIGN KEY(usuario_id, instancia, protocolo)
+    REFERENCES acompanhado(usuario_id, instancia, protocolo) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS ix_acomp_leitura
+  ON acompanhado_leitura(usuario_id, instancia, protocolo, id DESC);
 """
 
 
@@ -633,10 +805,18 @@ def _colunas_do_ddl(ddl):
     e o sintoma seria a migração silenciosamente não migrar.
     """
     import re
+    # COMENTÁRIO SAI ANTES DE ACHAR A TABELA, e não depois de recortá-la. A
+    # expressão abaixo é não-gulosa e para no PRIMEIRO `);` — então um `);`
+    # escrito dentro de um comentário do DDL truncava o corpo da tabela ali, e as
+    # colunas depois dele simplesmente não existiam para a migração. Medido em
+    # 11/09/2026: `acompanhado.tentativas` e `.tentativa_em` não eram criadas em
+    # banco existente, e o sintoma seria "no such column: tentativas" no meio de
+    # uma tela, em produção, meses depois de o DDL estar certo. Recortar primeiro
+    # e limpar depois era o inverso da ordem necessária.
+    ddl = re.sub(r"--[^\n]*", "", ddl)
     tabelas = {}
     for m in re.finditer(r"CREATE TABLE IF NOT EXISTS (\w+)\s*\((.*?)\);", ddl, re.S):
         nome, corpo = m.group(1), m.group(2)
-        corpo = re.sub(r"--[^\n]*", "", corpo)          # tira comentário de linha
         colunas, nivel, atual = {}, 0, ""
         for ch in corpo + ",":
             if ch == "(":

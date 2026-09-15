@@ -81,6 +81,8 @@ import cofre
 import ingestao
 import janelas
 import perfil_sei
+import busca as bmod
+import coleta as coleta_mod
 from coleta import COLETOR, coletar as _coletar
 
 # Nunca paralelizar coletas neste container na primeira versão: o motivo é
@@ -111,6 +113,33 @@ def capacidade():
 def vivo():
     """A thread deste laço está viva NESTE processo?"""
     return bool(_thread and _thread.is_alive())
+
+
+def ha_executor():
+    """Existe executor de coleta neste CONTAINER? (qualquer worker)
+
+    A DIFERENÇA COM `vivo()` ERA UM DEFEITO COM CONSEQUÊNCIA, achado em
+    12/09/2026: `_motivo_servidor()` (app.py) perguntava `vivo()`, que só sabe
+    deste processo. Com `--workers 3`, dois dos três respondem False — então
+    salvar /configuracao caindo num worker de painel gravava `pausado_motivo` =
+    "o executor deveria estar rodando e não está" e **DESARMAVA o agendamento
+    da conta**, por um fato verdadeiro sobre aquele processo e falso sobre o
+    container. Dois terços das vezes, e com a mensagem culpando o servidor.
+
+    E não voltava sozinho: `_reavaliar_existentes` roda uma vez por processo, na
+    subida. Até o próximo redeploy, aquela conta não coletava — o modo de falha
+    silencioso que este módulo inteiro foi escrito para não ter.
+
+    Este laço só sobe onde `atendente.vivo()` é verdadeiro (ver `iniciar`), e o
+    atendente já sabe responder pelo container inteiro através do arquivo de vez.
+    Logo a pergunta certa é a dele.
+
+    RESSALVA ESCRITA: se `coleta_servidor.iniciar()` tivesse levantado no worker
+    vencedor (app.py o envolve em try/except para a busca não cair junto), um
+    worker de painel responderia "há executor" sem haver. O worker vencedor
+    responderia a verdade, e o log traria a linha da exceção.
+    """
+    return vivo() or atendente.ha_executor()
 
 
 # ------------------------------------------------------------------ a fila
@@ -164,7 +193,25 @@ def _decidir(cx, agente_id, agora_dt=None):
                             LIMIT 1""", (agente_id,)).fetchone()
     if ocupada:
         return None, f"execução {ocupada['id']} ainda em curso", None, None
+    # RETOMA SÓ O QUE ESTE MOTOR ENTREGOU A SI MESMO. `gatilho='servidor'` é o
+    # carimbo que o INSERT abaixo põe; `/api/agente/tarefa` põe outro.
+    #
+    # Sem a condição, uma janela que a ESTAÇÃO levou (`execucao` 'entregue',
+    # dela) seria retomada aqui e coletada em paralelo — duas sessões do SEI na
+    # mesma conta, gravando na mesma `execucao`. Não era alcançável enquanto um
+    # agente era estação OU servidor pelo nome; passou a ser no dia em que
+    # `aplicar_agendamento` começou a CONVERTER o agente de quem escolhe modo
+    # servidor sem desfazer o pareamento (12/09/2026). Esta guarda é o que torna
+    # a conversão segura.
+    #
+    # E A JANELA EXTRA DO ADMIN (`gatilho='manual_admin'`, /admin → "janela extra")
+    # É DESTE MOTOR TAMBÉM, quando o agente é lógico. Sem ela na lista, o único
+    # jeito de FORÇAR a coleta de uma conta em modo servidor gravava uma execução
+    # 'entregue' que ninguém executava: a guarda acima, escrita para não roubar a
+    # janela da estação, pegou junto o botão do admin (achado em 15/09/2026, ao
+    # ir forçar uma coleta). A estação carimba 'janela' — é só essa que não é nossa.
     pendente = cx.execute("""SELECT * FROM execucao WHERE agente_id=? AND estado='entregue'
+                             AND gatilho IN ('servidor','manual_admin')
                              ORDER BY id DESC LIMIT 1""", (agente_id,)).fetchone()
     if pendente:
         return (pendente["id"], pendente["janela"], instancia,
@@ -182,6 +229,18 @@ def _decidir(cx, agente_id, agora_dt=None):
                            (agente_id, devida)).fetchone()[0]
     if entregues >= cfg["max_entregas_janela"]:
         return None, "teto de entregas desta janela atingido", None, None
+    # A ESTAÇÃO LEVOU ESTA JANELA: sai daqui sem entregar. `max_entregas_janela`
+    # é 3 por padrão, e ele existe para RETENTATIVA — não para dois executores
+    # coletando a mesma mesa ao mesmo tempo, na mesma conta, com a mesma
+    # credencial nominal. `IS NOT` e não `<>` porque `gatilho` aceita nulo, e em
+    # SQL `NULL <> 'servidor'` não é verdadeiro: a entrega sem carimbo escaparia.
+    da_estacao = cx.execute(
+        """SELECT id FROM execucao WHERE agente_id=? AND janela=?
+           AND gatilho IS NOT 'servidor' AND gatilho IS NOT 'manual_admin'
+           AND estado IN ('entregue','em_curso') LIMIT 1""",
+        (agente_id, devida)).fetchone()
+    if da_estacao:
+        return None, f"a estação levou esta janela (execução {da_estacao['id']})", None, None
 
     # A ENTREGA É O LOCK, igual à rota HTTP: gravar antes de agir impede que
     # duas passadas do laço (ou uma passada e um pedido manual) peguem a
@@ -322,6 +381,15 @@ def _executar(agente_id, execucao_id, janela, instancia):
             cx.close()
 
 
+def _conta_do_agente(cx, agente_id, instancia):
+    """O login do SEI do dono deste agente nesta instalação."""
+    r = cx.execute("""SELECT c.sei_login FROM agentes a
+                      JOIN config_usuario c ON c.usuario_id = a.dono_usuario_id
+                                           AND c.sistema = ?
+                      WHERE a.id = ?""", (instancia, agente_id)).fetchone()
+    return ((r["sei_login"] if r else "") or "").strip() or None
+
+
 # ------------------------------------------------------------------- o laço
 def _reavaliar_existentes():
     """Roda uma vez, na subida do laço: destrava quem configurou modo servidor
@@ -367,7 +435,11 @@ def rodada(cx=None):
         # usado para "está tudo livre".
         if atendente.vagas_livres() != atendente.LIMITE:
             return feitas
+        # TRABALHO PESADO UM POR VEZ — ver `atendente._pesado`.
+        if not atendente._pesado.acquire(blocking=False):
+            return feitas
         if not atendente._vagas.acquire(blocking=False):
+            atendente._pesado.release()
             return feitas                        # perdeu a corrida por uma vaga
         try:
             agora_dt = datetime.now(janelas.TZ)
@@ -376,11 +448,34 @@ def rodada(cx=None):
                 cx.commit()
                 if instancia is None:
                     continue                     # `janela` aqui é o motivo da recusa
-                _executar(agente_id, ex, janela, instancia)
+                # A CONTA DO SEI OCUPADA POR UMA BUSCA: a coleta espera. A execução
+                # continua 'entregue' e é retomada na próxima passada — e a busca
+                # não vê a mesa trocada debaixo dela, que desde 15/09/2026 é real:
+                # a busca passou a ativar a mesa pedida.
+                conta = _conta_do_agente(cx, agente_id, instancia)
+                dono = f"motor:{atendente.TOKEN}:coleta"
+                if conta:
+                    # Trava de motor de um executor que já morreu não segura nada.
+                    bmod.limpar_travas_de_motor(cx, atendente.TOKEN)
+                    if not bmod._travar(cx, instancia, conta, None,
+                                        minutos=coleta_mod.TIMEOUT_COLETA_S // 60 + 5,
+                                        dono=dono):
+                        cx.commit()
+                        continue                 # conta com outro dono: retomada depois
+                    cx.commit()
+                try:
+                    _executar(agente_id, ex, janela, instancia)
+                finally:
+                    if conta:
+                        # COM INSISTÊNCIA e pelo dono: um "database is locked" aqui
+                        # deixava a conta recusando busca por 35 min depois de a
+                        # coleta já ter terminado.
+                        bmod.soltar_conta(instancia, conta, None, dono)
                 feitas += 1
                 break                            # uma por passada: LIMITE=1
         finally:
             atendente._vagas.release()
+            atendente._pesado.release()
     finally:
         if proprio:
             cx.close()

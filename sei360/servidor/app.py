@@ -1435,12 +1435,19 @@ def _motivo_servidor():
     if not pode:
         return (f"modo servidor: {motivo}. A coleta roda na estação com o agente "
                 f"instalado enquanto isto não for resolvido.")
-    if not coleta_servidor.vivo():
+    if not coleta_servidor.ha_executor():
         # LIGADO, CAPAZ, E MESMO ASSIM NÃO RODANDO é defeito do servidor, não
         # da conta: o executor só sobe no processo que venceu a eleição do
         # atendente de busca (mesmo semáforo de memória — ver o cabeçalho de
         # `coleta_servidor.py`). Dizer isso em vez de "agendamento desarmado"
         # evita que a pessoa procure na própria configuração o que não é dela.
+        #
+        # `ha_executor()` E NÃO `vivo()`: esta função é chamada de dentro de uma
+        # REQUISIÇÃO, que cai em qualquer um dos três workers, e `vivo()` só
+        # sabe do processo dela. Com `vivo()`, dois terços dos salvamentos de
+        # /configuracao pausavam o agente e DESARMAVAM o agendamento da conta
+        # por um fato falso sobre o container — sem voltar até o próximo
+        # redeploy. Ver a docstring de `coleta_servidor.ha_executor`.
         return ("modo servidor: o executor de coleta deveria estar rodando neste "
                 "container e não está — defeito do servidor, não da sua conta. "
                 "Reinicie o serviço e, se persistir, relate.")
@@ -1478,10 +1485,51 @@ def aplicar_agendamento(cx, uid):
         return
     cx.execute("UPDATE agentes SET unidades_esperadas=?, credencial_login_mascarado=? WHERE id=?",
                (json.dumps(unidades, ensure_ascii=False), mascarar(c["sei_login"]), ag["id"]))
+    # O AGENTE SEGUE O MODO, e não a ordem dos cliques.
+    #
+    # O DEFEITO, medido pela leitura do código em 12/09/2026: quem pareou uma
+    # estação e DEPOIS escolheu "a senha fica no servidor" ficava com um agente
+    # de estação e modo `servidor`. `coleta_servidor._candidatos` filtra por
+    # `nome_estacao LIKE 'SERVIDOR/%'`, então o motor do container NÃO via essa
+    # conta; e `/api/agente/tarefa` continuava esperando uma estação que a pessoa
+    # acabou de dizer que não quer mais usar. Resultado: uma janela perdida por
+    # dia, com o texto culpando a estação, e a coleta nunca acontecendo em lugar
+    # nenhum. `agente_do` devolve o agente MAIS NOVO da pessoa, qualquer que seja
+    # o tipo — a criação acima só cobre quem nunca teve agente.
+    #
+    # CONVERTER É HONRAR A ESCOLHA: ir a /configuracao e marcar modo servidor é
+    # dizer "colete daqui". O pareamento NÃO é revogado — modo estação continua
+    # sendo opção documentada (§6.0/§6.3), e os dois podem coexistir porque
+    # passam a compartilhar o MESMO agente e, portanto, a mesma trava de janela
+    # por `execucao`. Ver a guarda de `gatilho` em `coleta_servidor._decidir`,
+    # que é o que impede o container de executar a janela que a estação levou.
+    if (c["modo_coleta"] == "servidor"
+            and not ag["nome_estacao"].startswith("SERVIDOR/")):
+        _login = (cx.execute("SELECT email FROM usuarios WHERE id=?",
+                             (uid,)).fetchone()["email"] or "").split("@")[0]
+        cx.execute("UPDATE agentes SET nome_estacao=? WHERE id=?",
+                   ("SERVIDOR/" + _login, ag["id"]))
+        registrar(cx, uid, "agente_para_servidor",
+                  alvo=f"{ag['nome_estacao']} -> SERVIDOR/{_login}")
+        ag = cfgmod.agente_do(cx, uid)
+    # E O CAMINHO DE VOLTA: escolher modo estação com um agente lógico no lugar
+    # deixaria o motor do container continuando a coletar uma conta que pediu que
+    # a senha não ficasse aqui. Quem renomeia para ESTACAO-* é o pareamento
+    # (`/configuracao/estacao`), que é o passo seguinte do assistente; até ele
+    # acontecer, o agente lógico fica PAUSADO em vez de armado — a pausa é o que
+    # tira a conta de `_candidatos` sem apagar nada.
+    if (c["modo_coleta"] == "estacao"
+            and ag["nome_estacao"].startswith("SERVIDOR/")
+            and not ag["pausado_motivo"]):
+        cx.execute("UPDATE agentes SET pausado_motivo=? WHERE id=?",
+                   ("modo estação escolhido: pareie a máquina que vai coletar",
+                    ag["id"]))
+        ag = cfgmod.agente_do(cx, uid)
+
     # AGENTE LÓGICO JÁ CRIADO É RE-AVALIADO. Sem isto, quem configurou antes de a
     # imagem ganhar navegador ficaria pausado para sempre por um motivo que deixou
     # de ser verdade — e o texto da pausa continuaria afirmando que não há executor.
-    if ag["nome_estacao"].startswith("SERVIDOR/"):
+    if ag["nome_estacao"].startswith("SERVIDOR/") and c["modo_coleta"] == "servidor":
         novo = _motivo_servidor()
         if novo != ag["pausado_motivo"]:
             cx.execute("UPDATE agentes SET pausado_motivo=? WHERE id=?", (novo, ag["id"]))
@@ -3297,6 +3345,309 @@ def agente_busca_resultado(bid):
     return jsonify(estado=estado, motivo=motivo)
 
 
+@app.get("/api/agente/acompanhamento")
+def agente_acompanhamento():
+    """Os processos acompanhados que a carteira não respondeu. Mesmo contrato da
+    busca: a estação PEGA o trabalho, o servidor não empurra.
+
+    O QUE VAI NO ENVELOPE é só o que a estação precisa para procurar no SEI: os
+    números e a instalação (mais o perfil dela, que é como a estação sabe em que
+    endereço entrar). A NOTA da pessoa não vai — é texto de gente, pode citar
+    nome, e a estação não tem o que fazer com ela. Ver `acompanhamento.pendentes`.
+    """
+    import acompanhamento as acmod
+    ag, erro = agente_autenticado()
+    if not ag:
+        return jsonify(erro=erro), 401
+    if not ag["dono_usuario_id"]:
+        return jsonify(ler=False, motivo="agente sem dono não tem credencial do SEI")
+    cx = conectar()
+    # A MESMA DEFINIÇÃO que a tarefa de coleta, o plano do poço e a ingestão usam,
+    # e não uma quarta leitura à mão da mesma coluna: discordar aqui é gravar o
+    # dado de um órgão sob o nome do outro. As duas metades desta conversa — esta
+    # rota e a de baixo — têm de resolver a instalação pela MESMA função, senão a
+    # estação lê numa e o servidor grava noutra.
+    #
+    # E É UMA SÓ, ao contrário da tela (que percorre `acmod.instancias`): a
+    # estação faz login em UMA instalação por ciclo, e mandá-la ler noutra é
+    # pedir credencial que ela não tem. O preço disso é real e foi medido em
+    # 11/09/2026 — três ciclos completos e o item da outra instalação nunca é
+    # oferecido, ficando 'novo' —, e quem o diz é a TELA, em cada cartão
+    # (`acompanhamento.texto_fora_da_fila`). O que não podia continuar era o
+    # silêncio: item parado e item na fila saíam idênticos.
+    inst = instancia_do_agente(cx, ag)
+    # E A INSTALAÇÃO TEM DE SABER BUSCAR. A leitura da estação começa por uma
+    # pesquisa por número (`SEIAuto.acompanhar`, que começa chamando
+    # `SEIBusca.pesquisar`): numa instalação sem busca ela devolveria "não
+    # encontrado" para TODO processo, e a tela afirmaria sobre os
+    # processos uma coisa que é verdade sobre a instalação. É a trava que
+    # `busca.validar` já aplica, e o mesmo cuidado de `/api/agente/tarefa` com
+    # `disponivel_coleta`.
+    if not perfil_sei.perfil(inst)["disponivel_busca"]:
+        cx.close()
+        return jsonify(ler=False, instancia=inst, motivo=(
+            "a busca por número não roda em "
+            f"{perfil_sei.INSTANCIAS[inst]['nome']}, e é por ela que a leitura "
+            "de processo fora da carteira começa"))
+    # `try/finally` COMO O POST IRMÃO ABAIXO: `pendentes` ESCREVE (o
+    # reaproveitamento da carteira e o contador de entregas), e uma exceção aqui
+    # deixava a conexão aberta — três workers x duas threads vazando conexão a
+    # cada 30 min é o vazamento mais discreto que este arquivo poderia ter.
+    try:
+        lista = acmod.pendentes(cx, ag["dono_usuario_id"], inst)
+        # O RECUO FICA VISÍVEL. Item que sai da fila por ter falhado três vezes é
+        # indistinguível, para quem olha, de item que foi lido — e o custo do
+        # engano é alguém achar que o processo está em dia.
+        #
+        # `na_fila=lista` porque `pendentes` já incrementou o contador desta
+        # entrega: sem isso, o item que completa a terceira tentativa AGORA saía
+        # nas duas listas da mesma resposta — "leia este" e "este descansa até
+        # amanhã" sobre o mesmo número.
+        parados = acmod.descansando(cx, ag["dono_usuario_id"], inst, na_fila=lista)
+        # COMMIT ANTES DE DECIDIR: `pendentes` chama `reaproveitar`, que ESCREVE —
+        # o que a carteira respondeu de graça tem de ficar gravado mesmo quando
+        # sobra zero para a estação. É justamente o caso bom.
+        cx.commit()
+    finally:
+        cx.close()
+    if not lista:
+        motivo = "nada acompanhado fora da carteira"
+        if parados:
+            motivo = (f"{len(parados)} processo(s) descansam até amanhã: a estação "
+                      f"os recebeu {acmod.TENTATIVAS_ATE_DESCANSAR}x hoje sem "
+                      "devolver leitura")
+        return jsonify(ler=False, motivo=motivo, descansando=parados)
+    return jsonify(ler=True, instancia=inst, protocolos=lista,
+                   descansando=parados,
+                   perfil=perfil_sei.envelope_do_coletor(inst))
+
+
+@app.post("/api/agente/acompanhamento")
+def agente_acompanhamento_resultado():
+    """O que a estação leu no SEI. `app.py` só transporta; a regra é do módulo."""
+    import acompanhamento as acmod
+    ag, erro = agente_autenticado()
+    if not ag:
+        return jsonify(erro=erro), 401
+    if not ag["dono_usuario_id"]:
+        return jsonify(erro="agente sem dono"), 400
+    cx = conectar()
+    try:
+        # O DONO E A INSTALAÇÃO SAEM DO AGENTE, não do envelope: aceitar o dono de
+        # dentro do corpo deixaria um agente escrever na lista de outra conta, e
+        # aceitar a instalação deixaria a leitura de uma entrar na linha da outra.
+        gravadas, ignoradas = acmod.receber(cx, ag["dono_usuario_id"],
+                                            instancia_do_agente(cx, ag),
+                                            request.get_json(silent=True))
+    except ValueError as ex:
+        # A estação leu numa instalação e o dono passou a ler noutra entre o
+        # pedido e a resposta. 409, como `/api/poco/plano` responde a trabalho
+        # fora do escopo do agente — não é erro DELA, é trabalho que não serve
+        # mais. Nada gravado: a transação morre com a conexão.
+        cx.close()
+        return jsonify(erro=str(ex)), 409
+    cx.commit(); cx.close()
+    # AS DUAS CONTAGENS. Só `gravadas` deixava a estação que relatou dez e viu
+    # zero sem saber se o servidor recusou tudo ou se ela mesma não mandou nada.
+    return jsonify(gravadas=gravadas, ignoradas=ignoradas)
+
+
+@app.get("/acompanhamento")
+@exige_login
+def acompanhamento_tela(recusados=None, sem_espaco=None):
+    """A lista da pessoa. `usuario_id` SÓ da sessão.
+
+    `acompanhamento.py` recebe o `usuario_id` e obedece — é a camada de regra, e
+    ela confia no chamador de propósito. A fronteira, portanto, é ESTA função:
+    nenhum dos três caminhos do módulo lê identidade de formulário, de query
+    string ou de JSON. `request.usuario` vem de `exige_login`, que a resolve do
+    cookie de sessão contra a tabela `sessoes`.
+    """
+    import acompanhamento as acmod
+    u = request.usuario
+    cx = conectar()
+    # `try/finally` COMO AS DUAS ROTAS DO AGENTE, e pelo motivo que elas já
+    # documentavam. Medido em 11/09/2026: com a regra levantando no meio (a
+    # IntegrityError da colagem simultânea), a conexão ficava viva com
+    # transação de ESCRITA pendente enquanto o gunicorn montava o 500 — e
+    # qualquer outro escritor do banco INTEIRO esperava os 5 s de
+    # `busy_timeout` e caía com "database is locked". A requisição seguinte
+    # morria antes da rota, em `usuario_atual`.
+    try:
+        # A CARTEIRA RESPONDE ANTES DE A TELA PINTAR: é de graça — o dado já está no
+        # banco — e evita a tela dizer "aguardando primeira leitura" sobre processo
+        # que a coleta da própria pessoa já leu.
+        #
+        # Isto é ESCRITA no caminho de uma requisição de LEITURA, e por isso é
+        # melhor-esforço: se tropeçar, a pessoa ainda tem de ver a lista, que é o
+        # produto. Sem rollback de propósito — cada item respondido é independente
+        # dos outros, e desfazer os que deram certo só faria a próxima visita
+        # repetir o trabalho.
+        #
+        # POR INSTALAÇÃO, e a lista é de TODAS: `reaproveitar` recorta a fronteira
+        # por instalação, então reaproveitar só a configuração ATIVA deixaria o item
+        # da FESF esperando com a resposta pronta na coleta da FESF.
+        for inst in acmod.instancias(cx, u["usuario_id"]):
+            try:
+                acmod.reaproveitar(cx, u["usuario_id"], inst)
+            except Exception as ex:                                # noqa: BLE001
+                print(f"acompanhamento: reaproveitar {inst} falhou "
+                      f"({type(ex).__name__})", flush=True)
+        itens = acmod.listar(cx, u["usuario_id"])
+        # ONDE O PRÓXIMO NÚMERO VAI CAIR. A configuração ativa é "a última que a
+        # pessoa mexeu" (`configuracao.ler`), então depois de mexer na FESF o número
+        # colado aqui entra como da FESF — em silêncio, na versão anterior. Item
+        # carimbado na instalação errada nunca casa com a coleta dela: fica
+        # "aguardando primeira leitura" para sempre e, na leitura pelo SEI, é
+        # procurado na instalação errada.
+        #
+        # SUBIU PARA ANTES DO LAÇO porque agora ela decide também o que cada CARTÃO
+        # diz: a fila da estação é a da instalação ativa, e o item da outra não entra
+        # nela (ver `texto_fora_da_fila`).
+        inst_ativa = cfgmod.ler(cx, u["usuario_id"])["sistema"]
+        # E O QUE ESTE CONTAINER RESPONDE, que desde 12/09/2026 é a metade que
+        # decide a frase: o motor daqui lê as DUAS instalações no mesmo ciclo, e
+        # sem esta pergunta o cartão continuaria dizendo "só a sua própria coleta
+        # pode respondê-lo" sobre item que ele lê dois minutos depois. Uma vez
+        # por tela, fora do laço — é uma consulta por conta, não por item.
+        import acompanhamento_servidor as asvmod
+        _srv_le, _srv_parado = asvmod.cobertura(cx, u["usuario_id"])
+        for x in itens:
+            x["texto_mudou"] = acmod.texto_do_delta(x.get("mudou"))
+            x["instancia_rotulo"] = perfil_sei.rotulo(x["instancia"])
+            # POR QUE ESTE ITEM NÃO VAI SER LIDO — quando não vai. A rota do agente
+            # pede a instalação ATIVA do dono, e a estação entra numa instalação só:
+            # medido em 11/09/2026, três ciclos completos e o item da FESF nunca foi
+            # oferecido, ficando 'novo' com a tela dizendo "aguardando primeira
+            # leitura" — a mesma frase de quem vai ser lido hoje à noite.
+            x["fora_da_fila"] = acmod.texto_fora_da_fila(
+                x, inst_ativa, rotulo_do_item=x["instancia_rotulo"],
+                rotulo_ativa=perfil_sei.rotulo(inst_ativa),
+                servidor_le=_srv_le, servidor_parado=_srv_parado)
+            # A PROCEDÊNCIA É TEXTO GERADO DO DADO, como o do delta — e não fatia de
+            # data no template. A coluna aceita nulo, e o template fatiando nulo
+            # derrubava a tela INTEIRA (500), não a linha; além disso a regra de
+            # quando mostrar o ano e de calar em estado de recusa é testável aqui e
+            # não é em Jinja.
+            x["procedencia"] = acmod.texto_da_procedencia(x)
+            # A PROCEDÊNCIA DA FICHA INTEIRA é outra frase, e não o mesmo rodapé
+            # repetido: com marcador, anotação e dias na unidade dentro do expandir,
+            # "pela sua coleta de 27/08" discreto no pé do cartão deixa a ficha
+            # parecendo de agora — e o marcador de nove dias atrás é exatamente o
+            # campo que alguém lê para decidir o que fazer hoje.
+            x["ficha_de"] = acmod.texto_da_ficha(x)
+            # POR QUE OS CAMPOS DA MESA NÃO ESTÃO NA FICHA — quando não estão. Vazio
+            # quando estão, e aí branco é branco de verdade. Item de fora da carteira
+            # não tem marcador porque a MESA não existe, e imprimir "Marcador —"
+            # sobre ele afirmaria que o processo não tem marcador.
+            x["sem_mesa"] = acmod.texto_sem_mesa(x)
+        registrar(cx, u["usuario_id"], "ver_acompanhamento",
+                  alvo=f"{len(itens)} processo(s)", ip=ip_cliente())
+        cx.commit()
+    finally:
+        # FECHA SEMPRE: fechar desfaz a transação pendente, que é o que
+        # devolve o banco a quem estava esperando.
+        cx.close()
+    resp = make_response(render_template("acompanhamento.html", u=u, itens=itens,
+                                         teto=acmod.TETO, recusados=recusados or [],
+                                         sem_espaco=sem_espaco or [],
+                                         instancia_ativa=inst_ativa,
+                                         instancia_rotulo=perfil_sei.rotulo(inst_ativa),
+                                         # O RÓTULO POR CARTÃO só aparece quando há
+                                         # mais de uma instalação na lista: carimbar
+                                         # "SESAB" em toda linha de quem só tem SESAB
+                                         # é ruído que ensina a não ler o carimbo. É a
+                                         # mesma regra do `multi_instancia` do painel.
+                                         multi_instancia=len(
+                                             {x["instancia"] for x in itens}) > 1))
+    resp.set_cookie(COOKIE_CSRF, seg.novo_csrf(), samesite="Lax",
+                    secure=cookie_seguro(), path="/")
+    return resp
+
+
+@app.post("/acompanhamento/adicionar")
+@exige_login
+def acompanhamento_adicionar():
+    import acompanhamento as acmod
+    confere_csrf()
+    u = request.usuario
+    cx = conectar()
+    # `try/finally` COMO AS DUAS ROTAS DO AGENTE, e pelo motivo que elas já
+    # documentavam. Medido em 11/09/2026: com a regra levantando no meio (a
+    # IntegrityError da colagem simultânea), a conexão ficava viva com
+    # transação de ESCRITA pendente enquanto o gunicorn montava o 500 — e
+    # qualquer outro escritor do banco INTEIRO esperava os 5 s de
+    # `busy_timeout` e caía com "database is locked". A requisição seguinte
+    # morria antes da rota, em `usuario_atual`.
+    try:
+        # A INSTALAÇÃO É A DA CONFIGURAÇÃO ATIVA, não um campo do formulário: número
+        # colado na tela é número da instalação em que a pessoa está trabalhando, e
+        # deixar o cliente escolher a instalação seria deixá-lo carimbar dado de uma
+        # como sendo de outra — o defeito que `acompanhado.instancia` nasceu sem
+        # DEFAULT para evitar.
+        # SEM `or "SEI-SESAB"`: `cfgmod.ler` já cai em `perfil_sei.PADRAO` quando não
+        # há configuração, então a reserva era código morto que reencenava justamente
+        # o idioma do DEFAULT que esta tabela nasceu sem. As rotas vizinhas não têm.
+        inst = cfgmod.ler(cx, u["usuario_id"])["sistema"]
+        # A ORIGEM É ROTULO DE PROCEDÊNCIA, e a lista branca tem UM valor: o
+        # painel, que é a outra porta de entrada do módulo (ver `ACOMP_ACAO` em
+        # `montar_painel.py`). Aceitar o campo cru deixaria um formulário forjado
+        # carimbar `sei_acompanhamento` — a importação do Acompanhamento Especial
+        # do SEI, que ainda não existe — e o registro afirmaria uma leitura do SEI
+        # que nunca houve. Rótulo que o cliente escolhe não é procedência.
+        origem = "painel" if request.form.get("origem") == "painel" else "manual"
+        aceitos, recusados, sem_espaco = acmod.adicionar(
+            cx, u["usuario_id"], request.form.get("numeros"), inst,
+            origem=origem, nota=(request.form.get("nota") or "").strip() or None)
+        registrar(cx, u["usuario_id"], "acompanhar",
+                  alvo=f"{inst} +{len(aceitos)} -{len(recusados)} "
+                       f"cheio:{len(sem_espaco)} via:{origem}",
+                  ip=ip_cliente())
+        cx.commit()
+    finally:
+        # FECHA SEMPRE: fechar desfaz a transação pendente, que é o que
+        # devolve o banco a quem estava esperando.
+        cx.close()
+    # As recusadas voltam RENDERIZADAS, não por query string: o texto é o que a
+    # pessoa colou, e pode citar nome — e a URL vai para o log do gunicorn.
+    return acompanhamento_tela(recusados=recusados, sem_espaco=sem_espaco)
+
+
+@app.post("/acompanhamento/remover")
+@exige_login
+def acompanhamento_remover():
+    import acompanhamento as acmod
+    confere_csrf()
+    u = request.usuario
+    cx = conectar()
+    # `try/finally` COMO AS DUAS ROTAS DO AGENTE, e pelo motivo que elas já
+    # documentavam. Medido em 11/09/2026: com a regra levantando no meio (a
+    # IntegrityError da colagem simultânea), a conexão ficava viva com
+    # transação de ESCRITA pendente enquanto o gunicorn montava o 500 — e
+    # qualquer outro escritor do banco INTEIRO esperava os 5 s de
+    # `busy_timeout` e caía com "database is locked". A requisição seguinte
+    # morria antes da rota, em `usuario_atual`.
+    try:
+        # `protocolo` e `instancia` vêm do formulário porque são O QUE se remove; o
+        # DE QUEM vem da sessão. `remover` apaga por (usuario_id, instancia,
+        # protocolo), então o pior que um campo forjado faz é não achar linha.
+        proto = request.form.get("protocolo") or ""
+        saiu = acmod.remover(cx, u["usuario_id"], request.form.get("instancia"), proto)
+        # O LOG DIZ SE HOUVE ATO. `registrar` é a resposta de "quem fez o quê" num
+        # incidente: gravar `parar_acompanhar` sobre protocolo que não estava na
+        # lista — número errado, duplo clique, formulário forjado — afirmava uma
+        # remoção que não aconteceu.
+        registrar(cx, u["usuario_id"], "parar_acompanhar",
+                  alvo=f"{request.form.get('instancia')} {proto}"
+                       + ("" if saiu else " (nada a remover)"), ip=ip_cliente())
+        cx.commit()
+    finally:
+        # FECHA SEMPRE: fechar desfaz a transação pendente, que é o que
+        # devolve o banco a quem estava esperando.
+        cx.close()
+    return redirect(url_for("acompanhamento_tela"))
+
+
 @app.post("/api/poco/plano")
 def poco_plano():
     """O que esta corrida precisa ler nesta mesa. Chamado ENTRE a listagem e a
@@ -3636,6 +3987,25 @@ try:
         _coleta_servidor.iniciar()
 except Exception as _ex:                                       # noqa: BLE001
     print(f"coleta em modo servidor não subiu: {type(_ex).__name__}", flush=True)
+
+# E O ACOMPANHAMENTO, pelo mesmo desenho e pelo mesmo motivo — MAIS um: sem
+# este bloco, o módulo de Acompanhamento não tinha motor nenhum neste
+# container. `pendentes` e `receber` só eram chamadas pelas duas rotas
+# `/api/agente/acompanhamento`, que existem para uma ESTAÇÃO buscar trabalho por
+# HTTP; o sistema roda no VPS. Medido em 12/09/2026 pela leitura do código:
+# processo acompanhado fora da mesa entrava na lista, ficava 'novo' e NUNCA era
+# lido — a tela dizia "aguardando primeira leitura" para sempre, e a frase era
+# verdadeira. Ver o cabeçalho de `acompanhamento_servidor.py`.
+#
+# Terceiro bloco, e não uma linha no de cima: uma falha ao subir o
+# acompanhamento não pode ser confundida com falha da coleta, nem impedi-la.
+try:
+    import acompanhamento_servidor as _acomp_servidor
+    if not (_debug and not os.environ.get("WERKZEUG_RUN_MAIN")):
+        _acomp_servidor.iniciar()
+except Exception as _ex:                                       # noqa: BLE001
+    print(f"acompanhamento em modo servidor não subiu: {type(_ex).__name__}",
+          flush=True)
 
 
 class _SemSegredoNoLog(logging.Filter):

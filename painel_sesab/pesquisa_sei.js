@@ -35,6 +35,16 @@
   if (window.SEIBusca) return;
 
   const N = s => (s || '').replace(/\s+/g, ' ').trim();
+  /* O HASH DE SESSÃO NÃO SAI DAQUI POR NENHUMA PORTA, nem pela do erro. Mensagem
+     de exceção de `fetch` pode carregar a URL que falhou, e `saida.motivo` vai
+     para DOIS lugares: o envelope, que o servidor guarda, e o `console.log`, que
+     o coletor ecoa para o stdout da estação. Hash morto não devolve erro — ele
+     DERRUBA a sessão de quem está trabalhando —, então ele não pode ficar em log,
+     em anexo nem em banco. Não há caminho conhecido em que isto aconteça hoje; a
+     porta é que não fica aberta. O mesmo `semHash` de `acompanharLista`, em
+     `automacao_sei.js`. */
+  const semHash = m => String(m == null ? '' : m)
+    .replace(/infra_hash=[^&\s'"]*/gi, 'infra_hash=…');
   const log = (m, cor = '#0f5257') =>
     console.log('%c[BUSCA] ' + m, `color:${cor};font-weight:bold`);
   const dorme = ms => new Promise(r => setTimeout(r, ms));
@@ -63,24 +73,82 @@
     return fora;
   }
 
-  async function pegar(url) {
-    const r = await fetch(url, { credentials: 'same-origin' });
-    const t = dec.decode(await r.arrayBuffer());
-    if (/login\.php|Acesso negado|sessão expirad/i.test(t) && !/frmProtocoloPesquisa/i.test(t)) {
-      throw new Error('SESSAO caiu durante a busca');
+  /* FALHA PASSAGEIRA NÃO É RESPOSTA DO SEI, e não pode encerrar a busca.
+
+     Até 15/09/2026 a primeira oscilação de rede — um `fetch` que estoura, um 502
+     do balanceador da PRODEB no meio da paginação — virava `motivo`, e o servidor
+     a transformava em "falhou" definitivo, com as páginas já lidas descartadas e
+     a pessoa tendo de pedir tudo de novo. Repetir a MESMA requisição com o MESMO
+     hash vivo é o que alguém faz ao clicar de novo: não derruba sessão.
+
+     O QUE NÃO SE REPETE: sessão caída. Com a sessão morta, repetir só multiplica
+     requisição inválida contra o SEI do órgão — e o motivo precisa chegar ao
+     servidor como está, porque é outra ação (logar de novo), não esperar. */
+  const ESPERAS_REDE_MS = [1500, 4000];
+
+  /* "Failed to fetch" TAMBÉM É SESSÃO CAÍDA, disfarçada. Quando a sessão morre, o
+     SEI redireciona para o login do SIP, que é OUTRA origem e não manda CORS: o
+     `fetch` lança TypeError em vez de mostrar login.php na URL. Sem esta pergunta,
+     a queda de sessão era tratada como rede e repetida duas vezes contra a sessão
+     morta. A pergunta é um GET da própria página aberta, sem seguir redirecionamento:
+     sessão viva responde 200; morta, redireciona. */
+  async function sessaoCaiu() {
+    try {
+      const r = await fetch(location.href, { credentials: 'same-origin', redirect: 'manual' });
+      return r.type === 'opaqueredirect';
+    } catch (e) {
+      return false;
     }
-    return t;
+  }
+
+  async function comRetentativa(o_que, fn) {
+    for (let i = 0; ; i++) {
+      try {
+        return await fn();
+      } catch (e) {
+        const msg = String(e && e.message ? e.message : e);
+        if (/SESSAO caiu/.test(msg) || i >= ESPERAS_REDE_MS.length) throw e;
+        if (/Failed to fetch|NetworkError|Load failed/i.test(msg) && await sessaoCaiu()) {
+          throw new Error('SESSAO caiu durante a busca');
+        }
+        log(`${o_que}: ${semHash(msg).slice(0, 80)} — nova tentativa em `
+            + `${ESPERAS_REDE_MS[i]} ms`, '#a36b1f');
+        await dorme(ESPERAS_REDE_MS[i]);
+      }
+    }
+  }
+
+  /* 5xx é o servidor do SEI (ou o balanceador) dizendo "agora não", e `fetch` não
+     o transforma em exceção sozinho — sem esta linha, a página de erro seria lida
+     como resultado sem linhas, e a paginação pararia calada. */
+  function conferirStatus(r) {
+    if (r.status >= 500) throw new Error(`o SEI respondeu ${r.status}`);
+  }
+
+  async function pegar(url) {
+    return comRetentativa('pagina', async () => {
+      const r = await fetch(url, { credentials: 'same-origin' });
+      conferirStatus(r);
+      const t = dec.decode(await r.arrayBuffer());
+      if (/login\.php|Acesso negado|sessão expirad/i.test(t) && !/frmProtocoloPesquisa/i.test(t)) {
+        throw new Error('SESSAO caiu durante a busca');
+      }
+      return t;
+    });
   }
 
   async function postar(action, corpo) {
-    const r = await fetch(action, {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: corpo,
+    return comRetentativa('pesquisa', async () => {
+      const r = await fetch(action, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: corpo,
+      });
+      conferirStatus(r);
+      const t = dec.decode(await r.arrayBuffer());
+      if (/login\.php/i.test(r.url)) throw new Error('SESSAO caiu durante a busca');
+      return new DOMParser().parseFromString(t, 'text/html');
     });
-    const t = dec.decode(await r.arrayBuffer());
-    if (/login\.php/i.test(r.url)) throw new Error('SESSAO caiu durante a busca');
-    return new DOMParser().parseFromString(t, 'text/html');
   }
 
   /* A tela de Pesquisa, alcançada pelo MENU. Devolve o documento. */
@@ -202,13 +270,42 @@
     const m = txt.match(/(\d[\d.]*)\s*(?:registros?|resultados?|itens?)\s*(?:encontrad|localizad)/i)
            || txt.match(/(?:encontrad\w*|localizad\w*)\s*(\d[\d.]*)\s*registros?/i)
            || txt.match(/Lista de .{0,40}?\((\d[\d.]*)\s*registros?/i);
-    if (!m) return null;
+    // NENHUM REGISTRO É UM TOTAL: zero. Sem esta linha a pesquisa que não acha
+    // nada voltava com total nulo, e o servidor a julgava "falhou · o SEI não
+    // declarou o total de registros" — o estado `vazia` existia no veredito e era
+    // inalcançável. A pessoa lia falha onde o SEI tinha respondido.
+    if (!m) {
+      return /nenhum\s+(?:registro|resultado|processo)\s+(?:foi\s+)?(?:encontrad|localizad)/i.test(txt)
+        ? 0 : null;
+    }
     return parseInt(m[1].replace(/\./g, ''), 10);
   }
 
   /* As linhas do resultado. O SEI 5 entrega tipo e especificação no `aria-label`
-     do link; o 4.0 não — daí a leitura por célula como alternativa. */
-  function linhas(doc) {
+     do link; o 4.0 não — daí a leitura por célula como alternativa.
+
+     `comReservados` é a ÚNICA porta pela qual DOIS campos saem daqui, e é fechada
+     por omissão. Eles têm razões diferentes que dão no mesmo lugar — nenhum dos
+     dois pode entrar no envelope que a busca guarda:
+
+       * `link` — carrega `infra_hash` de sessão, e hash morto não dá erro:
+         derruba a sessão de quem está trabalhando;
+       * `especificacao` — é o sufixo do mesmo `aria-label` de onde já sai o tipo,
+         e é texto que um servidor escreveu, que pode citar paciente. `busca.py`
+         a exclui do envelope da busca com motivo escrito, e essa exclusão
+         continua valendo: é outra superfície, com outro alcance.
+
+     A porta existe para `SEIAuto.acompanhar()`, que usa os dois na mesma passagem
+     do navegador: o link morre no fim da função, e a especificação sobe porque o
+     usuário autorizou explicitamente para ESTE módulo em 11/09/2026 (seção 11.2
+     do plano). Quem liga isto assume o contrato: usar AGORA, e só onde há
+     autorização.
+
+     O agente da estação não tem como ligá-la numa busca: `buscar()`, em
+     `sei360_agente.py`, repassa uma lista FIXA de seis chaves do pedido, e
+     `com_reservados` não é uma delas. Servidor comprometido não pede nem o href
+     nem o texto livre. */
+  function linhas(doc, comReservados) {
     const fora = [];
     const tabelas = Array.from(doc.querySelectorAll('table'))
       .filter(t => t.querySelector('a[href*="procedimento_trabalhar"], a[href*="protocolo_visualizar"], a[href*="id_procedimento"]'));
@@ -222,16 +319,29 @@
       const aria = a.getAttribute('aria-label') || '';
       const k = aria.indexOf(' / ');
       const cel = Array.from(tr.cells).map(c => N(c.textContent));
-      fora.push({
-        // O HREF NÃO SAI DAQUI. Ele carrega infra_hash de sessão, e hash morto
-        // não dá erro: derruba a sessão de quem está trabalhando.
+      const linha = {
+        // O HREF NÃO SAI DAQUI POR PADRÃO. Ele carrega infra_hash de sessão, e
+        // hash morto não dá erro: derruba a sessão de quem está trabalhando. Só
+        // `comReservados` o entrega, e só para uso imediato — nunca para guardar.
         id_sei: idm ? idm[1] : null,
         protocolo: N(a.textContent),
         tipo_processo: k > 0 ? aria.slice(0, k).trim() : (cel[1] || null),
         unidade_geradora: cel.find(x => /\//.test(x) && !/\d{2}\/\d{2}\/\d{4}/.test(x)) || null,
         usuario_gerador: cel.find(x => /@/.test(x)) || null,
         data_inclusao: (cel.find(x => /^\d{2}\/\d{2}\/\d{4}/.test(x)) || '').slice(0, 10) || null,
-      });
+      };
+      if (comReservados) {
+        linha.link = href.replace(/&amp;/g, '&');
+        // O MESMO `aria-label` de onde saiu o tipo, do outro lado do ' / '. No
+        // SEI 5 ele traz "tipo / especificação" (medido — é o que o cabeçalho
+        // desta função já dizia); no 4.0 não há aria-label nenhum, e aí o campo
+        // simplesmente NÃO É POSTO. Ausente e vazio são coisas diferentes para
+        // quem recebe, e inventar texto num campo que pode citar paciente é pior
+        // que não ter o campo.
+        const espec = k > 0 ? N(aria.slice(k + 3)) : '';
+        if (espec) linha.especificacao = espec;
+      }
+      fora.push(linha);
     });
     return fora;
   }
@@ -280,7 +390,9 @@
 
       for (let pg = 1; pg <= teto; pg++) {
         saida.paginas_lidas = pg;
-        const desta = linhas(d);
+        // `com_reservados` vem do PEDIDO e só é ligado por quem roda no mesmo
+        // navegador — ver o comentário de `linhas()`.
+        const desta = linhas(d, pedido.com_reservados);
         let novos = 0;
         desta.forEach(x => {
           const chave = x.id_sei || x.protocolo;
@@ -295,6 +407,13 @@
         // diferentes. Quem decide o estado é o servidor, comparando com o total
         // declarado — aqui só se registra o que houve.
         if (!prox || novos === 0) break;
+        // O PRAZO É DO MOTOR, e ele devolve o que já leu. Antes, o relógio de fora
+        // matava o coletor aos 10 min e a busca grande terminava sem item nenhum;
+        // agora ela para antes, com motivo, e o servidor a julga 'parcial'.
+        if (pedido.prazo_ms && Date.now() - t0 > pedido.prazo_ms) {
+          saida.motivo = `prazo da busca: ${pg} pagina(s) lidas, a pesquisa tinha mais`;
+          break;
+        }
         const j = pares.findIndex(x => x[0] === prox.nome);
         if (j >= 0) pares[j][1] = prox.valor; else pares.push([prox.nome, prox.valor]);
         await dorme(240);
@@ -302,13 +421,16 @@
       }
       log(`${saida.itens.length} item(ns) em ${saida.paginas_lidas} pagina(s)`);
     } catch (e) {
-      saida.motivo = String(e && e.message ? e.message : e).slice(0, 200);
+      // `semHash` ANTES do corte, e não depois: cortar primeiro poderia deixar
+      // meio hash de pé, e meio hash ainda é hash o bastante para quem o coletou.
+      saida.motivo = semHash(e && e.message ? e.message : e).slice(0, 200);
       log('falhou: ' + saida.motivo, '#a3391f');
     }
     saida.duracao_s = Math.round((Date.now() - t0) / 1000);
     return saida;
   }
 
-  window.SEIBusca = { pesquisar, totalDeclarado, linhas, montar, corpoLatin1 };
+  window.SEIBusca = { pesquisar, totalDeclarado, linhas, montar, corpoLatin1,
+                      comRetentativa };
   log('SEIBusca pronto');
 })();

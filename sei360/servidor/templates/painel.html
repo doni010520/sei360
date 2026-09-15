@@ -1546,6 +1546,13 @@ function abrir(id){
     <div class="gav-acoes">
       <a class="bt2 forte" href="${BASE}${esc(d.id)}" target="_blank" rel="noopener">Abrir no SEI</a>
       <button class="bt2" data-copy-gav="${esc(d.protocolo)}">Copiar protocolo</button>
+      <form method="post" action="/acompanhamento/adicionar" target="_blank" style="margin:0"
+            title="Passa a seguir este processo — inclusive depois que ele sair da sua mesa">
+        <input type="hidden" name="csrf" value="${esc((document.cookie.match(/sei360_csrf=([^;]+)/)||[])[1]||'')}">
+        <input type="hidden" name="origem" value="painel">
+        <input type="hidden" name="numeros" value="${esc(d.protocolo)}">
+        <button class="bt2" type="submit">Adicionar ao Acompanhamento</button>
+      </form>
     </div>
     <div class="acao ${d._p.cls}" style="margin:12px 0 4px"><span class="tag">${esc(d._p.etapa)}</span>
       <span class="pq">${esc(d._p.porque)}</span></div>

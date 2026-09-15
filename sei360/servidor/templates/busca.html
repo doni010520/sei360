@@ -174,7 +174,8 @@
   const CAMPOS = ['tipo_processo', 'especificacao', 'contato', 'assunto',
                   'observacao', 'numero_sei', 'data_de', 'data_ate'];
   const ESPERA_MAX = {{ espera_max_s }};
-  let atual = null, relogio = null;
+  const NO_SERVIDOR = {{ (estacao == "este servidor")|tojson }};
+  let atual = null, relogio = null, soluços = 0;
 
   const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -224,18 +225,39 @@
   }
 
   async function olhar(id) {
-    const r = await fetch('/api/busca/' + id);
-    if (!r.ok) { clearInterval(relogio); situacao('busca não encontrada', true); return; }
+    /* A TELA NÃO DESISTE NO PRIMEIRO SOLUÇO. Um 502 do proxy durante um redeploy,
+       ou a rede do órgão piscando, encerrava o acompanhamento com "busca não
+       encontrada" — sobre uma busca que continuava rodando no servidor. Só 404 é
+       resposta; o resto é tentar de novo na próxima batida, e dizer isso. */
+    let r;
+    try { r = await fetch('/api/busca/' + id); } catch (e) { r = null; }
+    if (r && r.status === 404) { clearInterval(relogio); situacao('busca não encontrada', true); return; }
+    if (!r || !r.ok) {
+      soluços++;
+      situacao(`sem resposta do SEI360 agora (${soluços}) — a busca continua no servidor; tentando de novo…`, true);
+      if (soluços >= 30) { clearInterval(relogio); situacao('o SEI360 não responde há 1 min — recarregue a página para ver o estado da busca', true); }
+      return;
+    }
+    soluços = 0;
     const b = await r.json();
     /* TRÊS ESTADOS, TRÊS FRASES. `pedida` significa que ninguém pegou o pedido —
        dizer "a estação está pesquisando" nesse estado é afirmar um trabalho que
        não existe, e foi o que a tela fez enquanto nada acontecia. */
     if (['pedida', 'entregue', 'em_curso'].includes(b.estado)) {
       const desde = Math.max(0, Math.round((Date.now() - Date.parse(b.pedida_em)) / 1000));
-      if (b.estado === 'pedida') {
-        situacao(`aguardando a estação pegar o pedido… ${desde}s`
-                 + (desde > 20 ? ' — se passar de ' + ESPERA_MAX + 's sem ninguém pegar,'
-                                 + ' é porque o agente não está rodando' : ''));
+      if (b.estado === 'pedida' && b.tentativas) {
+        /* NOVA TENTATIVA É DITA, com o motivo da anterior: sem isto a tela voltava a
+           "aguardando" sobre uma busca que já tinha falhado uma vez. */
+        situacao(b.motivo || 'tentando de novo…', true);
+      } else if (b.estado === 'pedida') {
+        /* QUEM PEGA depende do modo: no servidor é o executor dele; na estação, o
+           agente da pessoa. A frase de um modo é falsa no outro. */
+        situacao(NO_SERVIDOR
+          ? `aguardando o executor do servidor pegar o pedido… ${desde}s`
+            + (desde > 20 ? ' — a busca espera a vez na fila' : '')
+          : `aguardando a estação pegar o pedido… ${desde}s`
+            + (desde > 20 ? ' — se passar de ' + ESPERA_MAX + 's sem ninguém pegar,'
+                            + ' é porque o agente não está rodando' : ''));
       } else {
         situacao(`a estação pegou e está pesquisando no SEI… ${desde}s`);
       }
@@ -265,11 +287,15 @@
           ? ' — o SEI declarou ' + b.total_declarado + ' registro(s) e vieram ' + (b.colhidos || 0)
           : ''}${b.motivo ? ' · ' + esc(b.motivo) : ''}</div>
         <div class="pq">Esta lista é sua. Não entra na carteira de ninguém e é apagada em 30 dias.</div>
+        ${['falhou', 'parcial'].includes(b.estado)
+          ? '<div style="margin-top:8px"><button type="button" class="bt" id="btRepetir">Tentar de novo com os mesmos critérios</button></div>'
+          : ''}
       </div>`;
     if (!b.itens || !b.itens.length) {
       $('#resultado').innerHTML = cab + '<div class="cartao"><div class="vazio-msg">' +
         (b.estado === 'vazia' ? 'O SEI não achou nenhum processo com esses critérios.'
                               : 'Nenhum item para mostrar.') + '</div></div>';
+      ligarRepetir(b);
       return;
     }
     const linhas = b.itens.map(i => `<tr>
@@ -286,6 +312,37 @@
           <th>Unidade geradora</th><th>Quem gerou</th><th>Incluído em</th></tr></thead>
         <tbody>${linhas}</tbody>
       </table></div>`;
+    ligarRepetir(b);
+  }
+
+  /* REPETIR É REPREENCHER E PEDIR — com os critérios DAQUELA busca, não com o que
+     estiver no formulário. Antes, a única saída depois de 'falhou' era redigitar
+     dez campos de memória. */
+  function ligarRepetir(b) {
+    const bt = document.getElementById('btRepetir');
+    if (!bt) return;
+    bt.addEventListener('click', () => {
+      /* OUTRA INSTALAÇÃO É OUTRA TELA: o formulário desta página só pede na
+         instalação dela, e repetir aqui mandaria a pergunta para o SEI errado com
+         a mesa padrão. A tela certa abre e repete ela mesma. */
+      if (b.instancia !== $('#instancia').value) {
+        location.href = '/busca?instancia=' + encodeURIComponent(b.instancia)
+                      + '&repetir=' + encodeURIComponent(b.id);
+        return;
+      }
+      const mesaSel = $('#mesa');
+      if (b.mesa && mesaSel && !Array.from(mesaSel.options).some(o => o.value === b.mesa)) {
+        situacao('a mesa desta busca (' + b.mesa + ') não está mais entre as suas — escolha outra e peça de novo', true);
+        return;
+      }
+      const f = b.filtros || {};
+      CAMPOS.forEach(k => { const el = $('#' + k); if (el) el.value = f[k] || ''; });
+      if ($('#tramitacao_unidade')) $('#tramitacao_unidade').checked = !!f.tramitacao_unidade;
+      if (f.tipo_data && $('#tipo_data')) $('#tipo_data').value = f.tipo_data;
+      const mesa = $('#mesa');
+      if (mesa && b.mesa && Array.from(mesa.options).some(o => o.value === b.mesa)) mesa.value = b.mesa;
+      $('#fBusca').requestSubmit();
+    });
   }
 
   $('#fBusca').addEventListener('submit', pedir);
@@ -302,6 +359,20 @@
     ev.preventDefault();
     olhar(a.getAttribute('data-abrir'));
   }));
+  /* ?repetir=<id>: a tela veio de "Tentar de novo" numa busca de outra instalação. */
+  (async () => {
+    const rep = new URLSearchParams(location.search).get('repetir');
+    if (!rep) return;
+    const r = await fetch('/api/busca/' + encodeURIComponent(rep));
+    if (!r.ok) return;
+    const b = await r.json();
+    if (b.instancia !== $('#instancia').value) return;
+    history.replaceState(null, '', '/busca?instancia=' + encodeURIComponent(b.instancia));
+    mostrar(b);
+    const bt = document.getElementById('btRepetir');
+    if (bt) bt.click();
+  })();
+
   $('#instancia').addEventListener('change', () => {
     location.href = '/busca?instancia=' + encodeURIComponent($('#instancia').value);
   });

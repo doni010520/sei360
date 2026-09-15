@@ -1247,6 +1247,123 @@ sessão de 01/09 11:11 sustentaria um login, e cookies de sessão expiram. Ver
 `PLANO_EXECUCAO_2026-09-07.md` §0, item 1, e §3 (S1–S3) para o plano de
 recuperação.
 
+## 5-quindecies. Acompanhamento — seguir processo fora da mesa
+
+Construído em 11/09/2026. Desenho em `PLANO_ACOMPANHAMENTO_2026-09-11.md`, execução
+em `PLANO_IMPL_ACOMPANHAMENTO_2026-09-11.md`.
+
+A carteira é o que chegou até a mesa. Quando o processo sai da mesa, ele desaparece
+do painel — e é justamente aí que alguém mais precisa saber dele. O módulo responde
+**"onde este processo está agora, e o que mudou desde a última vez que olhei?"** para
+processo que não está em mesa nenhuma da pessoa.
+
+Porta própria no menu, lista por conta, lida com o login da própria pessoa.
+
+**Duas entradas, uma lista.** Colar números na tela do módulo, e o botão "Adicionar
+ao Acompanhamento" na ficha lateral do painel — que é onde a decisão de seguir um
+processo costuma nascer, olhando para ele. O botão existe só no painel SERVIDO: a
+cópia estática abre de `file://`, sem sessão, e um botão ali postaria para lugar
+nenhum em silêncio. A procedência (`origem`) é gravada pela CASA, não pelo
+formulário: só `painel` é aceito do cliente, e qualquer outro valor vira `manual` —
+senão um pedido forjado carimbaria `sei_acompanhamento`, a importação do
+Acompanhamento Especial do SEI que ainda não existe, e o registro afirmaria uma
+leitura do SEI que nunca houve.
+
+**O que ele deliberadamente não faz.** Não entra na carteira: processo acompanhado
+não soma indicador do painel, não aparece nos relatórios, não vira snapshot — se
+entrasse, todo número do produto passaria a misturar "o que é meu" com "o que eu
+observo". Não responde "parado há N dias aqui", porque os cinco campos de custódia
+são derivados PARA UMA MESA e fora dela não têm referente; diz "aberto em
+CIR-IBOT" e nomeia o que falta, em vez de deixar campo em branco. Nem o "há N dias":
+a árvore do SEI lista as unidades e **não carrega data nenhuma**, e a data de entrada
+numa unidade sai de `mov_custodia`, que é o derivado por mesa que não atravessa. Não atravessa pessoa e não passa pelo poço. Não amplia
+acesso: o que o SEI nega ao login, o módulo registra como `sem_acesso` e diz na tela.
+
+**A economia central.** Processo que já está na carteira é respondido pela própria
+coleta, sem uma requisição ao SEI — `processo_mesa` já guarda as unidades da árvore e
+`processo` guarda `ultimo_movimento`, `documentos` e `movimentos`. O recorte sai de
+`snapshots_de`, a MESMA função que o painel usa: um `SELECT` por protocolo acharia a
+linha de qualquer unidade do banco, e o módulo viraria a porta lateral que contorna a
+fronteira que o resto do sistema defende. Só o que está fora da carteira custa
+requisição — 6 por processo (5 quando não há a ação Consultar/Alterar), teto de 100
+por pessoa, ~600 no pior caso contra as ~5.900 da coleta diária. É uma a mais que as
+5 da coleta porque a pesquisa por número é reaberta a cada protocolo, de propósito:
+reusar o formulário da vez anterior arrisca `infra_hash` morto, que não devolve erro
+— derruba a sessão de quem está trabalhando.
+
+**Quatro decisões que o desenho tomou, e por quê:**
+
+1. **A identidade do processo é a sequência de dígitos**, não o texto. O SEI 4.0 da
+   FESF e o 5.0.4 da SESAB imprimem o mesmo número com pontuação diferente, e quem
+   cola cola o que viu. Comparar texto fazia o número colado sem pontuação nunca casar
+   com a carteira, e a mesma pessoa colando o mesmo processo em duas formas ganhava
+   duas linhas.
+2. **Um momento, um quadro.** A leitura sai de UMA linha de `processo` — a mais fresca
+   que tenha lista de mesas —, nunca de uma mistura. Somar as mesas de coletas de dias
+   diferentes produz retrato que nunca existiu e, pior, **cala o `saiu_de` para
+   sempre**: enquanto o snapshot velho sobreviver, a união é monotônica e o evento
+   mais valioso do módulo nunca sai.
+3. **O delta compara medição, não inserção.** Se a medição nova não for mais nova que
+   a anterior, não há delta — só `mudou = NULL`. Sem essa guarda o processo **volta no
+   tempo** na tela, com movimentação inventada nas duas direções, o que acontece já
+   com a carteira sozinha quando o snapshot fresco expira e sobra o velho.
+4. **Procedência em cada linha.** A tela diz "pela sua coleta de 27/08" ou "lido no SEI
+   em 11/09", e distingue quatro silêncios diferentes: nunca lido, primeira leitura
+   (nada a comparar), dado que não avançou, e comparado sem mudança. Dizer "sem
+   mudança" na primeira observação seria a mesma falsidade que o módulo recusa em
+   todo o resto.
+
+**A régua das unidades abertas é a ÁRVORE.** Medido em 10/09/2026 sobre 15 coletas,
+com a própria lista da mesa como terceira fonte: em 1.278 discordâncias observáveis
+entre a linha "Processo aberto nas unidades" da árvore e a máquina de estados do
+andamento, a árvore bateu com a realidade em 100% dos casos e o andamento em 0%.
+Quando a linha reaproveitada veio do andamento, a tela marca "não confirmado pela
+árvore". Isto NÃO contradiz `project_sei_unidades_abertas` do projeto irmão: lá a
+fonte enganosa é a lista histórica de unidades dos metadados, outra coisa.
+
+**A ficha completa, e as três camadas de disponibilidade.** Acrescentada em
+11/09/2026, depois do módulo pronto, a pedido do usuário: uma lista de números de 25
+dígitos não diz qual processo é qual. A ficha é GUARDADA em `acompanhado_leitura`,
+coluna a coluna, e não relida de `processo` na hora de pintar — a ficha pertence à
+LEITURA, e ir buscar devolveria o marcador de hoje sob um carimbo de 27/08, além de
+transformar `listar()` em uma consulta por item. São 26 colunas, em três grupos:
+
+- **do processo** (valem dentro e fora da mesa): `tipo_processo`, `autuacao`,
+  `gerador_unidade`, `gerador_usuario`, `nivel_acesso`, `hipotese_legal`, `assuntos`,
+  `anexados`, `emails_enviados`, `assinatura_externa`;
+- **da mesa** (não existem fora dela — `linha5`/`linha4` os tiram da LINHA da tabela
+  de Controle de Processos daquela mesa): `marcador`, `marcador_cor`,
+  `atribuido_nome`, `atribuido_login`, `visualizado`, `marco_unidade`, `recebimento`,
+  `recebimento_por`, `envio`, `unidade_envio`, `mesa_indeterminada`, mais `anotacao`,
+  `anotacao_autor` e `anotacao_data`;
+- **texto livre** (`processo_texto` na carteira): `especificacao`, `interessados`, e a
+  anotação acima.
+
+A tela distingue "não tem" de "não existe": `fonte='carteira'` significa que havia
+linha de mesa, e nulo ali é ausência do campo; `fonte='sei'` significa que não havia,
+e a ficha diz isso por escrito em vez de imprimir "Marcador —". É a régua já existente
+(`reaproveitar` só responde o que está numa mesa da conta), não uma segunda coluna a
+manter. E a procedência passou a carimbar a FICHA INTEIRA — "todos os campos desta
+ficha são da sua coleta de 27/08" —, porque o rodapé discreto do cartão falava só das
+unidades enquanto o marcador de nove dias atrás aparecia com cara de agora.
+
+**Decisão de privacidade — do usuário, 11/09/2026, perguntado explicitamente.**
+`especificacao`, `anotacao` e `interessados` vivem em `processo_texto`, separada de
+propósito por ser onde estão os campos que podem citar paciente; o painel só os mostra
+para processo NAS unidades da pessoa, onde o consentimento por unidade vale. Neste
+módulo eles aparecem para processo FORA delas — **mostrar para todos**, por decisão de
+quem responde pelo dado, não por omissão de desenho. **O alcance é só deste módulo:** a
+busca avançada continua excluindo `especificacao` com o motivo escrito dela, e ampliar
+aquilo exigiria decisão própria.
+
+**O que fica por provar em campo.** Nada do lado da estação foi exercido contra o SEI
+real — exige sessão autenticada de uma pessoa, com 2FA, na estação dela. A lista está
+no topo de `painel_sesab/_teste_acompanhar.js`. O item que mais importa: **que o
+`GET acao=procedimento_trabalhar` sobre processo fora das mesas seja mesmo só
+leitura.** No SEI 5.0.4 abrir um processo pode marcá-lo como recebido na unidade
+ativa — e aí o módulo estaria ALTERANDO o SEI, movimentando processo alheio em nome
+de quem acompanha. Enquanto não for conferido, é o risco aberto do módulo.
+
 ## 6. Isolamento — decisão pendente
 
 O pedido original foi "cada usuário só acessa os dados do seu usuário". Isso tem duas leituras:

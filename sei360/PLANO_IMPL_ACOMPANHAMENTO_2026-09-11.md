@@ -257,10 +257,12 @@ import re
 from banco import agora
 
 # Teto por pessoa. Com o reaproveitamento da carteira, só o que está fora das
-# mesas custa requisição ao SEI: ~3 por processo, ou ~300 no pior caso de uma
-# lista cheia inteiramente de fora — contra as ~5.900 que a coleta de 1.182
-# processos já faz. O teto existe para a lista não virar uma segunda coleta sem
-# ninguém ter decidido isso.
+# mesas custa requisição ao SEI: ~6 por processo (medido em 11/09/2026: GET da
+# tela de Pesquisa, POST da pesquisa, GET do processo, GET da árvore, GET do
+# andamento, GET da tela Consultar/Alterar), ou ~600 no pior caso de uma lista
+# cheia inteiramente de fora —
+# contra as ~5.900 que a coleta de 1.182 processos já faz. O teto existe para a
+# lista não virar uma segunda coleta sem ninguém ter decidido isso.
 TETO = 100
 
 # Só dígitos e a pontuação que o SEI usa. Linha que não casa NÃO é descartada em

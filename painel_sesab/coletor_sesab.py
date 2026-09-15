@@ -29,7 +29,9 @@ USO
     python coletor_sesab.py --mesas    # todas as unidades da conta
     python coletor_sesab.py --mesas --plano   # pergunta ao SEI360 o que ja foi lido
     python coletor_sesab.py --buscar          # UMA busca avancada; pedido por stdin
+    python coletor_sesab.py --acompanhar      # le N processos por numero; pedido por stdin
     python coletor_sesab.py --testar          # entra, confere quem e onde, e sai
+    python coletor_sesab.py --modos           # diz que modos conhece, e sai (aperto de mao)
 
 SAIDAS
 ------
@@ -46,6 +48,52 @@ CODIGOS DE SAIDA
 """
 import json, os, sys, datetime, traceback
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# OS MODOS QUE ESTE COLETOR CONHECE, declarados — e o aperto de mao com o agente.
+#
+# POR QUE ISTO VEM ANTES DE TUDO. Este arquivo ja foi chamado por um caminho
+# absoluto da arvore ANTERIOR a separacao do repositorio (`sei360_agente.py`
+# apontava para `C:\Claude\sei_sistema\painel_sesab\coletor_sesab.py`, de 7 de
+# setembro, que nao tem uma linha sobre acompanhamento). O que acontecia entao
+# nao era um erro: a flag desconhecida era IGNORADA, a execucao caia no caminho
+# da COLETA, logava no SEI, colhia uma mesa so e gravava por cima da coleta boa
+# do dia. Modo que o coletor nao conhece tem de ser recusado em voz alta.
+#
+# `--modos` responde ANTES do import do playwright de proposito: o aperto de mao
+# roda a cada execucao do agente, tem de custar um arranque de Python e nada
+# mais, e tem de responder mesmo numa estacao com o navegador quebrado — ali a
+# pergunta "voce conhece este modo?" continua tendo resposta.
+MODOS = ("--buscar", "--acompanhar", "--testar-login", "--testar", "--modos")
+# As opcoes que NAO sao modo: mudam como um modo roda, ou como a coleta roda.
+# `--somente`, `--instancia` e `--amostra` levam valor logo depois.
+OPCOES = ("--ver", "--mesas", "--plano", "--somente", "--credencial-stdin",
+          "--instancia", "--amostra")
+COM_VALOR = ("--somente", "--instancia", "--amostra")
+VERSAO_COLETOR = "2026-09-11"
+
+if "--modos" in sys.argv:
+    print("MODOS_OK " + json.dumps({"modos": list(MODOS), "opcoes": list(OPCOES),
+                                    "versao": VERSAO_COLETOR}))
+    sys.exit(0)
+
+_pular = False
+for _arg in sys.argv[1:]:
+    if _pular:
+        _pular = False
+        continue
+    if not _arg.startswith("--"):
+        continue
+    if _arg in COM_VALOR:
+        _pular = True
+        continue
+    if _arg not in MODOS and _arg not in OPCOES:
+        # EM VOZ ALTA, e com a lista: quem chamou errou o nome ou este coletor e
+        # velho demais para o que pediram. Cair na coleta seria o pior dos dois
+        # mundos — trabalho que ninguem pediu, por cima do dado do dia.
+        print(f"modo desconhecido: {_arg}. Este coletor conhece "
+              + ", ".join(MODOS + OPCOES))
+        sys.exit(4)
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -74,6 +122,48 @@ ARQ_ORIGEM = BASE / "unidade_origem.json"
 LOGIN  = "https://sip.seibahia.ba.gov.br/login.php?sigla_orgao_sistema=GOVBA&sigla_sistema=SEI"
 
 ORGAO = "23"          # SESAB no #selOrgao (77 opcoes; 'null' = em branco)
+
+
+def fatiar(env, por_linha=20):
+    """O envelope do acompanhamento em PEDAÇOS independentes, cada um completo.
+
+    POR QUE EM PEDAÇOS, e não numa linha só. Medido em 11/09/2026, depois da
+    ficha completa: uma leitura passou de 277 para 825 bytes, e 100 leituras de
+    27 KB para 81 KB. Numa linha só de stdout, com stderr fundido nela
+    (`stderr=STDOUT`) e sem buffer, escrita desse tamanho não é atômica — e foi
+    assim que a linha-marca corrompida virou um crítico. Em pedaços de 20, uma
+    linha corrompida custa 20 leituras em vez de 100. Reduz o raio; não fecha a
+    janela — ver o comentário de `acompanhar()` em `sei360_agente.py`.
+
+    E POR QUE `falhas`, `motivo` E `pedidos` VÃO EM TODOS, e não só no primeiro.
+    Iam só no primeiro, com o argumento de que repetir faria o agente contar cada
+    falha N vezes. O que a medição mostrou é que o primeiro pedaço é TÃO PERDÍVEL
+    quanto os outros — é a mesma escrita não atômica —, e com ele sumiam de uma
+    vez a lista de falhas (o ÚNICO lugar onde um item que não pôde ser lido
+    aparece), o motivo (sessão caída, teto de tempo) e o número de reconciliação.
+    O agente imprimia "gravou 40, ignorou 0 (em 2 pedaços)" e nada fechava conta
+    com nada.
+
+    A contagem em dobro é problema de quem LÊ, e lá se resolve com uma linha de
+    deduplicação por protocolo; a perda do único registro da falha não se resolve
+    em lugar nenhum. O custo é tamanho: cada falha são ~120 bytes, e o pior caso
+    real (60 lidas em 3 pedaços + 40 falhas) põe ~5 KB de falhas em cada pedaço de
+    16 KB. Fica abaixo do que já se aceita, e o que ele compra é a conta fechar.
+
+    `pedaco`/`pedacos` são a identidade da fatia, e existem para o agente saber
+    que faltou uma — sem eles, "recebi 2" e "eram 2" são indistinguíveis.
+    """
+    leituras = env.get("leituras") or []
+    fatias = [leituras[i:i + por_linha]
+              for i in range(0, len(leituras), por_linha)] or [[]]
+    return [{"instancia": env.get("instancia"),
+             "leituras": fatia,
+             "pedaco": i + 1,
+             "pedacos": len(fatias),
+             "falhas": env.get("falhas") or [],
+             "motivo": env.get("motivo"),
+             "pedidos": env.get("pedidos")}
+            for i, fatia in enumerate(fatias)]
 
 
 def unidade_origem():
@@ -117,6 +207,21 @@ SOMENTE = (sys.argv[sys.argv.index("--somente") + 1].split(",")
 # --buscar: roda UMA busca avançada e devolve o envelope. Não coleta, não publica,
 # não escreve em _coletas. O pedido chega por stdin, junto da credencial e do perfil.
 BUSCAR = "--buscar" in sys.argv
+# --acompanhar: le uma lista de processos POR NUMERO, um a um, fora de qualquer
+# mesa. E o outro lado do modulo de Acompanhamento do SEI360: o servidor diz quais
+# numeros a carteira nao respondeu, e a estacao le no SEI o que falta. Nao coleta,
+# nao publica, nao escreve em _coletas — e, como a busca, nao compartilha estado
+# com a coleta.
+ACOMPANHAR = "--acompanhar" in sys.argv
+if ACOMPANHAR and BUSCAR:
+    # Os dois leem UMA linha de stdin e esperam um pedido de forma diferente, e o
+    # bloco de --acompanhar vem primeiro no arquivo: passar as duas escolheria
+    # acompanhar EM SILENCIO e a busca de alguem sumiria sem erro. Ninguem faz
+    # isso hoje; a recusa e barata e a falha silenciosa nao e.
+    print("--acompanhar e --buscar sao modos diferentes; escolha um")
+    sys.exit(4)
+# O MOTOR DA BUSCA VAI JUNTO nos dois modos: a leitura de um processo por numero
+# COMECA por uma pesquisa, e e dela que sai o link do processo.
 JS_BUSCA = BASE / "pesquisa_sei.js"
 
 # --credencial-stdin: quem chama entrega {"usuario":..,"senha":..} numa linha de
@@ -137,7 +242,7 @@ CREDENCIAL = None
 # UMA linha de stdin serve as duas coisas: a credencial do SEI e os dados de
 # conexao do plano. Duas leituras de stdin seriam duas chances de o chamador
 # travar esperando a segunda linha que nunca vem.
-if CRED_STDIN or PLANO or BUSCAR:
+if CRED_STDIN or PLANO or BUSCAR or ACOMPANHAR:
     try:
         CREDENCIAL = json.loads(sys.stdin.readline() or "{}")
     except ValueError:
@@ -199,6 +304,26 @@ if os.environ.get("SEI_SEM_SANDBOX") == "1":
 PEDIDO_BUSCA = (CREDENCIAL or {}).get("busca") or {}
 if BUSCAR and not PEDIDO_BUSCA:
     print("--buscar exige {\"busca\": {...}} em stdin")
+    sys.exit(4)
+PEDIDO_ACOMP = (CREDENCIAL or {}).get("acompanhamento") or {}
+if ACOMPANHAR and not PEDIDO_ACOMP.get("protocolos"):
+    # Lista vazia e ERRO de quem chamou, nao caso normal: o servidor so entrega
+    # trabalho quando ha trabalho (`ler: false` quando nao ha). Abrir o Chromium e
+    # logar no SEI para ler zero processo custa o mesmo que ler um.
+    print("--acompanhar exige {\"acompanhamento\": {\"protocolos\": [...]}} em stdin")
+    sys.exit(4)
+if ACOMPANHAR and not (PERFIL_SEI.get("campos_busca") or {}).get("numero_sei"):
+    # SEM O MAPA DO CAMPO DO NUMERO NAO HA LEITURA POSSIVEL, e o `or {}` que ficava
+    # la embaixo transformava isso em coisa pior que erro. Medido em 11/09/2026:
+    # `montar()` recusa em silencio o campo que nao acha, o POST sai com
+    # `txtProtocoloPesquisa=` vazio, o SEI devolve a mesa inteira e a estacao
+    # relatava a ficha do PRIMEIRO processo dela carimbada com o numero pedido.
+    #
+    # O `.js` agora recusa isso do lado de la (ver `acompanhar`), e esta guarda e
+    # a outra ponta: recusar ANTES de abrir o Chromium e de logar no SEI. Uma
+    # leitura que nao pode dar certo nao vale uma sessao.
+    print("--acompanhar exige perfil com campos_busca.numero_sei em stdin "
+          "(sem ele a pesquisa sai sem filtro e devolve outro processo)")
     sys.exit(4)
 # O ENVELOPE DO PLANO NAO E CREDENCIAL. Sem esta linha, `CREDENCIAL` ficava truthy
 # com {"plano": {...}} e o caminho de login (`if CREDENCIAL:`) lia CREDENCIAL
@@ -308,8 +433,18 @@ def _esquecer_credencial(pg):
         log(f"NAO CONSEGUI apagar a credencial do perfil: {type(e).__name__}")
 
 
+# O HASH DE SESSAO NAO ATRAVESSA O ECO DO CONSOLE. `on_console` copia TODO
+# console da pagina para o stdout da estacao — que vira log, arquivo e anexo — e
+# para a lista de alertas. Hash morto nao devolve erro: ele DERRUBA a sessao de
+# quem esta trabalhando, entao ele nao pode ficar guardado em lugar de onde alguem
+# possa copia-lo de volta. Nao ha caminho conhecido em que uma URL com
+# `infra_hash` chegue aqui; a porta e que nao fica aberta. E o espelho do
+# `semHash` de `acompanharLista`, em `automacao_sei.js`.
+SEM_HASH = re.compile(r"infra_hash=[^&\s'\"]*", re.IGNORECASE)
+
+
 def on_console(msg):
-    t = msg.text
+    t = SEM_HASH.sub("infra_hash=...", msg.text)
     log(f"  page> {t}")
     baixo = t.lower()
     if any(k in baixo for k in ALERTAS) or FALHAS_N.search(t):
@@ -492,18 +627,181 @@ try:
             ctx.close()
             sys.exit(0)
 
-        if BUSCAR:
-            # UMA BUSCA, e nada mais. O motor é outro arquivo (pesquisa_sei.js):
-            # a busca não compartilha estado com a coleta, e um erro nela não pode
-            # deixar checkpoint de coleta pela metade.
+        def carregar_motor_da_busca():
+            """Injeta `pesquisa_sei.js` na aba.
+
+            OS DOIS MODOS QUE PESQUISAM passam por aqui — `--buscar` e
+            `--acompanhar`, que começa por uma pesquisa por número. Uma função só
+            para as duas não poderem divergir em QUAL arquivo carregam nem em
+            como: `add_init_script` para o motor renascer se a página navegar, e
+            `evaluate` para ele valer JÁ, nesta página, que é a que está aberta.
+            """
             if not JS_BUSCA.exists():
                 log(f"ERRO: nao achei {JS_BUSCA}")
                 ctx.close(); sys.exit(4)
             pg.add_init_script(path=str(JS_BUSCA))
             pg.evaluate(JS_BUSCA.read_text(encoding="utf-8"))
             pg.set_default_timeout(600_000)
-            log(f"buscando… (busca {PEDIDO_BUSCA.get('busca_id')})")
-            env = pg.evaluate("(p) => SEIBusca.pesquisar(p)", PEDIDO_BUSCA)
+
+        if ACOMPANHAR:
+            # N PROCESSOS POR NÚMERO, um a um, e nada mais. Quem decide o que
+            # entra nesta lista é o servidor: ele já respondeu da carteira o que
+            # dava, e o que sobra é o que só o SEI sabe.
+            carregar_motor_da_busca()
+            _protos = PEDIDO_ACOMP.get("protocolos") or []
+            log(f"acompanhando {len(_protos)} processo(s) por numero…")
+            # OS CAMPOS DA PESQUISA SAEM DO PERFIL, e sem eles esta execução nem
+            # começa — a recusa está lá em cima, junto da leitura do pedido, e é
+            # anterior ao Chromium. O que se mediu sem ela em 11/09/2026 foi pior
+            # que "não encontrado em tudo": `montar()` recusa em silêncio o campo
+            # que não acha, o POST sai sem filtro, o SEI devolve a mesa inteira e a
+            # estação relatava a ficha do PRIMEIRO processo dela com o número
+            # pedido carimbado. O `.js` recusa isso do lado de lá também.
+            #
+            # REGISTRADO, E DE PROPÓSITO NÃO MUDADO: aqui os campos vêm do perfil
+            # que chegou em `stdin` (`PERFIL_SEI["campos_busca"]`), e no
+            # `--buscar` eles vêm do PEDIDO, montado pelo servidor em
+            # `busca.py:406` a partir do mesmo `perfil_sei`. São a mesma fonte
+            # por dois caminhos. O dia em que divergirem — e o candidato é o
+            # perfil local ficar para trás do servidor — a busca acha o campo e o
+            # acompanhamento não, e a diferença aparece como "não encontrado" em
+            # tudo. Unificar é mudança do contrato da rota, e não cabia aqui.
+            env = pg.evaluate("(p) => SEIAuto.acompanharLista(p)", {
+                "instancia": PEDIDO_ACOMP.get("instancia") or PERFIL_JS.get("instancia"),
+                "protocolos": _protos,
+                "campos": PERFIL_SEI.get("campos_busca") or {},
+            })
+            # O ENVELOPE VAI PARA STDOUT COM PREFIXO — o mesmo contrato de
+            # BUSCA_OK —, mas EM PEDAÇOS. Ver `fatiar()`.
+            for _pedaco in fatiar(env):
+                print("ACOMP_OK " + json.dumps(_pedaco, ensure_ascii=False))
+            log(f"acompanhamento: {len(env.get('leituras') or [])} lido(s), "
+                f"{len(env.get('falhas') or [])} falha(s)"
+                + (f" — {env['motivo']}" if env.get("motivo") else ""))
+            ctx.close()
+            sys.exit(1 if env.get("motivo") else 0)
+
+        if BUSCAR:
+            # UMA BUSCA, e nada mais. O motor é outro arquivo (pesquisa_sei.js):
+            # a busca não compartilha estado com a coleta, e um erro nela não pode
+            # deixar checkpoint de coleta pela metade.
+            carregar_motor_da_busca()
+            # A MESA PEDIDA É ATIVADA NO SEI ANTES DE PESQUISAR — era o defeito
+            # dominante das buscas que "não rodavam", confirmado em 15/09/2026.
+            #
+            # O filtro "com tramitação na unidade" faz o resultado ser função da
+            # unidade ATIVA da sessão, e o servidor recusa resultado de mesa que
+            # não é a pedida (`busca.receber`). Mas nada trocava de unidade: a
+            # busca rodava na que o SEI tivesse deixado ativa. Numa conta de seis
+            # mesas a mesa padrão da tela é a primeira em ordem alfabética, então a
+            # busca falhava POR PADRÃO, com os itens já lidos jogados fora.
+            # `trocarMesa` é a mesma que a coleta usa, com a mesma confirmação.
+            _mesa_pedida = (PEDIDO_BUSCA.get("mesa") or "").strip()
+            # A ORIGEM É A DA PRIMEIRA EXECUÇÃO, quando o servidor a guardou. Lida
+            # do DOM a cada tentativa, ela seria a mesa pedida sempre que uma
+            # execução anterior tivesse morrido depois de trocar — e a conta nunca
+            # voltaria para onde a pessoa a deixou (medido na revisão de 15/09).
+            _volta_para = (PEDIDO_BUSCA.get("volta_para") or "").strip() or None
+            _N = lambda s: " ".join((s or "").split())                    # noqa: E731
+            _volta = None
+            _env_falha = None
+
+            def _falha_da_troca(motivo, permanente):
+                # `mesa_confirmada` NULA de propósito: com a origem ali, o servidor
+                # via divergência de mesa e trocava este motivo pela frase "a mesa
+                # ativa no SEI é X" — a mesma que a troca existe para eliminar.
+                return {"envelope": 1, "busca_id": PEDIDO_BUSCA.get("busca_id"),
+                        "instancia": PEDIDO_BUSCA.get("instancia"),
+                        "mesa_confirmada": None, "itens": [], "total_declarado": None,
+                        "paginas_lidas": 0,
+                        "motivo": "nao consegui ativar a mesa pedida: " + motivo,
+                        "motivo_permanente": bool(permanente)}
+
+            try:
+                if _mesa_pedida:
+                    _atual = pg.evaluate("() => SEIAuto.unidadeAtual()")
+                    _origem = _volta_para or _atual
+                    # ANUNCIADA ANTES DE TROCAR: se o processo morrer daqui em
+                    # diante, o servidor já sabe para onde a conta tem de voltar.
+                    if _origem:
+                        print("MESA_ORIGEM " + _origem, flush=True)
+                    _troca = pg.evaluate("""async (a) => {
+                        const N = s => (s || '').replace(/\\s+/g, ' ').trim();
+                        const atual = SEIAuto.unidadeAtual();
+                        const precisaTrocar = N(atual) !== N(a.sigla);
+                        const precisaVolta = !!a.origem && N(a.origem) !== N(a.sigla);
+                        if (!precisaTrocar && !precisaVolta) return {ok: true, trocou: false};
+                        const mesas = await SEIAuto.descobrirMesas();
+                        // SEM IDS, A LISTA NÃO FOI LIDA: é o que `descobrirMesas`
+                        // devolve quando a tela de unidades não veio (um 502 no
+                        // balanceador). Isso é passageiro — dizer "a conta não tem
+                        // a mesa" aqui era afirmar sobre a conta o que era da rede.
+                        const lidas = (mesas || []).filter(x => x && x.id);
+                        if (!lidas.length) {
+                            return {ok: false, permanente: false,
+                                    motivo: 'nao consegui ler as unidades desta conta no SEI'};
+                        }
+                        const v = lidas.find(x => N(x.sigla) === N(a.origem));
+                        const volta = precisaVolta && v ? {id: v.id, sigla: v.sigla} : null;
+                        if (!precisaTrocar) return {ok: true, trocou: false, volta};
+                        const m = lidas.find(x => N(x.sigla) === N(a.sigla));
+                        if (!m) {
+                            return {ok: false, permanente: true, volta: null,
+                                    motivo: 'a mesa ' + a.sigla + ' nao esta entre as unidades desta conta no SEI'};
+                        }
+                        const doc = await SEIAuto.trocarMesa(m);
+                        if (!doc) {
+                            // Pode ter trocado sem confirmar: a volta vai junto.
+                            return {ok: false, permanente: false, volta,
+                                    motivo: 'o SEI nao confirmou a troca de unidade para ' + a.sigla};
+                        }
+                        const lk = doc.querySelector('a[href*="acao=procedimento_controlar"]');
+                        const url = lk ? new URL(lk.getAttribute('href').replace(/&amp;/g, '&'),
+                                                 location.href).href : null;
+                        return {ok: true, trocou: true, volta, url};
+                    }""", {"sigla": _mesa_pedida, "origem": _origem})
+                    _volta = _troca.get("volta")
+                    if not _troca.get("ok"):
+                        log(f"busca: {_troca.get('motivo')}")
+                        _env_falha = _falha_da_troca(_troca.get("motivo") or "motivo desconhecido",
+                                                     _troca.get("permanente"))
+                    elif _troca.get("trocou"):
+                        # A ABA AINDA ESTÁ NA URL DA UNIDADE ANTIGA — `trocarMesa`
+                        # fala com o SEI por `fetch`, e a URL da aba carrega
+                        # `infra_unidade_atual` da origem. Recarregá-la podia
+                        # devolver a sessão para lá. A navegação vai para o link do
+                        # Controle de Processos que o próprio SEI devolveu na
+                        # unidade NOVA; só sem ele cai no recarregar.
+                        if _troca.get("url"):
+                            pg.goto(_troca["url"], wait_until="domcontentloaded")
+                        else:
+                            pg.reload(wait_until="domcontentloaded")
+                        pg.wait_for_timeout(800)
+                        _agora = pg.evaluate("() => SEIAuto.unidadeAtual()")
+                        log(f"busca: unidade ativa {_atual!r} -> {_agora!r}")
+                        # CONFERIDO, e não só registrado: pesquisar numa unidade
+                        # que não é a pedida devolveria a carteira de outra mesa.
+                        if _N(_agora) != _N(_mesa_pedida):
+                            _env_falha = _falha_da_troca(
+                                f"depois da troca a unidade ativa ficou {_agora or '?'}", False)
+                if _env_falha is None:
+                    log(f"buscando… (busca {PEDIDO_BUSCA.get('busca_id')})")
+                    env = pg.evaluate("(p) => SEIBusca.pesquisar(p)", PEDIDO_BUSCA)
+                else:
+                    env = _env_falha
+            finally:
+                if _volta:
+                    # A CONTA VOLTA PARA ONDE A PESSOA A DEIXOU, e num `finally`: a
+                    # volta tem de rodar também quando a pesquisa levanta. A unidade
+                    # ativa é estado POR USUÁRIO no SEI. Falhar aqui não invalida a
+                    # busca — vira log, não motivo.
+                    try:
+                        _voltou = pg.evaluate("(m) => SEIAuto.trocarMesa(m).then(d => !!d)", _volta)
+                    except Exception as _e:                            # noqa: BLE001
+                        _voltou = False
+                        log(f"busca: a volta de unidade levantou {type(_e).__name__}")
+                    if not _voltou:
+                        log(f"busca: a conta NAO voltou para {_volta.get('sigla')!r}")
             # O ENVELOPE VAI PARA STDOUT numa linha, com prefixo. Quem chama lê
             # isso; o log fica no resto das linhas, como sempre.
             print("BUSCA_OK " + json.dumps(env, ensure_ascii=False))

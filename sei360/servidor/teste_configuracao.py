@@ -89,24 +89,13 @@ def prosa(html):
 # chega sem nada — que é justamente o que ela existe para provar.
 from banco import agora, conectar                                     # noqa: E402
 import cofre                                                   # noqa: E402
+import perfil_sei                                              # noqa: E402
 
 
 # A suíte decifra o que o SERVIDOR cifrou, então precisa da MESMA chave mestra.
 # Sem isso ela testaria dois cofres diferentes e acusaria falha onde não há.
 if not cofre.disponivel():
     sys.exit("defina SEI360_CHAVE_MESTRA com a MESMA chave do servidor antes de rodar")
-_cx = conectar()
-_u = _cx.execute("SELECT id FROM usuarios WHERE email=?", (CONTA,)).fetchone()
-UID = _u["id"] if _u else None
-if UID:
-    _cx.execute("DELETE FROM config_usuario WHERE usuario_id=?", (UID,))
-    _cx.execute("DELETE FROM credencial WHERE usuario_id=?", (UID,))
-    _cx.execute("DELETE FROM enrolamentos WHERE agente_id IN "
-                "(SELECT id FROM agentes WHERE dono_usuario_id=?)", (UID,))
-    _cx.execute("DELETE FROM agentes WHERE dono_usuario_id=?", (UID,))
-    _cx.commit()
-_cx.close()
-
 print(f"cofre: {'disponível' if cofre.disponivel() else 'INDISPONÍVEL (falta SEI360_CHAVE_MESTRA)'}\n")
 
 # A senha é DEFINIDA na cópia, não presumida do banco de trabalho. Antes, trocar
@@ -122,6 +111,35 @@ if not _n:
     _cx.execute("""INSERT INTO usuarios(email,nome,senha_hash,senha_sal,papel,origem,
                    criado_em,ativo,senha_trocada_em) VALUES(?,?,?,?,'gestor','teste',?,1,?)""",
                 (CONTA, "Gestor de teste", _h, _s, agora(), agora()))
+_cx.commit(); _cx.close()
+
+# O UID SAI DAQUI, E NÃO DE ANTES — era ORDEM, e custou oito verificações.
+#
+# Ele era resolvido ACIMA do bloco que garante a conta, então num banco onde
+# `gestor@sei360.local` ainda não existia (o caso normal: `isolar` copia o banco
+# de trabalho, e numa máquina de desenvolvimento não há banco de trabalho) o
+# `SELECT` devolvia nada, `UID` ficava None, e toda checagem
+# `WHERE usuario_id=UID` olhava o vazio. As oito falhas não diziam nada sobre o
+# produto: a credencial ERA gravada, a configuração ERA salva, o agente lógico
+# ERA criado — o teste é que perguntava pelo usuário None. E como o bloco acima
+# INSERE a conta quando o UPDATE não pega ninguém, o conserto é a ordem.
+_cx = conectar()
+UID = _cx.execute("SELECT id FROM usuarios WHERE email=?", (CONTA,)).fetchone()["id"]
+# A cópia pode trazer configuração de uma execução anterior; o assistente é
+# testado a partir do zero.
+_cx.execute("DELETE FROM config_usuario WHERE usuario_id=?", (UID,))
+_cx.execute("DELETE FROM credencial WHERE usuario_id=?", (UID,))
+_cx.execute("DELETE FROM enrolamentos WHERE agente_id IN "
+            "(SELECT id FROM agentes WHERE dono_usuario_id=?)", (UID,))
+_cx.execute("DELETE FROM agentes WHERE dono_usuario_id=?", (UID,))
+# O VÍNCULO, SEMEADO AQUI. `escopo_do_dono` deriva as unidades do agente de
+# `usuario_unidade`, que em produção é preenchido pelo "Testar acesso" contra o
+# SEI real — num banco isolado ele não existe, e a verificação do escopo do
+# agente pedia o que a montagem não produzia. Duas mesas para o escopo poder
+# ser diferente de vazio E de tudo.
+for _un in ("SESAB/SAIS/DGGUP/DGESS", "SESAB/SAIS/DGGUP/DGESS/ASTEC"):
+    _cx.execute("""INSERT OR IGNORE INTO usuario_unidade(usuario_id,unidade,concedida_em)
+                   VALUES(?,?,?)""", (UID, _un, agora()))
 _cx.commit(); _cx.close()
 
 print("1. chegar sem nada configurado")
@@ -146,10 +164,19 @@ print("\n2. sistema")
 # e o passo 1 recusava a única instalação em que a pessoa da FESF trabalha.
 # Quem tem vínculo só lá não passava da primeira tela.
 s, cfg, _ = pegar("/configuracao?passo=sistema")
-checar("a tela diz, POR INSTALAÇÃO, o que está disponível — lido do perfil",
-       "coleta: não · busca: sim" in prosa(cfg)
-       and "coleta: sim · busca: sim" in prosa(cfg),
-       "sem a linha de disponibilidade por instância")
+# A LINHA É POR INSTALAÇÃO, e o TESTE não pode fixar o valor dela: a
+# verificação anterior exigia "coleta: não · busca: sim", que era a FESF de
+# 07/09/2026 — em 08/09 ela ganhou parser provado e as duas instalações passaram
+# a ter coleta e busca. A tela estava certa e a checagem vermelha. O que se
+# afirma aqui é o que não envelhece: cada instalação diz o que tem, e o texto
+# casa com o perfil DE VERDADE, lido agora.
+_esperado = [f"coleta: {'sim' if p['disponivel_coleta'] else 'não'} · "
+             f"busca: {'sim' if p['disponivel_busca'] else 'não'}"
+             for p in (perfil_sei.perfil(i) for i in perfil_sei.INSTANCIAS)]
+checar(f"a tela diz, POR INSTALAÇÃO, o que está disponível — lido do perfil "
+       f"({len(_esperado)})",
+       all(e in prosa(cfg) for e in _esperado),
+       f"esperava {_esperado}")
 checar("e nenhum rádio do passo 1 vem desabilitado",
        "disabled" not in cfg, "há instalação desabilitada na tela de sistema")
 s, cfg, _ = pegar("/configuracao", {"csrf": csrf(), "passo": "sistema", "sistema": "SEI-FESF"})
@@ -420,29 +447,45 @@ import coleta as _col
 _chamadas = []
 
 
-def _rodar_duble(argumentos, credencial, timeout):
+def _rodar_duble(argumentos, credencial, timeout, usuario_id=None, instancia=None):
+    # A ASSINATURA ACOMPANHA A REAL, e este duble quebrou quando ela mudou —
+    # corretamente. `usuario_id` e `instancia` entraram em 12/09/2026 para o
+    # perfil do Chromium ser POR PESSOA e por instalacao: com um perfil so, a
+    # coleta de B rodava dentro da sessao do SEI de A. Guardados aqui para a
+    # checagem abaixo poder afirmar que eles CHEGAM.
     _chamadas.append({"args": list(argumentos), "chaves": sorted(credencial),
-                      "perfil": credencial.get("perfil") or {}, "timeout": timeout})
+                      "perfil": credencial.get("perfil") or {}, "timeout": timeout,
+                      "usuario_id": usuario_id, "instancia": instancia})
     return 0, "TESTE duble", ""
 
 
 _rodar_real, _col._rodar = _col._rodar, _rodar_duble
 try:
-    c, s = _col.coletar(1, "SEI-INEXISTENTE")
+    c, s = _col.coletar(UID, "SEI-INEXISTENTE")
     checar("instalacao desconhecida e recusada com codigo 4", c == 4 and "desconhecida" in s, s)
-    c, s = _col.coletar(1, "SEI-FESF")
-    checar("FESF sem parser provado e recusada com o MOTIVO do perfil",
-           c == 4 and "indispon" in s and "Detalhada" in s, s)
+    # A INSTALAÇÃO SEM PARSER PROVADO NÃO EXISTE MAIS — as duas têm coleta
+    # desde 08/09/2026 —, mas o GUARDA-CORPO continua tendo de existir: ele é o
+    # que impede uma instalação nova de ser coletada por um parser que ninguém
+    # provou. Desliga-se a disponibilidade para exercitá-lo, mesmo idioma da
+    # cena D de `teste_coleta_servidor.py`.
+    _fesf_coleta = perfil_sei.INSTANCIAS["SEI-FESF"]["disponivel_coleta"]
+    perfil_sei.INSTANCIAS["SEI-FESF"]["disponivel_coleta"] = False
+    try:
+        c, s = _col.coletar(UID, "SEI-FESF")
+        checar("instalação sem parser provado é recusada com o MOTIVO do perfil",
+               c == 4 and "indispon" in s, s)
+    finally:
+        perfil_sei.INSTANCIAS["SEI-FESF"]["disponivel_coleta"] = _fesf_coleta
     checar("e o coletor nem foi chamado", not _chamadas)
     cx = conectar()
-    cx.execute("DELETE FROM credencial WHERE usuario_id=1")
+    cx.execute("DELETE FROM credencial WHERE usuario_id=?", (UID,))
     cx.commit()
-    c, s = _col.coletar(1, "SEI-SESAB")
+    c, s = _col.coletar(UID, "SEI-SESAB")
     checar("sem credencial no cofre: codigo 3 e frase clara", c == 3 and "credencial" in s, s)
-    cofre.guardar(cx, 1, "SEI-SESAB", "titular@saude.ba.gov.br", "senha-de-teste-xyz")
-    cofre.guardar(cx, 1, "SEI-FESF", "nome.sobrenome", "outra-senha-xyz")
+    cofre.guardar(cx, UID, "SEI-SESAB", "titular@saude.ba.gov.br", "senha-de-teste-xyz")
+    cofre.guardar(cx, UID, "SEI-FESF", "nome.sobrenome", "outra-senha-xyz")
     cx.commit(); cx.close()
-    c, s = _col.coletar(1, "SEI-SESAB", somente=["SESAB/SAIS/DGGUP/DGESS/ASTEC"])
+    c, s = _col.coletar(UID, "SEI-SESAB", somente=["SESAB/SAIS/DGGUP/DGESS/ASTEC"])
     ch = _chamadas[-1]
     checar("coleta SESAB chama o coletor com --mesas e --somente",
            ch["args"][:1] == ["--mesas"] and "--somente" in ch["args"], str(ch["args"]))

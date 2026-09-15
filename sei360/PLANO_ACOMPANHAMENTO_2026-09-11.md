@@ -31,8 +31,16 @@ fronteira que o resto do sistema inteiro defende.
 **Não responde "parado há N dias aqui".** Os cinco campos de custódia
 (`marco_unidade`, `recebimento`, `recebimento_por`, `envio`, `unidade_envio`) são
 derivados PARA UMA MESA — é o que `poco.py` já trata como recalculável e nunca
-copiável. Fora da mesa eles não têm referente. O módulo mostra "aberto em CIR-IBOT
-há 14 dias", que é verdade, e **omite** o resto em vez de fabricá-lo.
+copiável. Fora da mesa eles não têm referente. O módulo mostra "aberto em
+CIR-IBOT" e **omite** o resto em vez de fabricá-lo.
+
+> **Corrigido em 12/09/2026, na implementação.** Este parágrafo prometia "aberto em
+> CIR-IBOT **há 14 dias**". Não há de onde tirar os 14: a árvore do SEI lista as
+> unidades em que o processo está aberto e **não carrega data nenhuma** — a data de
+> entrada numa unidade sai de `mov_custodia`, que é derivado por mesa e é
+> justamente o que este parágrafo diz não atravessar. A promessa era o número
+> fabricado que o módulo existe para não fabricar; a tela entrega a unidade, sem o
+> "há N dias".
 
 **Não atravessa pessoa, e não passa pelo poço.** A lista é por conta e a leitura sai
 do login daquela conta. Se duas pessoas seguem o mesmo processo, são duas leituras —
@@ -61,6 +69,19 @@ configuração. Ícone novo em `_ICONES["acompanhamento"]` (marcador/bookmark), 
 formato dos existentes: `path`/`circle` sem `<svg>` em volta.
 
 ## 4. Modelo de dados — duas tabelas novas, nenhuma alterada
+
+> **O DDL abaixo é o ESBOÇO de 11/09, não o esquema.** O que está no ar é
+> `banco.DDL`, e só ele: `migrar()` deriva os ALTERs comparando o DDL com o
+> `PRAGMA table_info`, então divergência aqui não é aviso — é papel. As duas
+> tabelas cresceram na implementação, e as diferenças que mudam o raciocínio são
+> quatro: `acompanhado` ganhou `tentativas`/`tentativa_em` (o recuo depois da
+> linha-marca corrompida) e um CHECK no `estado`; perdeu o `DEFAULT 'SEI-SESAB'`
+> de `instancia`, para instalação nunca ser carimbada por omissão;
+> `acompanhado_leitura` ganhou a ficha inteira do processo (§11), mais `fonte`
+> NOT NULL, `medido_em` (a data da MEDIÇÃO, que não é `lido_em`),
+> `aberto_em_fonte` e `comparacao`; e a FK dela virou composta, com cascade, para
+> sair da lista levar a série junto. Leia o esboço pelo desenho — a chave ser o
+> protocolo, a série existir —, nunca pelas colunas.
 
 ```sql
 -- A LISTA. A chave é o PROTOCOLO, não o id_sei: o número é o que a pessoa tem na
@@ -117,11 +138,22 @@ estação pergunta     ->  GET /api/agente/acompanhamento
                             (nunca de outra conta)
                                         |
 estação lê no SEI    ->  pesquisa_sei.js busca por numero_sei -> link do processo
-                            leitura REDUZIDA, ~3 requisições: a página do
-                            processo, a árvore (de onde sai aberto_em, via
-                            mesasPorArvore) e o histórico (último movimento e
-                            as contagens). NÃO chama daMesa(): os cinco campos
-                            por mesa nem são calculados.
+                            leitura REDUZIDA, 6 requisições por processo
+                            (5 quando o processo não tem a ação
+                            Consultar/Alterar): a pesquisa por número — que é
+                            reaberta a cada protocolo, de propósito —, a página
+                            do processo, a árvore (de onde sai aberto_em) e o
+                            histórico, mais a ficha de cadastro (assuntos e
+                            interessados). Os cinco campos por mesa SÃO
+                            calculados por `derivar` e não sobem: a lista de
+                            campos do envelope é escrita à mão.
+                                        |
+                          (medido: 6, não os "~3" que este desenho estimou
+                            antes de a função existir. `custo()` publica 5 por
+                            processo para a coleta; o acompanhamento paga uma a
+                            mais porque reabre a pesquisa a cada número, e
+                            `_teste_acompanhar.js` CONTA as requisições da
+                            fixture para o número não envelhecer sozinho.)
                                         |
 estação devolve      ->  POST /api/agente/acompanhamento
                             servidor calcula o DELTA contra a leitura anterior,
@@ -205,9 +237,14 @@ quem nunca filtrou) e ele não se repete aqui.
 ## 7. Limites
 
 **Teto de 100 processos por pessoa.** Com o reaproveitamento da carteira (5-bis), só
-o que está fora das mesas custa requisição: cerca de 3 por processo, ou ~300 no pior
-caso de uma lista cheia inteiramente fora da carteira — contra as ~5.900 que a coleta
-de 1.182 processos já faz. O teto
+o que está fora das mesas custa requisição: **6 por processo** (medido em 11/09/2026 —
+GET da tela de Pesquisa, POST da pesquisa, GET do processo, GET da árvore, GET do
+andamento, GET da tela Consultar/Alterar; a conta original dizia 3 e esquecia o par da
+pesquisa, que é refeito a cada protocolo porque reusar formulário velho é o risco de
+`infra_hash` morto, e a sexta é a da ficha — cai para 5 quando o processo não tem a
+ação Consultar/Alterar), ou **~600** no pior caso de uma lista cheia inteiramente fora
+da carteira — contra as ~5.900 que a coleta de 1.182 processos já faz, ou ~10% a mais,
+uma vez por dia por pessoa. O teto
 existe para a lista não virar uma segunda coleta sem ninguém ter decidido isso. Ao
 estourar, a tela recusa com o número atual — não descarta em silêncio.
 
@@ -272,3 +309,77 @@ tela, porque a alternativa é a pessoa supor sincronia que não existe.
 
 A listagem é uma tela do SEI que o coletor ainda não abre; é o único ponto do módulo
 que precisa de navegação nova, e é por isso que ela é opcional e sai por último.
+
+---
+
+## 11. Ficha completa — decidido em 11/09/2026, depois da fase 2
+
+Pedido do usuário: *"deve aparecer as informações completas do processo, como aparece
+no controle de processo, para que possa entender qual é cada processo. Além disso,
+deve haver as opções para aparecer as informações mais completas de cada processo."*
+
+A lista de números nus é ilegível, e o pedido é legítimo. Mas a disponibilidade dos
+campos tem **três camadas diferentes**, e só uma era escolha de desenho.
+
+### 11.1 O que existe onde
+
+**Do processo — vale dentro e fora da mesa.** Autuação, unidade e usuário geradores,
+contagem de documentos e de movimentos, último movimento, unidades abertas (árvore),
+nível de acesso, hipótese legal, e-mails enviados, anexados, assinatura externa. Mais
+`assuntos` e `interessados`, que saem da tela Consultar/Alterar (um GET, sem submeter)
+— **uma requisição a mais**, levando de 5 para 6 por processo lido no SEI.
+
+**Da MESA — não existe fora dela.** Marcador, anotação (autor e data), responsável
+atribuído, "já visualizado", documento novo, e os cinco campos de custódia — portanto
+"parado há N dias aqui". Medido no coletor: `linha5` e `linha4` tiram esses campos da
+LINHA da tabela de Controle de Processos daquela mesa (`aria-label` no 5.x, tooltip no
+4.0). Para processo que não está em mesa da conta, essa linha não existe. Não é
+decisão: é o que o SEI expõe.
+
+**`tipo_processo` e `especificacao` também são da linha da mesa** — e é por isso que a
+especificação, que é justamente o que responde "qual é esse processo", **não está
+disponível para processo de fora**. O `tipo` se recupera de outro lugar (a própria
+busca já o devolve em `CAMPOS_ITEM`); a especificação, não. Fica como **melhor
+esforço** a partir da raiz da árvore, marcada como ausente quando não vier, e o nome
+do campo na tela Consultar/Alterar entra na lista do que se verifica em campo — o
+projeto nunca leu aquela tela e adivinhar id de campo do SEI já custou quatro erros
+nesta mesma entrega.
+
+### 11.2 A decisão de privacidade, e de quem foi
+
+`especificacao`, `anotacao`, `interessados` e `acompanhamento` vivem em
+`processo_texto`, separada de propósito por ser "onde estão os campos que podem citar
+paciente". A busca avançada exclui `especificacao` com motivo escrito: *"é texto que um
+servidor escreveu, pode citar paciente, e o consentimento para tratá-lo é por
+unidade."*
+
+O painel mostra esse texto para processo **nas** unidades da pessoa, onde o
+consentimento por unidade vale. O Acompanhamento o mostraria para processo **fora**
+delas, onde não há unidade que o sustente.
+
+**Decisão do usuário, 11/09/2026, perguntado explicitamente: mostrar para todos.** O
+alcance do texto livre passa a ir além do consentimento por unidade, neste módulo, por
+decisão de quem responde pelo dado — não por omissão de desenho e não por conveniência
+de implementação. Fica escrito aqui e em `SPECS.md` §5-quindecies com data e autor,
+porque é o tipo de decisão que alguém vai querer reconstituir.
+
+**O alcance é SÓ deste módulo.** A exclusão que a busca avançada faz continua valendo:
+é outra superfície, com outro alcance (a busca varre o SEI inteiro, o acompanhamento
+varre uma lista que a própria pessoa montou), e ampliá-la exigiria uma decisão própria.
+
+### 11.3 A forma
+
+**Linha enxuta, com expandir na linha** — decisão do usuário, e é o padrão que o painel
+já usa. Com teto de 100 itens, cartão sempre aberto viraria página de rolagem infinita;
+a ficha lateral do painel é desenhada para os campos da carteira e não para estes.
+
+O que fica na linha fechada: número, instalação (quando há mais de uma), a nota da
+pessoa, onde está aberto, último movimento, o que mudou, e a procedência. O que abre no
+expandir: tipo, especificação, autuação, quem gerou, assuntos, interessados, nível de
+acesso, contagens — e, para processo da carteira, também marcador, anotação,
+responsável e os dias na unidade, que ali existem.
+
+**Campo ausente não vira vazio silencioso.** Item de fora da carteira não tem marcador
+nem anotação porque a mesa não existe, e isso é diferente de "não tem marcador". A
+ficha diz qual dos dois, no espírito do `acomp_lido` e do `mesa_indeterminada` que o
+esquema já traz.
