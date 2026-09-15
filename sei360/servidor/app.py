@@ -3941,9 +3941,15 @@ def saude():
         try:
             import atendente as _at
             _busca = {"laco_vivo": _at.vivo(), "vagas_livres": _at.vagas_livres(),
-                      "vagas": _at.LIMITE}
+                      "vagas": _at.LIMITE,
+                      # NO CONTAINER, e não só neste worker. `laco_vivo` é deste
+                      # processo — com 3 workers, dois respondem False com o executor
+                      # vivo no terceiro. Foi preciso consultar 15 vezes para concluir
+                      # que não havia executor em lugar nenhum; esta chave diz de uma.
+                      "executor_no_container": _at.ha_executor()}
         except Exception:                                      # noqa: BLE001
-            _busca = {"laco_vivo": False, "vagas_livres": None, "vagas": None}
+            _busca = {"laco_vivo": False, "vagas_livres": None, "vagas": None,
+                      "executor_no_container": None}
     except Exception as e:                                  # noqa: BLE001
         return jsonify(ok=False, erro=type(e).__name__), 503
     return jsonify(ok=True, unidades_correntes=n, versao=VERSAO_AGENTE, busca=_busca)
@@ -3984,7 +3990,10 @@ except Exception as _ex:                                       # noqa: BLE001
 try:
     import coleta_servidor as _coleta_servidor
     if not (_debug and not os.environ.get("WERKZEUG_RUN_MAIN")):
-        _coleta_servidor.iniciar()
+        # REGISTRADO, e não só chamado: se este worker virar o executor DEPOIS
+        # (reeleição), a coleta sobe junto. Chamado só aqui, ela desistia para
+        # sempre no worker que ainda não era o executor.
+        _atendente.ao_assumir(_coleta_servidor.iniciar)
 except Exception as _ex:                                       # noqa: BLE001
     print(f"coleta em modo servidor não subiu: {type(_ex).__name__}", flush=True)
 
@@ -4002,7 +4011,7 @@ except Exception as _ex:                                       # noqa: BLE001
 try:
     import acompanhamento_servidor as _acomp_servidor
     if not (_debug and not os.environ.get("WERKZEUG_RUN_MAIN")):
-        _acomp_servidor.iniciar()
+        _atendente.ao_assumir(_acomp_servidor.iniciar)
 except Exception as _ex:                                       # noqa: BLE001
     print(f"acompanhamento em modo servidor não subiu: {type(_ex).__name__}",
           flush=True)

@@ -535,6 +535,71 @@ try:
     finally:
         asv._executar = _ex_real2
         asv._falhas_seguidas.clear()
+    print("\nS. O EXECUTOR É REELEITO — quem perdeu a vez na subida continua candidato")
+    # Medido em produção em 15/09/2026: 15 de 15 consultas a /saude sem executor vivo.
+    # A eleição era uma só, no import: se a trava estava com outro processo naquele
+    # instante (o container antigo durante o redeploy), ninguém tentava de novo, e
+    # toda busca morria em 90 s. Aqui um processo SEPARADO segura a trava, e solta.
+    import subprocess as _sp_s
+    import time as _time_s
+    _trava_s = banco.DADOS_DIR / ".atendente.lock"
+    _sentinela = SCRATCH / "_segura_trava.sentinela"
+    _sentinela.write_text("x", encoding="utf-8")
+    _script = SCRATCH / "_segura_trava.py"
+    _script.write_text(
+        "import os, sys, time\n"
+        f"p = r'{_trava_s}'\n"
+        f"s = r'{_sentinela}'\n"
+        "fd = os.open(p, os.O_CREAT | os.O_RDWR)\n"
+        "if os.name == 'nt':\n"
+        "    import msvcrt; msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)\n"
+        "else:\n"
+        "    import fcntl; fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "print('SEGURANDO', flush=True)\n"
+        "while os.path.exists(s):\n"
+        "    time.sleep(0.1)\n", encoding="utf-8")
+    _dono = _sp_s.Popen([sys.executable, str(_script)], stdout=_sp_s.PIPE, text=True)
+    _o_cand, _o_env = at.CANDIDATO_S, os.environ.get("SEI360_ATENDENTE")
+    _o_cap_s = at.capacidade
+    _subiram = []
+    try:
+        checar("(cena) outro processo segura a vez", _dono.stdout.readline().strip() == "SEGURANDO")
+        at.CANDIDATO_S = 0.5
+        os.environ["SEI360_ATENDENTE"] = "1"
+        at.capacidade = lambda: (False, "teste: sem navegador")   # o laço sobe, mas não executa
+        at.ao_assumir(lambda: _subiram.append("coleta"))
+        checar("na subida, a vez está com outro: este worker não é o executor",
+               at.iniciar() is False and at.vivo() is False)
+        checar("mas fica candidato", bool(at._candidato and at._candidato.is_alive()))
+        _sentinela.unlink()
+        _dono.wait(timeout=10)
+        for _ in range(40):
+            if at.vivo():
+                break
+            _time_s.sleep(0.25)
+        checar("quando a vez se solta, o candidato ASSUME — sem reiniciar nada", at.vivo())
+        checar("e quem pega carona no executor (coleta, acompanhamento) sobe junto",
+               _subiram == ["coleta"], _subiram)
+    finally:
+        at._laco_vivo.clear()
+        if _sentinela.exists():
+            _sentinela.unlink()
+        try:
+            _dono.kill()
+        except Exception:                                      # noqa: BLE001
+            pass
+        at.CANDIDATO_S = _o_cand
+        at.capacidade = _o_cap_s
+        at._soltar_a_vez()
+        if _o_env is None:
+            os.environ.pop("SEI360_ATENDENTE", None)
+        else:
+            os.environ["SEI360_ATENDENTE"] = _o_env
+        at._ao_assumir.clear()
+        _script.unlink(missing_ok=True)
+    checar("/saude diz se há executor NO CONTAINER, não só neste worker",
+           '"executor_no_container": _at.ha_executor()' in
+           (SCRATCH / "app.py").read_text(encoding="utf-8"))
 finally:
     at.COLETOR = _coletor_real
     (SCRATCH / "_coletor_falso_busca.py").unlink(missing_ok=True)

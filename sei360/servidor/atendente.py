@@ -671,9 +671,13 @@ def _tomar_a_vez():
     trava = banco.DADOS_DIR / ".atendente.lock"
     try:
         fd = os.open(str(trava), os.O_CREAT | os.O_RDWR)
-    except OSError:
+    except OSError as ex:
         # Volume somente leitura ou sem espaço: sem lock não há como garantir
-        # unicidade, e é melhor ficar sem executor do que ter vários.
+        # unicidade, e é melhor ficar sem executor do que ter vários. DITO no log:
+        # antes este caso imprimia "outro processo já é o executor" — falso, e
+        # mandava procurar um executor que não existia.
+        print(f"atendente de busca: não consegui abrir {trava} ({type(ex).__name__}) "
+              "— sem executor neste container até o volume aceitar escrita", flush=True)
         return False
     if not _travar_fd(fd):
         os.close(fd)
@@ -723,22 +727,87 @@ def _soltar_a_vez():
     _fd_vez = None
 
 
+# QUEM PERDE A VEZ CONTINUA CANDIDATO. De quanto em quanto tempo ele pergunta.
+#
+# O DEFEITO, medido em produção em 15/09/2026: 15 de 15 consultas a /saude
+# responderam `laco_vivo: false` — com 3 workers, a chance de isso ser azar de
+# amostragem é 0,2%. Não havia executor de busca no container. A eleição acontecia
+# UMA vez, no import de cada worker: se naquele instante a trava estava com outro
+# processo — o container ANTIGO ainda de pé durante um redeploy sem parada, que
+# divide o mesmo volume, ou um worker que o gunicorn estava reciclando —, os três
+# workers novos desistiam, e ninguém tentava de novo quando a trava se soltava
+# segundos depois. Toda busca aceita morria em 90 s com "o executor de busca deste
+# servidor não pegou o pedido", e a coleta e o acompanhamento do servidor, que
+# pegam carona no executor, também nunca subiam.
+CANDIDATO_S = 30
+_candidato = None
+_ao_assumir = []
+
+
+def ao_assumir(fn):
+    """Registra quem sobe junto quando este processo vira o executor.
+
+    `coleta_servidor.iniciar` e `acompanhamento_servidor.iniciar` exigem
+    `atendente.vivo()`; chamados no import de um worker que ainda não é o
+    executor, eles desistiam para sempre. Registrados aqui, sobem no instante
+    em que a vez é tomada — na subida ou na reeleição.
+    """
+    if fn not in _ao_assumir:
+        _ao_assumir.append(fn)
+    if vivo():
+        try:
+            fn()
+        except Exception as ex:                                # noqa: BLE001
+            print(f"atendente: {getattr(fn, '__module__', fn)} não subiu "
+                  f"({type(ex).__name__})", flush=True)
+
+
+def _assumir():
+    global _thread
+    _thread = threading.Thread(target=laco, name="atendente", daemon=True)
+    _thread.start()
+    for fn in list(_ao_assumir):
+        try:
+            fn()
+        except Exception as ex:                                # noqa: BLE001
+            print(f"atendente: {getattr(fn, '__module__', fn)} não subiu "
+                  f"({type(ex).__name__})", flush=True)
+
+
+def _candidatar():
+    """Laço do worker que não é o executor: tenta a vez de tempos em tempos."""
+    while ligado() and not vivo():
+        time.sleep(CANDIDATO_S)
+        try:
+            if _tomar_a_vez():
+                print(f"atendente de busca: este processo ({os.getpid()}) assumiu a "
+                      "vez — o executor anterior saiu", flush=True)
+                _assumir()
+                return
+        except Exception as ex:                                # noqa: BLE001
+            print(f"atendente: candidatura falhou ({type(ex).__name__})", flush=True)
+
+
 def iniciar():
     """Sobe o laço numa thread deste processo, se este for o processo da vez.
 
-    Idempotente, e seguro com vários workers: só um pega a vez.
+    Idempotente, e seguro com vários workers: só um pega a vez. Quem não pega fica
+    CANDIDATO — ver `CANDIDATO_S`.
     """
-    global _thread
+    global _candidato
     if not ligado() or (_thread and _thread.is_alive()):
         return False
     if not _tomar_a_vez():
-        # Não é erro: é um worker de painel. Dizer, para o log não sugerir que o
-        # executor não subiu em lugar nenhum.
-        print("atendente de busca: outro processo deste container já é o executor",
-              flush=True)
+        # Não é erro: é um worker de painel — por enquanto. Dizer, para o log não
+        # sugerir que o executor não subiu em lugar nenhum; e ficar candidato.
+        print("atendente de busca: outro processo deste container já é o executor "
+              f"— este fica candidato a cada {CANDIDATO_S} s", flush=True)
+        if not (_candidato and _candidato.is_alive()):
+            _candidato = threading.Thread(target=_candidatar, name="atendente-candidato",
+                                          daemon=True)
+            _candidato.start()
         return False
-    _thread = threading.Thread(target=laco, name="atendente", daemon=True)
-    _thread.start()
+    _assumir()
     return True
 
 
