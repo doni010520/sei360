@@ -395,6 +395,22 @@ def executar(cx, r):
             # senha recusada, SEI fora do ar e navegador morto por falta de
             # memória saíam todos como uma busca que nem começou.
             envelope["motivo"], passageira = _causa(proc.returncode, saida)
+            if proc.returncode == 3:
+                # O QUE O SEI DISSE vira o motivo na tela de quem pesquisou, e a
+                # recusa CERTA marca a senha: a coleta da madrugada não tenta de
+                # novo com ela (cada tentativa conta para o bloqueio da conta).
+                import leitura_saida as _ls
+                _c = _ls.causa(3, saida)
+                envelope["motivo"] = f"{_c['texto']} Confira a senha guardada em Configuração."
+                if _c["chave"] in _ls.CAUSAS_DE_LOGIN and _c["certeza"]:
+                    try:
+                        cofre.marcar_recusa(cx, r["usuario_id"], r["instancia"], _c["texto"])
+                        cx.commit()
+                    except Exception:                      # noqa: BLE001
+                        try:
+                            cx.rollback()
+                        except Exception:                  # noqa: BLE001
+                            pass
             print(f"atendente: busca {bid} sem envelope (código {proc.returncode}): "
                   f"{_sem_hash(_ultima_linha(saida) or '-')}", flush=True)
         elif envelope.get("motivo") and not envelope.get("itens"):
@@ -409,6 +425,11 @@ def executar(cx, r):
         passageira = type(ex).__name__ == "OperationalError"
     finally:
         envelope.setdefault("duracao_s", round(time.time() - inicio, 1))
+        # A SAÍDA INTEIRA NO VOLUME — sem o envelope (resultado da pessoa) e sem
+        # segredo. `guardar_saida` nunca levanta.
+        if saida:
+            import diario as _diario
+            _diario.guardar_saida("busca", bid, saida)
         # A ORIGEM DA MESA, gravada assim que o coletor a anuncia — antes de
         # qualquer veredito, e mesmo quando ele morre depois.
         try:

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Execução {{ e.id }}</title>
+{% include '_cabeca.html' %}
+<style>
+  .saida{max-height:560px;overflow:auto;white-space:pre-wrap;word-break:break-word;
+         font-family:var(--mono);font-size:11px;line-height:1.45;padding:12px;
+         background:var(--card);border:1px solid var(--rule);border-radius:var(--r)}
+  .fatos{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+  .fatos div{font-size:12.5px}
+  .fatos b{display:block;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+</style>
+</head><body>
+
+{% with pagina='admin' %}{% include '_nav.html' %}{% endwith %}
+
+<div class="folha">
+  <p style="margin:0 0 6px"><a href="/admin">← Administração</a> · <a href="/admin/diagnostico">Diagnóstico do motor</a></p>
+  <h2 class="sec">Execução {{ e.id }} · {{ e.nome_estacao or '—' }}</h2>
+
+  <div class="cartao fatos">
+    <div><b>Estado</b><span class="tag {{ 'ok' if e.estado=='concluida' else 'al' if e.estado in ['travada','bloqueada','infra','perdida','sem_dados'] else 'es' }}">{{ e.estado }}</span></div>
+    <div><b>Código de saída</b><span class="mono">{{ e.exit_code if e.exit_code is not none else '—' }}</span></div>
+    <div><b>Janela</b><span class="mono">{{ (e.janela or '—')[:16].replace('T',' ') }}</span></div>
+    <div><b>Gatilho</b>{{ e.gatilho or '—' }}</div>
+    <div><b>Dono</b>{{ e.dono or '—' }}</div>
+    <div><b>Início</b><span class="mono">{{ (e.iniciado_em or '—')[:19].replace('T',' ') }}</span></div>
+    <div><b>Fim</b><span class="mono">{{ (e.terminado_em or '—')[:19].replace('T',' ') }}</span></div>
+    <div><b>Duração</b><span class="mono">{{ (e.duracao_s ~ ' s') if e.duracao_s else '—' }}</span></div>
+  </div>
+
+  <h2 class="sec">Causa</h2>
+  <div class="destaque" style="{% if causa and causa.chave not in ['ok'] %}border-left-color:var(--alerta);background:var(--alerta-soft){% endif %}">
+    {% if causa %}
+      <b>{{ causa.texto }}</b><br>
+      <span class="mono" style="font-size:11px;color:var(--ink-3)">{{ causa.chave }}{% if not causa.certeza %} · incerta{% endif %}</span>
+    {% else %}
+      {{ (e.log_resumo or 'sem resumo gravado').split(' ‖ ')[0] }}
+      <br><span style="font-size:11.5px;color:var(--ink-3)">A saída inteira desta execução não está guardada: ela é anterior ao log por execução, expirou (prazo de {{ dias_log }} dias) ou veio de uma estação.</span>
+    {% endif %}
+  </div>
+
+  {% if mesas %}
+  <h2 class="sec">Por mesa — o que a tela declarou e o que foi lido</h2>
+  <table class="grade">
+    <tr><th>Mesa</th><th>Listas</th><th>Declarou</th><th>Leu</th><th></th></tr>
+    {% for nome, m in mesas.items() %}
+    <tr>
+      <td class="mono" style="font-size:11px">{{ nome }}</td>
+      <td style="font-size:11.5px">{% for l in m.listas %}{{ l.lista }} {{ l.lidas }}{% if l.declaradas is not none %}/{{ l.declaradas }}{% endif %} em {{ l.paginas }} pág.{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</td>
+      <td class="mono">{{ m.declaradas if m.declaradas is not none else '—' }}</td>
+      <td class="mono">{{ m.lidas }}</td>
+      <td>{% if m.incompleta or (m.declaradas is not none and m.lidas < m.declaradas) %}<span class="tag al">incompleta</span>{% elif m.declaradas is not none %}<span class="tag ok">fechou</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if snaps %}
+  <h2 class="sec">Snapshots desta execução</h2>
+  <table class="grade">
+    <tr><th>Unidade</th><th>Processos</th><th>Estado</th><th>Motivo</th></tr>
+    {% for s in snaps %}
+    <tr><td class="mono" style="font-size:11px">{{ s.unidade }}</td><td class="mono">{{ s.unicos }}</td>
+        <td><span class="tag {{ 'ok' if s.estado=='corrente' else 'al' if s.estado=='candidato' else 'es' }}">{{ s.estado }}</span></td>
+        <td style="font-size:12px">{{ s.motivo or '—' }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if alertas %}
+  <h2 class="sec">Alertas que ela gerou</h2>
+  <table class="grade">
+    <tr><th>Quando</th><th>Tipo</th><th>Unidade</th><th>Texto</th></tr>
+    {% for a in alertas %}
+    <tr><td class="mono" style="font-size:10.5px">{{ (a.ts or '')[:16].replace('T',' ') }}</td>
+        <td class="mono" style="font-size:11px">{{ a.tipo }}</td>
+        <td class="mono" style="font-size:10.5px">{{ a.unidade or '—' }}</td>
+        <td style="font-size:12px">{{ a.texto }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if chave %}
+  <h2 class="sec">Linhas que contam a história</h2>
+  <div class="saida" style="max-height:320px">{% for l in chave %}{{ l }}
+{% endfor %}</div>
+  {% endif %}
+
+  {% if saida %}
+  <h2 class="sec">Saída inteira do coletor</h2>
+  <p style="font-size:12px;color:var(--ink-3);margin:-4px 0 8px">Sem senha, sem token e sem o envelope de resultado — passam por filtro antes de gravar. Guardada por {{ dias_log }} dias no volume, e o expurgo a apaga depois.</p>
+  <div class="saida">{{ saida }}</div>
+  {% endif %}
+</div>
+</body></html>

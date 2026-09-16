@@ -218,6 +218,18 @@ def quem_executa(cx, usuario_id, agora_dt=None, instancia=None):
                     "Guarde a senha do SEI desta instalação em Configuração → "
                     "Acesso. A busca roda com o seu login, e sem ele o servidor "
                     "não tem como entrar.")
+        # O SEI JÁ RECUSOU ESTA SENHA (e ela não foi salva de novo): aceitar o
+        # pedido seria mais um login errado na conta da pessoa, 60 s de espera na
+        # tela e a mesma recusa no fim. Diz agora, com o que o SEI respondeu.
+        if pode and instancia:
+            import cofre as _cofre
+            _rec = _cofre.recusa(cx, usuario_id, instancia)
+            if _rec:
+                return None, (f"o SEI recusou a senha guardada para {instancia} em "
+                              f"{str(_rec['recusada_em'])[:16].replace('T', ' ')}"), (
+                    f"{_rec['recusa_motivo']} Salve a senha de novo em Configuração → "
+                    "Acesso: enquanto isso o servidor não tenta entrar com ela, porque "
+                    "cada tentativa errada conta para o bloqueio da sua conta no SEI.")
         if pode:
             return ({"nome_estacao": "este servidor", "servidor": True,
                      "id": None, "token_sha256": None}, None, None)

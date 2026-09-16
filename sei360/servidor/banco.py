@@ -222,6 +222,13 @@ CREATE TABLE IF NOT EXISTS credencial(
   sistema TEXT NOT NULL, login TEXT NOT NULL,
   segredo BLOB NOT NULL, nonce BLOB NOT NULL, algo TEXT NOT NULL,
   criado_em TEXT, ultimo_uso_em TEXT, usos INTEGER DEFAULT 0,
+  -- O SEI RECUSOU ESTA SENHA, e disse por quê. Marcado só quando a recusa é
+  -- CERTA (mensagem do SEI, segundo fator, CAPTCHA): a partir daí nenhum motor
+  -- tenta de novo com ela, porque cada tentativa errada conta para o bloqueio
+  -- da conta no SEI. `cofre.guardar` apaga a marca — salvar a senha de novo é
+  -- o gesto de quem a corrigiu. Em 15-16/09/2026 foram cinco logins recusados
+  -- seguidos numa conta, sem nada no sistema dizendo o que o SEI respondeu.
+  recusada_em TEXT, recusa_motivo TEXT,
   PRIMARY KEY(usuario_id, sistema));
 
 CREATE TABLE IF NOT EXISTS enrolamentos(
@@ -250,7 +257,12 @@ CREATE TABLE IF NOT EXISTS execucao(
   gatilho TEXT, gatilho_por INTEGER,
   entregue_em TEXT, iniciado_em TEXT, heartbeat_em TEXT, terminado_em TEXT,
   duracao_s INTEGER, exit_code INTEGER, alertas TEXT, log_resumo TEXT,
-  png_falha TEXT);                             -- nome do arquivo NA ESTACAO
+  png_falha TEXT,                              -- nome do arquivo NA ESTACAO
+  -- A CAUSA, em chave (`leitura_saida.causa`): 'ok', 'login_recusado',
+  -- 'segundo_fator', 'relogio'... O texto legível vai no começo de
+  -- `log_resumo`; a chave é o que a decisão da próxima janela consulta sem
+  -- depender de casar frase.
+  causa TEXT);
 CREATE INDEX IF NOT EXISTS ix_exec_agente ON execucao(agente_id, janela);
 
 -- snapshot e POR UNIDADE: uma coleta que cobre 6 mesas e 6 snapshots. Se fosse

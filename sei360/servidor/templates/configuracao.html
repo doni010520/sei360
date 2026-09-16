@@ -73,6 +73,17 @@
 <div class="folha" style="max-width:1040px">
 
   {% if erro %}<div class="destaque" style="border-left-color:var(--alerta);background:var(--alerta-soft)">{{ erro }}</div>{% endif %}
+  {% if recusa %}
+  {# O SEI RECUSOU A SENHA GUARDADA, e a coleta parou por isso — dito em qualquer
+     passo. Sem este aviso, a pessoa só descobriria pela carteira envelhecendo. #}
+  <div class="destaque" style="border-left-color:var(--alerta);background:var(--alerta-soft)">
+    <b>A coleta automática está parada: o SEI recusou a senha guardada em
+    {{ recusa.recusada_em[:16].replace('T',' ') }}.</b><br>
+    <span style="font-size:13px">{{ recusa.recusa_motivo }} Salve a senha de novo em
+    <a href="/configuracao?passo=acesso">Acesso</a> — enquanto isso o servidor não tenta
+    entrar com ela, porque cada tentativa errada conta para o bloqueio da sua conta no SEI.</span>
+  </div>
+  {% endif %}
 
   <h1 style="font-family:var(--display);font-size:28px;margin:0 0 6px;font-weight:600">
     {% if completa and not passo_ativo %}Sua coleta está configurada{% else %}Configurar a coleta{% endif %}</h1>

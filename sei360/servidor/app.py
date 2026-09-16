@@ -130,6 +130,11 @@ COOKIE_CSRF = "sei360_csrf"
 # única porta que ele abre é a tela do código.
 COOKIE_DESAFIO = "sei360_2fa"
 VERSAO_AGENTE = "1.0.0"
+# QUAL CÓDIGO ESTÁ NO AR. `VERSAO_AGENTE` é o contrato com a estação e não muda a
+# cada entrega; sem outra marca, "o merge já foi publicado?" só se respondia
+# procurando uma rota nova e vendo se dava 404 — foi assim em 16/09/2026, com o
+# PR #3 mergeado e fora do ar. Mudar a cada PR que vai para produção.
+CODIGO_NO_AR = "2026-09-16 · log por execução (PR #4)"
 
 def cookie_seguro():
     """Secure sai do PROTOCOLO da requisicao, nao de variavel de ambiente.
@@ -1231,9 +1236,14 @@ def _tela_config(erro=None, teste=None, passo_forcado=None):
     pedido = passo_forcado or request.args.get("passo")
     validos = [p["chave"] for p in d["passos"]]
     ativo = pedido if pedido in validos else (None if d["completa"] else d["pendente"])
+    # A RECUSA DO SEI APARECE PARA A PESSOA sem ela precisar clicar em nada, em
+    # QUALQUER passo do assistente. A coleta dela parou por isso (e só volta quando
+    # a senha for salva de novo); sem este aviso, a primeira notícia seria a
+    # carteira velha no painel.
+    recusa = _recusa_da_pessoa(request.usuario["usuario_id"])
     resp = make_response(render_template(
         "configuracao.html", u=request.usuario, sistemas=cfgmod.SISTEMAS,
-        erro=erro, teste=teste, ativo=ativo, passo_ativo=bool(pedido), **d))
+        erro=erro, teste=teste, ativo=ativo, passo_ativo=bool(pedido), recusa=recusa, **d))
     resp.set_cookie(COOKIE_CSRF, seg.novo_csrf(), samesite="Lax",
                     secure=cookie_seguro(), path="/")
     return resp
@@ -1558,8 +1568,46 @@ def configuracao_testar():
     """
     confere_csrf()
     from coleta import testar_acesso
-    ok, mensagem, detalhe = testar_acesso(request.usuario["usuario_id"], ip=ip_cliente())
+    uid = request.usuario["usuario_id"]
+    # SENHA QUE O SEI JÁ RECUSOU NÃO É TESTADA DE NOVO. Em 15/09/2026 foram três
+    # cliques em três minutos, três logins errados na conta da pessoa — e cada um
+    # conta para o bloqueio dela no SEI. Salvar a senha outra vez desfaz a marca.
+    rec = _recusa_da_pessoa(uid)
+    if rec:
+        return _tela_config(teste={
+            "ok": False,
+            "mensagem": (f"O SEI recusou esta senha em "
+                         f"{str(rec['recusada_em'])[:16].replace('T', ' ')}."),
+            "detalhe": (f"{rec['recusa_motivo']} Salve a senha de novo em Acesso antes de "
+                        "testar: cada tentativa com a senha errada conta para o bloqueio da "
+                        "sua conta no SEI.")})
+    ok, mensagem, detalhe = testar_acesso(uid, ip=ip_cliente())
+    if ok:
+        # O VÍNCULO NASCE DESTE TESTE, e o escopo do agente nasce do vínculo. Sem
+        # reaplicar aqui, o agente continuava com o escopo de antes (vazio, para
+        # quem nunca tinha entrado) até a pessoa salvar outro passo da
+        # configuração — e a coleta rodava sem poder publicar nada.
+        cx = conectar()
+        try:
+            aplicar_agendamento(cx, uid)
+            cx.commit()
+        finally:
+            cx.close()
     return _tela_config(teste={"ok": ok, "mensagem": mensagem, "detalhe": detalhe})
+
+
+def _recusa_da_pessoa(uid):
+    """A recusa do SEI registrada na credencial da instalação ATIVA desta pessoa."""
+    import cofre
+    import coleta as _col
+    cx = conectar()
+    try:
+        inst = _col._instancia_de(cx, uid) or cfgmod.ler(cx, uid)["sistema"]
+        return cofre.recusa(cx, uid, inst)
+    except Exception:                                          # noqa: BLE001
+        return None
+    finally:
+        cx.close()
 
 
 @app.post("/configuracao/esquecer")
@@ -2196,6 +2244,26 @@ def admin(novo=None, provisoria=None, aviso=None):
     # `candidato` é beco sem saída — a ingestão marca e ninguém nunca resolve.
     candidatos = cx.execute("""SELECT * FROM snapshot WHERE estado='candidato'
                                ORDER BY coletado_em DESC""").fetchall()
+    # A PROVA PARA DECIDIR a retenção, lida da saída da coleta que a produziu: o
+    # total que a TELA do SEI declarou para a mesa contra o que foi lido. Sem ela,
+    # "promover" era aposta — a tela dizia "confira no SEI", e conferir exigia
+    # alguém com a conta daquela unidade abrir o SEI.
+    import diario as _diario
+    import leitura_saida as _ls
+    _saidas, evidencias = {}, {}
+    for _s in candidatos:
+        _eid = _s["execucao_id"]
+        if _eid and _eid not in _saidas:
+            _txt = _diario.ler_saida("coleta", _eid)
+            _saidas[_eid] = _ls.por_mesa(_txt) if _txt else None
+        _pm = _saidas.get(_eid)
+        evidencias[_s["id"]] = (_pm or {}).get(_s["unidade"]) if _pm is not None else None
+    # A SITUAÇÃO DE CADA AGENTE DO SERVIDOR, na mesma decisão que o laço toma.
+    import coleta_servidor as _cs
+    situacoes = {}
+    for _a in agentes:
+        if str(_a["nome_estacao"] or "").startswith("SERVIDOR/"):
+            situacoes[_a["id"]] = _cs.situacao(cx, _a["id"])
     from banco import BANCO
     tamanho_banco = BANCO.stat().st_size / 1024 / 1024
     import ia as iamod
@@ -2258,7 +2326,8 @@ def admin(novo=None, provisoria=None, aviso=None):
                            usuarios=usuarios, agentes=agentes, agenda=agenda,
                            execs=execs, alertas=alertas, unidades=unidades, logs=logs,
                            vinculos=vinculos, novo=novo, provisoria=provisoria,
-                           candidatos=candidatos, tamanho_banco=tamanho_banco, aviso=aviso,
+                           candidatos=candidatos, evidencias=evidencias, situacoes=situacoes,
+                           tamanho_banco=tamanho_banco, aviso=aviso,
                            ia=cfg_ia, em=cfg_email, pol=politica,
                            u=request.usuario, coleta=estado_coleta())
 
@@ -2871,12 +2940,32 @@ def janelas_perdidas(cx):
     # atrasado, e "janela perdida" seria uma acusação sobre uma execução que
     # nunca teve como acontecer. Agente sem dono também fica de fora — não há a
     # quem pedir credencial, e portanto não há coleta possível.
-    for cfg in cx.execute("""SELECT ag.* FROM agendamento ag JOIN agentes a ON a.id=ag.agente_id
+    #
+    # E O AGENTE LÓGICO DO SERVIDOR, que não tem token porque não tem estação: o
+    # executor é este container. A regra acima o deixava de fora sem querer, e
+    # isso tinha preço medido — entre 10 e 15/09/2026 o executor ficou sem eleição
+    # e só UMA conta (a que tinha sido estação antes, e por isso tinha token)
+    # ganhou "janela perdida". As outras perderam as mesmas manhãs sem registro
+    # nenhum: a falha aparecia como ausência. Entra só o agente que PODE coletar
+    # (`coleta_servidor.motivo_parado`): janela de conta sem senha, sem escopo ou
+    # com a senha recusada não é perdida — o motivo já está na linha do agente, e
+    # repeti-lo como alerta todo dia é como um detector morre.
+    import coleta_servidor as _cs
+    for cfg in cx.execute("""SELECT ag.*, a.nome_estacao FROM agendamento ag
+                             JOIN agentes a ON a.id=ag.agente_id
                              WHERE ag.ativo=1 AND a.ativo=1
-                               AND a.token_sha256 IS NOT NULL
+                               AND (a.token_sha256 IS NOT NULL
+                                    OR a.nome_estacao LIKE 'SERVIDOR/%')
                                AND a.dono_usuario_id IS NOT NULL""").fetchall():
         if cfg["dias"] == "uteis" and not janelas.dia_util(datetime.now(TZ).date()):
             continue
+        do_servidor = str(cfg["nome_estacao"] or "").startswith("SERVIDOR/")
+        if do_servidor:
+            try:
+                if _cs.motivo_parado(cx, cfg["agente_id"]):
+                    continue
+            except Exception:                                  # noqa: BLE001
+                continue
         tol = timedelta(minutes=cfg["tolerancia_min"])
         # O MESMO desvio da entrega, e a MESMA chave. A cobrança mede o tempo
         # contra o horário em que a estação acorda; a identidade da janela
@@ -2896,11 +2985,22 @@ def janelas_perdidas(cx):
             cx.execute("""INSERT INTO execucao(agente_id,janela,estado,gatilho,terminado_em)
                           VALUES(?,?,'perdida','janela',?)""", (cfg["agente_id"], iso, agora()))
             ex = cx.execute("SELECT last_insert_rowid()").fetchone()[0]
+            # O TEXTO NOMEIA O AGENTE e culpa quem pode ser culpado. "Estação
+            # desligada" sobre um agente do servidor mandava procurar um
+            # computador que não existe — e sem o nome, três alertas iguais não
+            # diziam de quem era cada manhã perdida.
+            if do_servidor:
+                texto = (f"a janela de {j:%H:%M} de {j:%d/%m} de {cfg['nome_estacao']} fechou "
+                         f"sem coleta — o motor do servidor não a executou (executor sem "
+                         f"eleição, fila ocupada além da tolerância ou container parado). "
+                         f"Veja /admin/diagnostico.")
+            else:
+                texto = (f"a janela de {j:%H:%M} de {j:%d/%m} de {cfg['nome_estacao']} fechou "
+                         f"e a estação nunca pediu a tarefa — estação desligada, sem rede ou "
+                         f"tarefa não agendada")
             cx.execute("""INSERT INTO alerta(ts,tipo,severidade,execucao_id,texto)
                           VALUES(?,?,?,?,?)""",
-                       (agora(), "janela_perdida", "alta", ex,
-                        f"a janela de {j:%H:%M} de {j:%d/%m} fechou e o agente nunca "
-                        f"pediu a tarefa — estação desligada, sem rede ou tarefa não agendada"))
+                       (agora(), "janela_perdida", "alta", ex, texto))
             novas += 1
     return novas
 
@@ -3955,9 +4055,26 @@ def diag():
             pass
         return jsonify(erro="não encontrado"), 404
 
+    try:
+        linhas = max(1, min(int(request.args.get("linhas") or 120), 500))
+    except ValueError:
+        linhas = 120
+    cx = conectar()
+    try:
+        fora = _diagnostico_dados(cx, linhas)
+        registrar(cx, None, "diag", alvo=f"{linhas} linha(s) de diário", ip=ip_cliente())
+        cx.commit()
+    finally:
+        cx.close()
+    return jsonify(**fora)
+
+
+def _diagnostico_dados(cx, linhas=120):
+    """O recorte operacional: o MESMO para `/diag` (token) e `/admin/diagnostico`
+    (sessão de admin). Duas telas com duas consultas divergiriam no primeiro
+    ajuste — e a que diverge é sempre a que se consulta no dia do problema."""
     import diario as diariomod
-    linhas = max(1, min(int(request.args.get("linhas") or 120), 500))
-    fora = {"agora": agora(), "versao": VERSAO_AGENTE}
+    fora = {"agora": agora(), "versao": VERSAO_AGENTE, "codigo": CODIGO_NO_AR}
 
     def secao(nome, fn):
         try:
@@ -3988,10 +4105,32 @@ def diag():
                 "coleta": {"ligado": _cs.ligado(), "laco_neste_worker": _cs.vivo()},
                 "acompanhamento": {"ligado": _asv.ligado(), "laco_neste_worker": _asv.vivo()}}
 
-    cx = conectar()
+    def _situacao():
+        # POR AGENTE DO SERVIDOR, a mesma decisão que o laço toma — sem gravar.
+        # É a resposta a "por que a coleta de fulano não rodou", que antes exigia
+        # ler o código de `_decidir` com o banco aberto ao lado.
+        import coleta_servidor as _cs
+        import cofre as _cofre
+        saida = []
+        for a in cx.execute("""SELECT a.id, a.nome_estacao, a.dono_usuario_id, u.email
+                               FROM agentes a LEFT JOIN usuarios u ON u.id = a.dono_usuario_id
+                               WHERE a.nome_estacao LIKE 'SERVIDOR/%' ORDER BY a.nome_estacao"""):
+            s = _cs.situacao(cx, a["id"])
+            ult = cx.execute("""SELECT id, janela, estado, exit_code, causa, terminado_em
+                                FROM execucao WHERE agente_id=? ORDER BY id DESC LIMIT 1""",
+                             (a["id"],)).fetchone()
+            rec = _cofre.recusa(cx, a["dono_usuario_id"], s.get("instancia")) \
+                if a["dono_usuario_id"] else None
+            saida.append({"agente_id": a["id"], "agente": a["nome_estacao"], "dono": a["email"],
+                          "instancia": s.get("instancia"), "estado": s["estado"],
+                          "motivo": s["texto"], "senha_recusada_em": (rec or {}).get("recusada_em"),
+                          "ultima_execucao": dict(ult) if ult else None})
+        return saida
+
     try:
         secao("interruptores", _interruptores)
         secao("motor", _motor)
+        secao("situacao_dos_agentes", _situacao)
         secao("agentes", lambda: [dict(r) for r in cx.execute(
             """SELECT a.id, a.nome_estacao, u.email AS dono, a.pausado_motivo,
                       a.ultimo_contato_em, g.ativo AS agendamento_ativo, g.janelas,
@@ -4009,8 +4148,8 @@ def diag():
                ORDER BY u.email, c.sistema""")])
         secao("execucoes", lambda: [dict(r) for r in cx.execute(
             """SELECT e.id, a.nome_estacao, e.janela, e.estado, e.gatilho, e.exit_code,
-                      e.duracao_s, e.entregue_em, e.terminado_em,
-                      substr(COALESCE(e.log_resumo,''), 1, 300) AS resumo
+                      e.causa, e.duracao_s, e.entregue_em, e.terminado_em,
+                      substr(COALESCE(e.log_resumo,''), 1, 600) AS resumo
                FROM execucao e JOIN agentes a ON a.id = e.agente_id
                ORDER BY e.id DESC LIMIT 20""")])
         secao("coleta_por_unidade", lambda: [dict(r) for r in cx.execute(
@@ -4034,13 +4173,68 @@ def diag():
                GROUP BY 1,2,3 ORDER BY 1,2,3""")])
         secao("travas_de_conta", lambda: [dict(r) for r in cx.execute(
             "SELECT instancia, conta, busca_id, dono, ate FROM busca_trava")])
-        registrar(cx, None, "diag", alvo=f"{linhas} linha(s) de diário", ip=ip_cliente())
+    except Exception as ex:                                    # noqa: BLE001
+        fora["erro"] = type(ex).__name__
+    secao("diario_arquivos", diariomod.arquivos)
+    secao("diario", lambda: diariomod.ler(linhas))
+    return fora
+
+
+# ------------------------------------------- o diagnóstico, para quem administra
+# A MESMA LEITURA DO `/diag`, pela sessão de admin. O `/diag` existe para quem
+# não tem sessão (e depende de uma variável de ambiente que alguém precisa pôr no
+# painel do provedor); esta tela existe para quem já está logado e quer saber,
+# sem abrir terminal nenhum, por que a coleta de uma conta não rodou.
+@app.get("/admin/diagnostico")
+@exige_admin
+def admin_diagnostico():
+    cx = conectar()
+    try:
+        d = _diagnostico_dados(cx, 250)
+        registrar(cx, request.usuario["usuario_id"], "ver_diagnostico",
+                  alvo="250 linha(s) de diário")
         cx.commit()
     finally:
         cx.close()
-    secao("diario_arquivos", diariomod.arquivos)
-    secao("diario", lambda: diariomod.ler(linhas))
-    return jsonify(**fora)
+    return render_template("admin_diagnostico.html", u=request.usuario, d=d)
+
+
+@app.get("/admin/execucao/<int:eid>")
+@exige_admin
+def admin_execucao(eid):
+    """Uma execução de coleta por inteiro: a causa, o que cada mesa declarou e
+    leu, os alertas que ela gerou e a saída do coletor.
+
+    É a tela que faltava em 16/09/2026: a lista de execuções mostrava 90
+    caracteres de uma cauda de 300, e decidir um snapshot retido por queda
+    ("a UMA-CMA esvaziou, ou a leitura veio pela metade?") exigia uma prova que o
+    sistema tinha lido e jogado fora.
+    """
+    import diario as diariomod
+    import leitura_saida as ls
+    cx = conectar()
+    try:
+        e = cx.execute("""SELECT e.*, a.nome_estacao, u.email AS dono
+                          FROM execucao e LEFT JOIN agentes a ON a.id = e.agente_id
+                          LEFT JOIN usuarios u ON u.id = a.dono_usuario_id
+                          WHERE e.id=?""", (eid,)).fetchone()
+        if not e:
+            abort(404)
+        alertas = cx.execute("""SELECT ts, tipo, severidade, unidade, texto, reconhecido_em
+                                FROM alerta WHERE execucao_id=? ORDER BY id""", (eid,)).fetchall()
+        snaps = cx.execute("""SELECT id, unidade, unicos, estado, motivo FROM snapshot
+                              WHERE execucao_id=? ORDER BY unidade""", (eid,)).fetchall()
+        registrar(cx, request.usuario["usuario_id"], "ver_log_execucao", alvo=str(eid))
+        cx.commit()
+    finally:
+        cx.close()
+    saida = diariomod.ler_saida("coleta", eid)
+    causa = ls.causa(e["exit_code"], saida, e["estado"]) if saida else None
+    return render_template("admin_execucao.html", u=request.usuario, e=e, alertas=alertas,
+                           snaps=snaps, saida=saida, causa=causa,
+                           mesas=ls.por_mesa(saida) if saida else {},
+                           chave=ls.linhas_chave(saida, limite=80) if saida else [],
+                           dias_log=diariomod.DIAS)
 
 
 @app.get("/saude")
@@ -4074,7 +4268,8 @@ def saude():
                       "executor_no_container": None}
     except Exception as e:                                  # noqa: BLE001
         return jsonify(ok=False, erro=type(e).__name__), 503
-    return jsonify(ok=True, unidades_correntes=n, versao=VERSAO_AGENTE, busca=_busca)
+    return jsonify(ok=True, unidades_correntes=n, versao=VERSAO_AGENTE, codigo=CODIGO_NO_AR,
+                   busca=_busca)
 
 
 # O EXECUTOR DE BUSCA SOBE COM A APLICAÇÃO. Aqui, e não dentro de `__main__`,

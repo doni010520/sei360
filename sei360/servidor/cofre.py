@@ -98,11 +98,53 @@ def guardar(cx, usuario_id, sistema, login, senha, ip=None):
                   ON CONFLICT(usuario_id,sistema) DO UPDATE SET
                     login=excluded.login,
                     segredo=excluded.segredo, nonce=excluded.nonce, algo=excluded.algo,
-                    criado_em=excluded.criado_em, usos=0, ultimo_uso_em=NULL""",
+                    criado_em=excluded.criado_em, usos=0, ultimo_uso_em=NULL,
+                    recusada_em=NULL, recusa_motivo=NULL""",
                (usuario_id, sistema, login, blob, nonce, ALGO, agora()))
     # O REGISTRO guarda o fato, nunca o segredo — nem o tamanho dele.
     registrar(cx, usuario_id, "guardar_credencial", alvo=sistema, ip=ip)
     return True
+
+
+def marcar_recusa(cx, usuario_id, sistema, motivo):
+    """O SEI recusou esta senha — com certeza, não por lentidão. Ninguém tenta de novo.
+
+    POR QUE PARAR, e não insistir: cada login errado conta para o bloqueio da
+    conta no SEI, e o bloqueio é da PESSOA, não deste sistema — ela chega ao
+    trabalho e não entra no SEI por causa de um robô. Em 15-16/09/2026 uma conta
+    acumulou cinco recusas seguidas: três cliques em "Testar acesso" em três
+    minutos e duas tentativas da coleta das 04:00, uma a um minuto da outra.
+
+    Quem desfaz é `guardar()` — salvar a senha de novo é o gesto de quem a
+    corrigiu. Não há prazo que desfaça sozinho: a senha errada não fica certa
+    com o tempo.
+
+    Devolve True se marcou (havia credencial). NUNCA grava o segredo nem o login.
+    """
+    n = cx.execute("""UPDATE credencial SET recusada_em=?, recusa_motivo=?
+                      WHERE usuario_id=? AND sistema=?""",
+                   (agora(), str(motivo or "")[:400], usuario_id, sistema)).rowcount
+    if n:
+        registrar(cx, usuario_id, "credencial_recusada",
+                  alvo=f"{sistema} · {str(motivo or '')[:160]}")
+    return bool(n)
+
+
+def recusa(cx, usuario_id, sistema):
+    """{'recusada_em', 'recusa_motivo'} se o SEI recusou esta senha e ela não foi
+    salva de novo desde então; None se está valendo (ou se não há credencial)."""
+    if not sistema:
+        return None
+    try:
+        r = cx.execute("""SELECT recusada_em, recusa_motivo FROM credencial
+                          WHERE usuario_id=? AND sistema=?""", (usuario_id, sistema)).fetchone()
+    except Exception:                                          # noqa: BLE001
+        # Banco antes da migração: sem a coluna, não há recusa registrada — e a
+        # pergunta não pode derrubar a tela que a faz.
+        return None
+    if not r or not r["recusada_em"]:
+        return None
+    return {"recusada_em": r["recusada_em"], "recusa_motivo": r["recusa_motivo"]}
 
 
 def abrir(cx, usuario_id, motivo, ip=None, sistema=None):
@@ -152,7 +194,8 @@ def esquecer(cx, usuario_id, ip=None):
 
 def estado(cx, usuario_id):
     """O que a tela pode dizer sobre a credencial sem nunca tocar no segredo."""
-    r = cx.execute("""SELECT sistema,login,algo,criado_em,ultimo_uso_em,usos
+    r = cx.execute("""SELECT sistema,login,algo,criado_em,ultimo_uso_em,usos,
+                             recusada_em,recusa_motivo
                       FROM credencial WHERE usuario_id=?""", (usuario_id,)).fetchone()
     return dict(r) if r else None
 

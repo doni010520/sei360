@@ -490,6 +490,25 @@ try:
         pg.on("console", on_console)
         pg.on("pageerror", lambda e: log(f"  pageerror> {e}"))
 
+        # A CAIXA DE ALERTA DO NAVEGADOR É ONDE O SEI RESPONDE. Sem ouvinte, o
+        # Playwright a FECHA em silêncio — e com ela ia embora "usuário ou senha
+        # inválida", a única frase que diz por que o login falhou. Em 15-16/09/2026
+        # foram cinco recusas seguidas numa conta sem que o sistema soubesse o que o
+        # SEI tinha dito. O ouvinte registra e FECHA (dismiss): é o mesmo desfecho do
+        # padrão do Playwright, agora com testemunha. Com ouvinte registrado, fechar
+        # é obrigação dele — um diálogo esquecido pendura a página.
+        def _no_dialogo(d):
+            try:
+                log(f"  dialog> {d.type}: {SEM_HASH.sub('infra_hash=...', d.message or '')[:300]}")
+            except Exception:                                    # noqa: BLE001
+                pass
+            finally:
+                try:
+                    d.dismiss()
+                except Exception:                                # noqa: BLE001
+                    pass
+        pg.on("dialog", _no_dialogo)
+
         log("abrindo o SEI…")
         pg.goto(LOGIN, wait_until="domcontentloaded")
 
@@ -544,6 +563,44 @@ try:
                 pg.wait_for_url(lambda u: "login.php" not in u, timeout=60_000)
             except PWTimeout:
                 _esquecer_credencial(pg)
+                # O QUE A TELA DIZ, EM TEXTO. O print (`falha_login.png`) fica no
+                # disco de quem roda e é sobrescrito na execução seguinte; o texto
+                # vai no log da execução, que o servidor guarda. Dois tipos de
+                # prova: a FRASE que o SEI escreveu (aviso na página) e a ESTRUTURA
+                # (campo de código = segundo fator; CAPTCHA). Nunca o valor de
+                # campo nenhum — `innerText` de input é vazio, e a senha fica onde
+                # estava.
+                try:
+                    _disse = pg.evaluate(r"""() => {
+                      const vis = e => !!(e && (e.offsetWidth || e.offsetHeight
+                                              || e.getClientRects().length));
+                      const textos = [];
+                      const caixas = ['#divInfraMensagens', '#divInfraExcecao', '.infraExcecao',
+                        '.infraMensagem', '#lblMensagem', '#divMensagem', '#spnMensagem',
+                        '.alert', '[role=alert]', '.msgErro', '.mensagem', '#divMsg'];
+                      for (const s of caixas)
+                        document.querySelectorAll(s).forEach(e => { if (vis(e)) textos.push(e.innerText); });
+                      // Sem caixa conhecida: frase CURTA, visível e de erro. A lista
+                      // não tem "dois fatores" de propósito — a tela de login do SEI
+                      // Bahia escreve isso em todo acesso.
+                      const erro = /inv[aá]lid|incorret|bloquead|expirad|n[aã]o confere|tentativas|captcha|n[aã]o autorizad|desativad|suspens/i;
+                      if (!textos.length) document.querySelectorAll('body *').forEach(e => {
+                        if (e.children.length || !vis(e)) return;
+                        const t = (e.innerText || '').trim();
+                        if (t.length > 3 && t.length < 220 && erro.test(t)) textos.push(t);
+                      });
+                      const captcha = !!document.querySelector(
+                        'img[src*="captcha" i], input[name*="captcha" i], [id*="captcha" i], .g-recaptcha, iframe[src*="recaptcha"]');
+                      const codigo = Array.from(document.querySelectorAll('input')).some(i =>
+                        vis(i) && !/password|hidden/i.test(i.type)
+                        && /c[oó]digo|codigo|token|otp|2fa|verifica/i.test((i.id || '') + ' ' + (i.name || '') + ' ' + (i.placeholder || '')));
+                      const limpos = textos.map(t => String(t).replace(/\s+/g, ' ').trim()).filter(Boolean);
+                      return {textos: Array.from(new Set(limpos)).slice(0, 5), captcha, codigo,
+                              url: location.pathname};
+                    }""")
+                    log("LOGIN_SEI_DISSE " + json.dumps(_disse, ensure_ascii=False))
+                except Exception as _e:                          # noqa: BLE001
+                    log(f"LOGIN_SEI_DISSE indisponivel ({type(_e).__name__})")
                 pg.screenshot(path=str(SAIDA / "falha_login.png"), full_page=True)
                 log("LOGIN NAO CONCLUIU em 60s — ver _coletas/falha_login.png")
                 for a in alertas: log(f"  alerta: {a}")

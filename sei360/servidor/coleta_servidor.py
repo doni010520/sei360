@@ -78,8 +78,10 @@ from pathlib import Path
 import atendente
 import banco
 import cofre
+import diario
 import ingestao
 import janelas
+import leitura_saida
 import perfil_sei
 import busca as bmod
 import coleta as coleta_mod
@@ -167,43 +169,66 @@ def _candidatos(cx):
            AND dono_usuario_id IS NOT NULL AND pausado_motivo IS NULL""")]
 
 
-def _decidir(cx, agente_id, agora_dt=None):
-    """Mesma pergunta de `/api/agente/tarefa` (app.py), para UM agente lógico.
+def _instancia_do_dono(cx, dono):
+    """(instância, motivo) — a instalação que este motor coleta para esta pessoa.
 
-    Devolve (execucao_id, janela, instancia, perfil) quando há o que coletar
-    agora, ou (None, motivo, None, None) quando não há.
+    A INSTALAÇÃO vem da configuração do dono em modo servidor — nunca de um
+    padrão escrito à mão (foi bug real: SESAB fixo fazia a FESF entrar no SEI
+    errado, com falha que parecia senha inválida).
 
-    DUPLICADA DE PROPÓSITO, não extraída da rota. Aquela rota atende toda
-    estação de produção agora (inclusive a que já funciona, SESAB); reduzir
-    o risco desta primeira versão valeu mais que eliminar a duplicação. Se
-    este laço se provar em produção, as duas podem convergir para uma função
-    só — não antes.
+    E ENTRE AS CONFIGURADAS, A QUE TEM SENHA. A versão anterior pegava a mais
+    RECENTE, tivesse ou não senha guardada. Em 15/09/2026 uma conta com a coleta
+    da FESF funcionando abriu o passo "sistema" da SESAB na Configuração — a linha
+    da SESAB nasceu em modo servidor, sem senha, e virou a mais recente: a coleta
+    da FESF parou, e toda manhã gravava duas execuções 'bloqueada' com "nenhuma
+    credencial guardada". Nada na tela dizia que um clique tinha trocado a
+    instalação coletada.
+    """
+    linhas = cx.execute("""SELECT c.sistema,
+                                  EXISTS(SELECT 1 FROM credencial k
+                                          WHERE k.usuario_id = c.usuario_id
+                                            AND k.sistema = c.sistema) AS tem_senha
+                           FROM config_usuario c
+                           WHERE c.usuario_id=? AND c.modo_coleta='servidor'
+                           ORDER BY c.atualizado_em DESC""", (dono,)).fetchall()
+    if not linhas:
+        return None, "sem sistema configurado em modo servidor"
+    com_senha = [l["sistema"] for l in linhas if l["tem_senha"]]
+    if not com_senha:
+        # NÃO GRAVA EXECUÇÃO. "Não há senha" é estado da configuração, não falha
+        # de uma coleta — antes eram duas linhas 'bloqueada' por dia por conta, e a
+        # lista de execuções do /admin virava ruído que esconde a falha de verdade.
+        return None, (f"sem senha do SEI guardada no servidor para {linhas[0]['sistema']}"
+                      " — a pessoa salva em Configuração → Acesso")
+    return com_senha[0], None
+
+
+def _avaliar(cx, agente_id, agora_dt=None):
+    """A decisão, SEM ESCREVER: ('pendente', id, janela, instância),
+    ('devida', None, janela, instância) ou ('nao', None, motivo, instância|None).
+
+    Separada de `_decidir` para o /admin poder perguntar "por que este agente não
+    coleta?" sem gravar entrega nenhuma — a mesma resposta que o laço usa, e não
+    uma segunda implementação que um dia diverge.
     """
     ag = cx.execute("SELECT * FROM agentes WHERE id=?", (agente_id,)).fetchone()
     if not ag or ag["pausado_motivo"]:
-        return None, ag["pausado_motivo"] if ag else "agente removido", None, None
+        return "nao", None, ag["pausado_motivo"] if ag else "agente removido", None
     cfg = cx.execute("SELECT * FROM agendamento WHERE agente_id=?", (agente_id,)).fetchone()
     if not cfg or not cfg["ativo"]:
-        return None, (cfg["motivo_inativo"] if cfg else None) or "agendamento desarmado", None, None
+        return "nao", None, (cfg["motivo_inativo"] if cfg else None) or "agendamento desarmado", None
 
-    # A INSTALAÇÃO vem da configuração do dono em modo servidor — nunca de um
-    # padrão escrito à mão (foi bug real: SESAB fixo fazia a FESF entrar no
-    # SEI errado, com falha que parecia senha inválida).
-    linha = cx.execute("""SELECT sistema FROM config_usuario
-                          WHERE usuario_id=? AND modo_coleta='servidor'
-                          ORDER BY atualizado_em DESC LIMIT 1""",
-                       (ag["dono_usuario_id"],)).fetchone()
-    if not linha:
-        return None, "sem sistema configurado em modo servidor", None, None
-    instancia = linha["sistema"]
+    instancia, motivo = _instancia_do_dono(cx, ag["dono_usuario_id"])
+    if not instancia:
+        return "nao", None, motivo, None
     perfil = perfil_sei.perfil(instancia)
     if not perfil["disponivel_coleta"]:
-        return None, f"coleta indisponível em {perfil['nome']}", None, None
+        return "nao", None, f"coleta indisponível em {perfil['nome']}", instancia
 
     ocupada = cx.execute("""SELECT id FROM execucao WHERE agente_id=? AND estado='em_curso'
                             LIMIT 1""", (agente_id,)).fetchone()
     if ocupada:
-        return None, f"execução {ocupada['id']} ainda em curso", None, None
+        return "nao", None, f"execução {ocupada['id']} ainda em curso", instancia
     # RETOMA SÓ O QUE ESTE MOTOR ENTREGOU A SI MESMO. `gatilho='servidor'` é o
     # carimbo que o INSERT abaixo põe; `/api/agente/tarefa` põe outro.
     #
@@ -225,8 +250,28 @@ def _decidir(cx, agente_id, agora_dt=None):
                              AND gatilho IN ('servidor','manual_admin')
                              ORDER BY id DESC LIMIT 1""", (agente_id,)).fetchone()
     if pendente:
-        return (pendente["id"], pendente["janela"], instancia,
-                perfil_sei.envelope_do_coletor(instancia))
+        # A JANELA EXTRA DO ADMIN PASSA pelas guardas abaixo (escopo, senha
+        # recusada) de propósito: forçar é decisão de quem administra, tomada
+        # olhando a tela — inclusive para conferir se a conta já foi destravada
+        # no SEI.
+        return "pendente", pendente["id"], pendente["janela"], instancia
+
+    # SEM ESCOPO, A COLETA SÓ TEM EFEITO COLATERAL. Nada do que ela ler pode ser
+    # publicado (a ingestão recorta tudo), mas abrir a mesa no SEI RECEBE os
+    # processos em trânsito em nome da conta — medido em 11/09/2026. O escopo de
+    # quem está em modo servidor nasce do vínculo, e o vínculo nasce do "Testar
+    # acesso" que deu certo: sem ele, não há o que coletar.
+    if not json.loads(ag["unidades_esperadas"] or "[]"):
+        return "nao", None, ("sem escopo: nenhuma unidade que este agente possa publicar "
+                             "(o vínculo nasce do 'Testar acesso' que deu certo)"), instancia
+
+    # O SEI RECUSOU ESTA SENHA e ela não foi salva de novo: não se tenta outra vez.
+    # Cada tentativa conta para o bloqueio da conta da pessoa no SEI.
+    rec = cofre.recusa(cx, ag["dono_usuario_id"], instancia)
+    if rec:
+        return "nao", None, (f"o SEI recusou a senha em {str(rec['recusada_em'])[:16].replace('T', ' ')}"
+                             f" — {rec['recusa_motivo']} Não tento de novo até a senha ser "
+                             f"salva outra vez em Configuração."), instancia
 
     agora_dt = agora_dt or datetime.now(janelas.TZ)
     hoje = agora_dt.date().isoformat()
@@ -235,11 +280,28 @@ def _decidir(cx, agente_id, agora_dt=None):
         (agente_id, hoje + "%"))}
     devida, motivo = janelas.janela_devida(cfg, agora_dt=agora_dt, ja_concluidas=concluidas)
     if not devida:
-        return None, motivo, None, None
+        return "nao", None, motivo, instancia
     entregues = cx.execute("SELECT COUNT(*) FROM execucao WHERE agente_id=? AND janela=?",
                            (agente_id, devida)).fetchone()[0]
     if entregues >= cfg["max_entregas_janela"]:
-        return None, "teto de entregas desta janela atingido", None, None
+        return "nao", None, "teto de entregas desta janela atingido", instancia
+    # LOGIN QUE FALHOU NESTA JANELA NÃO SE REPETE NELA. A segunda entrega existe
+    # para o que é passageiro — rede, SEI fora, navegador morto —, e login não é:
+    # a recusa de 16/09/2026 04:08 se repetiu às 04:10, com a mesma senha, um
+    # minuto depois. Mesmo quando a recusa é incerta (sem mensagem do SEI), a
+    # próxima tentativa é a janela seguinte, não o minuto seguinte.
+    # SALVAR A SENHA DE NOVO reabre a janela: quem corrigiu às 08:00 a senha que
+    # falhou às 07:48 espera a coleta ainda nesta manhã, não amanhã.
+    ultima = cx.execute("""SELECT id, causa, terminado_em FROM execucao
+                           WHERE agente_id=? AND janela=?
+                           ORDER BY id DESC LIMIT 1""", (agente_id, devida)).fetchone()
+    if ultima and (ultima["causa"] or "") in leitura_saida.CAUSAS_DE_LOGIN:
+        salva = cx.execute("SELECT criado_em FROM credencial WHERE usuario_id=? AND sistema=?",
+                           (ag["dono_usuario_id"], instancia)).fetchone()
+        if not (salva and salva["criado_em"] and ultima["terminado_em"]
+                and str(salva["criado_em"]) > str(ultima["terminado_em"])):
+            return "nao", None, (f"o login falhou nesta janela (execução {ultima['id']}, "
+                                 f"{ultima['causa']}) — não repito na mesma janela"), instancia
     # A ESTAÇÃO LEVOU ESTA JANELA: sai daqui sem entregar. `max_entregas_janela`
     # é 3 por padrão, e ele existe para RETENTATIVA — não para dois executores
     # coletando a mesma mesa ao mesmo tempo, na mesma conta, com a mesma
@@ -251,16 +313,101 @@ def _decidir(cx, agente_id, agora_dt=None):
            AND estado IN ('entregue','em_curso') LIMIT 1""",
         (agente_id, devida)).fetchone()
     if da_estacao:
-        return None, f"a estação levou esta janela (execução {da_estacao['id']})", None, None
+        return "nao", None, f"a estação levou esta janela (execução {da_estacao['id']})", instancia
+    return "devida", None, devida, instancia
 
+
+def _decidir(cx, agente_id, agora_dt=None):
+    """Mesma pergunta de `/api/agente/tarefa` (app.py), para UM agente lógico.
+
+    Devolve (execucao_id, janela, instancia, perfil) quando há o que coletar
+    agora, ou (None, motivo, None, None) quando não há.
+
+    DUPLICADA DE PROPÓSITO, não extraída da rota. Aquela rota atende toda
+    estação de produção agora (inclusive a que já funciona, SESAB); reduzir
+    o risco desta primeira versão valeu mais que eliminar a duplicação. Se
+    este laço se provar em produção, as duas podem convergir para uma função
+    só — não antes.
+    """
+    tipo, ex, janela_ou_motivo, instancia = _avaliar(cx, agente_id, agora_dt)
+    if tipo == "nao":
+        return None, janela_ou_motivo, None, None
+    if tipo == "pendente":
+        return ex, janela_ou_motivo, instancia, perfil_sei.envelope_do_coletor(instancia)
     # A ENTREGA É O LOCK, igual à rota HTTP: gravar antes de agir impede que
     # duas passadas do laço (ou uma passada e um pedido manual) peguem a
     # mesma janela duas vezes.
     cx.execute("""INSERT INTO execucao(agente_id,janela,estado,gatilho,entregue_em)
                   VALUES(?,?,'entregue','servidor',?)""",
-               (agente_id, devida, banco.agora()))
+               (agente_id, janela_ou_motivo, banco.agora()))
     ex = cx.execute("SELECT last_insert_rowid()").fetchone()[0]
-    return ex, devida, instancia, perfil_sei.envelope_do_coletor(instancia)
+    return ex, janela_ou_motivo, instancia, perfil_sei.envelope_do_coletor(instancia)
+
+
+def motivo_parado(cx, agente_id):
+    """Por que este agente lógico NÃO PODE coletar hoje — ou None se pode.
+
+    Diferente de "por que não coletou agora" (`_avaliar`): "a janela ainda não
+    chegou" não é parada, é espera. É o que a varredura de janelas perdidas
+    pergunta antes de acusar: janela que fechou de agente PARADO não é janela
+    perdida — o motivo já está dito na linha do agente, e repeti-lo como alerta
+    todo dia é como um detector morre.
+    """
+    if not ligado():
+        return "coleta em modo servidor desligada neste container (SEI360_COLETA_SERVIDOR)"
+    ag = cx.execute("SELECT * FROM agentes WHERE id=?", (agente_id,)).fetchone()
+    if not ag:
+        return "agente removido"
+    if ag["pausado_motivo"]:
+        return ag["pausado_motivo"]
+    instancia, motivo = _instancia_do_dono(cx, ag["dono_usuario_id"])
+    if not instancia:
+        return motivo
+    if not perfil_sei.perfil(instancia)["disponivel_coleta"]:
+        return f"coleta indisponível em {instancia}"
+    if not json.loads(ag["unidades_esperadas"] or "[]"):
+        return "sem escopo: nenhuma unidade que este agente possa publicar"
+    rec = cofre.recusa(cx, ag["dono_usuario_id"], instancia)
+    if rec:
+        return f"o SEI recusou a senha em {str(rec['recusada_em'])[:16].replace('T', ' ')}"
+    return None
+
+
+def situacao(cx, agente_id, agora_dt=None):
+    """O que o /admin mostra na linha do agente: {'estado', 'texto', 'instancia'}.
+
+    `estado` é 'coletando', 'pronto' (espera a janela), 'feito', 'parado'
+    (não pode coletar até alguém agir), 'perdida' ou 'falhou' (a janela de hoje
+    não rende mais; a próxima tenta de novo). Lê a MESMA decisão do laço
+    (`_avaliar`), sem escrever.
+    """
+    try:
+        tipo, ex, texto, instancia = _avaliar(cx, agente_id, agora_dt)
+    except Exception as e:                                         # noqa: BLE001
+        return {"estado": "parado", "texto": f"não consegui avaliar ({type(e).__name__})",
+                "instancia": None}
+    if tipo == "pendente":
+        return {"estado": "coletando", "instancia": instancia,
+                "texto": f"execução {ex} entregue a este motor (janela {str(texto)[:16].replace('T', ' ')})"}
+    if tipo == "devida":
+        return {"estado": "coletando", "instancia": instancia,
+                "texto": f"janela {str(texto)[11:16]} devida agora — o laço a pega na próxima passada"}
+    parado = motivo_parado(cx, agente_id)
+    if parado:
+        # O texto da DECISÃO é o mais completo (diz o que fazer); só o
+        # interruptor desligado não passa por ela.
+        return {"estado": "parado", "texto": str(texto) if ligado() else parado,
+                "instancia": instancia}
+    t = str(texto)
+    if "em curso" in t or "estação levou" in t:
+        return {"estado": "coletando", "texto": t, "instancia": instancia}
+    if "perdida" in t:
+        return {"estado": "perdida", "texto": t, "instancia": instancia}
+    if "teto de entregas" in t or "não repito" in t:
+        return {"estado": "falhou", "texto": t, "instancia": instancia}
+    if "já coletada" in t:
+        return {"estado": "feito", "texto": t, "instancia": instancia}
+    return {"estado": "pronto", "texto": t, "instancia": instancia}
 
 
 # --------------------------------------------------------------- a execução
@@ -325,6 +472,8 @@ def _executar(agente_id, execucao_id, janela, instancia):
     inicio = time.time()
     parar_pulso = threading.Event()
     pulso = None
+    uid = None
+    codigo, saida, estado, publicado = None, "", "infra", None
     try:
         ag = cx.execute("SELECT dono_usuario_id FROM agentes WHERE id=?",
                         (agente_id,)).fetchone()
@@ -366,22 +515,44 @@ def _executar(agente_id, execucao_id, janela, instancia):
                     estado, saida = "sem_dados", (saida or "") + f"\n[ingestão recusou: {ex}]"
     except Exception as ex:                                        # noqa: BLE001
         # O TIPO, NÃO A MENSAGEM — mesma regra do atendente: mensagem de
-        # exceção pode carregar caminho ou valor que falhou.
-        estado, codigo, saida = "infra", None, f"falha no executor ({type(ex).__name__})"
+        # exceção pode carregar caminho ou valor que falhou. E A SAÍDA DO
+        # COLETOR FICA: a exceção pode ter vindo DEPOIS dele (na ingestão), e
+        # trocá-la pela frase do executor apagava a única prova do que houve.
+        estado, codigo = "infra", None
+        saida = (saida or "") + f"\n[falha no executor ({type(ex).__name__})]"
         publicado = None
     finally:
         parar_pulso.set()
         if pulso is not None:
             pulso.join(timeout=5)          # nunca bloqueia pra sempre por um pulso preso
         duracao = round(time.time() - inicio)
+        # A SAÍDA INTEIRA VAI PARA O VOLUME, e a causa vira chave e frase. Antes,
+        # `log_resumo` era a cauda de 300 caracteres — numa senha recusada, o
+        # banner do motor JS —, e o resto morria com o processo.
+        # NADA AQUI PODE IMPEDIR O UPDATE ABAIXO: ler a causa e gravar o arquivo
+        # são extras, e uma exceção neles deixaria a execução 'em_curso' — o
+        # estado que este `finally` inteiro existe para nunca deixar.
+        try:
+            c = leitura_saida.causa(codigo, saida, estado)
+        except Exception as _e:                                    # noqa: BLE001
+            c = {"chave": "desconhecida", "certeza": False,
+                 "texto": f"não consegui ler a saída ({type(_e).__name__})"}
+        arquivo = diario.guardar_saida("coleta", execucao_id, saida)
+        try:
+            print(f"coleta(servidor): execução {execucao_id} · agente {agente_id} · {instancia} · "
+                  f"{estado} · código {codigo} · {duracao} s · {c['texto'][:240]}"
+                  + (f" · saída em log/execucoes/{arquivo}" if arquivo else ""), flush=True)
+        except Exception:                                          # noqa: BLE001
+            pass
         try:
             cx.execute("""UPDATE execucao SET estado=?, terminado_em=?, duracao_s=?,
-                          exit_code=?, log_resumo=? WHERE id=?""",
+                          exit_code=?, log_resumo=?, causa=? WHERE id=?""",
                        (estado, banco.agora(), duracao, codigo,
-                        (f"publicado {publicado}" if publicado else "não publicado")
-                        + f" · {(saida or '')[-300:]}", execucao_id))
+                        leitura_saida.resumo(publicado, c, saida), c["chave"], execucao_id))
+            if c["chave"] in leitura_saida.CAUSAS_DE_LOGIN and uid:
+                _alertar_login(cx, agente_id, execucao_id, uid, instancia, c)
             banco.registrar(cx, None, "coleta_servidor",
-                            alvo=f"agente {agente_id} · {instancia} · {estado}")
+                            alvo=f"agente {agente_id} · {instancia} · {estado} · {c['chave']}")
             cx.commit()
         except Exception:                                          # noqa: BLE001
             try:
@@ -390,6 +561,28 @@ def _executar(agente_id, execucao_id, janela, instancia):
                 pass
         finally:
             cx.close()
+
+
+def _alertar_login(cx, agente_id, execucao_id, uid, instancia, c):
+    """O login falhou: marca a senha (se a recusa é certa) e diz ao /admin, uma vez.
+
+    UMA VEZ, e não um alerta por tentativa: com a recusa certa não há outra
+    tentativa (`_avaliar` para); com a incerta há no máximo uma por janela.
+    """
+    nome = (cx.execute("SELECT nome_estacao FROM agentes WHERE id=?", (agente_id,))
+            .fetchone() or {"nome_estacao": f"agente {agente_id}"})["nome_estacao"]
+    if c["certeza"]:
+        cofre.marcar_recusa(cx, uid, instancia, c["texto"])
+        consequencia = ("A coleta desta conta está PARADA até a senha ser salva de novo em "
+                        "Configuração — cada tentativa errada conta para o bloqueio da conta "
+                        "no SEI, e ela não é repetida.")
+    else:
+        consequencia = ("Não repito nesta janela; a próxima tentativa é na janela seguinte. "
+                        "Se a senha mudou no SEI, salve a nova em Configuração.")
+    cx.execute("""INSERT INTO alerta(ts,tipo,severidade,execucao_id,texto)
+                  VALUES(?,?,?,?,?)""",
+               (banco.agora(), "login_falhou", "alta", execucao_id,
+                f"{nome} não entrou no {instancia}: {c['texto']} {consequencia}"))
 
 
 def _conta_do_agente(cx, agente_id, instancia):
