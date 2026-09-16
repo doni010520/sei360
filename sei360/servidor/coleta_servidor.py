@@ -95,6 +95,17 @@ INTERVALO_S = 60
 
 _laco_vivo = threading.Event()
 _thread = None
+# O MOTIVO DE NÃO COLETAR, dito UMA VEZ por mudança. Sem isto, o laço decidia em
+# silêncio a cada minuto: a coleta não rodava e o log não dizia por quê — foi o
+# que custou três dias úteis em 15/09/2026. Imprimir a cada passada seriam 1.440
+# linhas iguais por dia, que é a outra forma de não dizer nada.
+_ultimo_motivo = {}
+
+
+def _dizer(agente_id, motivo):
+    if _ultimo_motivo.get(agente_id) != motivo:
+        _ultimo_motivo[agente_id] = motivo
+        print(f"coleta(servidor): agente {agente_id} — {motivo}", flush=True)
 _reavaliados = False          # backfill de agentes SERVIDOR/* já criados
 
 
@@ -447,11 +458,13 @@ def rodada(cx=None):
                 ex, janela, instancia, _perfil = _decidir(cx, agente_id, agora_dt)
                 cx.commit()
                 if instancia is None:
-                    continue                     # `janela` aqui é o motivo da recusa
+                    _dizer(agente_id, janela)    # `janela` aqui é o motivo da recusa
+                    continue
                 # A CONTA DO SEI OCUPADA POR UMA BUSCA: a coleta espera. A execução
                 # continua 'entregue' e é retomada na próxima passada — e a busca
                 # não vê a mesa trocada debaixo dela, que desde 15/09/2026 é real:
                 # a busca passou a ativar a mesa pedida.
+                _dizer(agente_id, f"vou coletar {instancia} (janela {janela})")
                 conta = _conta_do_agente(cx, agente_id, instancia)
                 dono = f"motor:{atendente.TOKEN}:coleta"
                 if conta:

@@ -30,6 +30,7 @@ SUITES = [
     ("teste_recebimento_coleta.py", "o que a coleta FAZ ao SEI, nao so o que le"),
     ("teste_coleta_servidor.py", "o motor do VPS: coleta e acompanhamento"),
     ("teste_busca_servidor.py", "busca no VPS: causa, nova tentativa, conta"),
+    ("teste_diagnostico.py", "diário no volume e a rota /diag com token"),
     ("../agente/_teste_agente.py", "o laco do agente na estacao"),
     ("teste_acesso.py", "recuperação de senha e segundo fator por e-mail"),
 ]

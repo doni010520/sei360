@@ -143,6 +143,15 @@ _falhas_seguidas = {}          # (usuario_id, instancia) -> (quantas, até quand
 
 _laco_vivo = threading.Event()
 _thread = None
+# O MESMO diário de decisão da coleta, e pelo mesmo motivo: item que não é lido
+# sem nada no log é indistinguível de item em dia. Uma linha por MUDANÇA.
+_ultimo_motivo = {}
+
+
+def _dizer(par, motivo):
+    if _ultimo_motivo.get(par) != motivo:
+        _ultimo_motivo[par] = motivo
+        print(f"acompanhamento(servidor): conta {par[0]} · {par[1]} — {motivo}", flush=True)
 
 
 def ligado():
@@ -427,16 +436,20 @@ def rodada(cx=None):
             # A PERGUNTA BARATA PRIMEIRO, e nesta ordem de propósito: nenhuma
             # das três condições abaixo custa Chromium, e a última delas
             # (`pendentes`) ESCREVE.
+            par = (usuario_id, instancia)
             if not perfil_sei.perfil(instancia)["disponivel_busca"]:
+                _dizer(par, "a instalação não tem busca por número provada")
                 # A leitura começa por uma pesquisa por número; numa instalação
                 # sem busca ela devolveria "não encontrado" para TODO processo,
                 # e a tela afirmaria sobre os processos o que é verdade sobre a
                 # instalação. É a mesma trava da rota do agente.
                 continue
             if not acmod.quantos_pendentes(cx, usuario_id, instancia):
+                _dizer(par, "nada a ler hoje (a carteira respondeu ou já foi lido)")
                 continue
             pode, _motivo = _devido(cx, usuario_id, instancia, agora_dt)
             if not pode:
+                _dizer(par, _motivo)
                 continue
             _fs = _falhas_seguidas.get((usuario_id, instancia))
             if _fs and _fs[2] != agora_dt.date():

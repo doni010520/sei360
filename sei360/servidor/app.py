@@ -3921,6 +3921,128 @@ def comprimir(resp):
 
 
 # --------------------------------------------------------------- saude
+# ------------------------------------------------------------------ diagnóstico
+#
+# O TOKEN É A PORTA, e ele não tem padrão: sem `SEI360_DIAG_TOKEN` a rota não
+# existe. Token curto é o mesmo que nenhum — 24 caracteres é o mínimo, e a
+# comparação é em tempo constante.
+#
+# POR QUE ELA EXISTE. Em 15/09/2026 a coleta ficou três dias úteis sem rodar, e
+# descobrir o motivo dependeu de alguém abrir o painel do provedor e copiar o
+# log do container à mão. O diagnóstico ficou esperando uma pessoa. Esta rota
+# entrega o MESMO recorte por HTTPS: estado dos laços, agentes, execuções com o
+# motivo de cada uma, alertas, e as últimas linhas do diário.
+#
+# O QUE ELA NÃO ENTREGA: nada de texto de processo (especificação, anotação,
+# interessados), nenhum filtro de busca (é a pergunta de uma pessoa) e nenhum
+# valor de variável de ambiente — só se ela está definida. O diário passa pelo
+# `_sem_segredo` de `diario.py` antes de ser gravado.
+_DIAG_TOKEN = (os.environ.get("SEI360_DIAG_TOKEN") or "").strip()
+
+
+@app.get("/diag")
+def diag():
+    if len(_DIAG_TOKEN) < 24:
+        return jsonify(erro="não encontrado"), 404
+    enviado = (request.args.get("t") or request.headers.get("X-Diag-Token") or "")
+    if not secrets.compare_digest(enviado, _DIAG_TOKEN):
+        # 404, e não 403: para quem não tem o token, a rota não existe.
+        try:
+            cx = conectar()
+            registrar(cx, None, "diag_recusado", alvo="token inválido", ip=ip_cliente())
+            cx.commit(); cx.close()
+        except Exception:                                      # noqa: BLE001
+            pass
+        return jsonify(erro="não encontrado"), 404
+
+    import diario as diariomod
+    linhas = max(1, min(int(request.args.get("linhas") or 120), 500))
+    fora = {"agora": agora(), "versao": VERSAO_AGENTE}
+
+    def secao(nome, fn):
+        try:
+            fora[nome] = fn()
+        except Exception as ex:                                # noqa: BLE001
+            fora[nome] = {"erro": type(ex).__name__}
+
+    def _interruptores():
+        # SÓ SE ESTÁ DEFINIDA, nunca o valor: duas destas são segredo.
+        nomes = ("SEI360_COLETA_SERVIDOR", "SEI360_ACOMPANHAMENTO_SERVIDOR",
+                 "SEI360_ATENDENTE", "SEI360_BUSCAS_SIMULTANEAS", "SEI360_LOG_ARQUIVO")
+        d = {k: os.environ.get(k) for k in nomes}
+        d["SEI360_CHAVE_MESTRA"] = "definida" if os.environ.get("SEI360_CHAVE_MESTRA") else "AUSENTE"
+        d["SEI360_SEGREDO"] = "definida" if (os.environ.get("SEI360_SEGREDO")
+                                             or os.environ.get("SEI360_SECRET_KEY")) else "AUSENTE"
+        return d
+
+    def _motor():
+        import atendente as _at
+        import coleta_servidor as _cs
+        import acompanhamento_servidor as _asv
+        pode, motivo = _at.capacidade()
+        return {"executor_no_container": _at.ha_executor(),
+                "executor_neste_worker": _at.vivo(), "pid": os.getpid(),
+                "vagas": _at.LIMITE, "vagas_livres": _at.vagas_livres(),
+                "trabalho_pesado_em_curso": _at._pesado.locked(),
+                "capacidade": {"pode": pode, "motivo": motivo},
+                "coleta": {"ligado": _cs.ligado(), "laco_neste_worker": _cs.vivo()},
+                "acompanhamento": {"ligado": _asv.ligado(), "laco_neste_worker": _asv.vivo()}}
+
+    cx = conectar()
+    try:
+        secao("interruptores", _interruptores)
+        secao("motor", _motor)
+        secao("agentes", lambda: [dict(r) for r in cx.execute(
+            """SELECT a.id, a.nome_estacao, u.email AS dono, a.pausado_motivo,
+                      a.ultimo_contato_em, g.ativo AS agendamento_ativo, g.janelas,
+                      g.dias, g.motivo_inativo,
+                      (SELECT COUNT(*) FROM credencial k WHERE k.usuario_id=a.dono_usuario_id)
+                        AS senhas_no_cofre
+               FROM agentes a
+               LEFT JOIN usuarios u ON u.id = a.dono_usuario_id
+               LEFT JOIN agendamento g ON g.agente_id = a.id ORDER BY a.id""")])
+        secao("configuracoes", lambda: [dict(r) for r in cx.execute(
+            """SELECT u.email, c.sistema, c.modo_coleta, c.janelas, c.dias,
+                      (SELECT COUNT(*) FROM credencial k
+                        WHERE k.usuario_id=c.usuario_id AND k.sistema=c.sistema) AS senha_no_cofre
+               FROM config_usuario c JOIN usuarios u ON u.id = c.usuario_id
+               ORDER BY u.email, c.sistema""")])
+        secao("execucoes", lambda: [dict(r) for r in cx.execute(
+            """SELECT e.id, a.nome_estacao, e.janela, e.estado, e.gatilho, e.exit_code,
+                      e.duracao_s, e.entregue_em, e.terminado_em,
+                      substr(COALESCE(e.log_resumo,''), 1, 300) AS resumo
+               FROM execucao e JOIN agentes a ON a.id = e.agente_id
+               ORDER BY e.id DESC LIMIT 20""")])
+        secao("coleta_por_unidade", lambda: [dict(r) for r in cx.execute(
+            """SELECT unidade, coletado_em, estado FROM snapshot
+               WHERE estado IN ('corrente','candidato') ORDER BY coletado_em, unidade""")])
+        secao("alertas", lambda: [dict(r) for r in cx.execute(
+            """SELECT ts, tipo, severidade, substr(texto,1,240) AS texto,
+                      reconhecido_em FROM alerta ORDER BY ts DESC LIMIT 15""")])
+        # SEM OS FILTROS: o texto que a pessoa digitou é a pergunta DELA, e pode
+        # citar nome. O que o diagnóstico precisa é do veredito e do motivo.
+        secao("buscas", lambda: [dict(r) for r in cx.execute(
+            """SELECT b.id, u.email, b.instancia, b.mesa, b.mesa_confirmada, b.estado,
+                      b.tentativas, substr(COALESCE(b.motivo,''),1,200) AS motivo,
+                      b.pedida_em, b.terminada_em, b.total_declarado, b.colhidos
+               FROM busca b LEFT JOIN usuarios u ON u.id = b.usuario_id
+               ORDER BY b.id DESC LIMIT 15""")])
+        secao("acompanhamento", lambda: [dict(r) for r in cx.execute(
+            """SELECT u.email, a.instancia, a.estado, COUNT(*) AS n,
+                      MAX(a.lido_em) AS ultima_leitura, MAX(a.tentativas) AS tentativas
+               FROM acompanhado a JOIN usuarios u ON u.id = a.usuario_id
+               GROUP BY 1,2,3 ORDER BY 1,2,3""")])
+        secao("travas_de_conta", lambda: [dict(r) for r in cx.execute(
+            "SELECT instancia, conta, busca_id, dono, ate FROM busca_trava")])
+        registrar(cx, None, "diag", alvo=f"{linhas} linha(s) de diário", ip=ip_cliente())
+        cx.commit()
+    finally:
+        cx.close()
+    secao("diario_arquivos", diariomod.arquivos)
+    secao("diario", lambda: diariomod.ler(linhas))
+    return jsonify(**fora)
+
+
 @app.get("/saude")
 def saude():
     """Sonda do orquestrador: diz se o processo responde e se o banco abre.
@@ -3961,6 +4083,15 @@ def saude():
 # `iniciar()` é idempotente e devolve False quando o laço está desligado por
 # variável (SEI360_ATENDENTE=0), que é como se separa painel de execução em dois
 # serviços do EasyPanel usando a mesma imagem.
+# O DIÁRIO PRIMEIRO. Ele ecoa `stdout`/`stderr` para um arquivo por dia no
+# volume, e é o que permite perguntar depois "o que este servidor disse às
+# 07:30" — o log do Docker é volátil e só o painel do provedor o mostra.
+try:
+    import diario as _diario
+    _diario.instalar()
+except Exception as _ex:                                       # noqa: BLE001
+    print(f"diário do servidor não subiu: {type(_ex).__name__}", flush=True)
+
 try:
     import atendente as _atendente
     # NÃO SOBE NO PAI DO RELOADER. Com o reloader do Flask, este módulo é
