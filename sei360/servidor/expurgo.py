@@ -143,6 +143,18 @@ def expurgar(simular=False, usuario_id=None):
     cx = conectar()
     plano = []
 
+    # 0. O DIÁRIO DA MÁQUINA. Arquivo no volume tem prazo como qualquer outro
+    #    dado guardado — e sem isto ele seria a primeira coisa deste sistema a
+    #    crescer para sempre.
+    try:
+        import diario
+        n_log, bytes_log = diario.limpar(simular=simular)
+        if n_log:
+            plano.append(("diario", n_log, f"{bytes_log // 1024} KB de log com mais de "
+                                           f"{diario.DIAS} dias"))
+    except Exception as ex:                                    # noqa: BLE001
+        plano.append(("diario", 0, f"não foi possível limpar ({type(ex).__name__})"))
+
     # 1. Snapshots velhos, JAMAIS o corrente de cada unidade. `processo`,
     #    `processo_texto` e `processo_mesa` caem junto por ON DELETE CASCADE —
     #    daí a FK ter sido acrescentada: sem ela o texto livre ficaria órfão,

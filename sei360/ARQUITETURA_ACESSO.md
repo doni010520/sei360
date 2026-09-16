@@ -140,6 +140,8 @@ SEI360_BUSCAS_SIMULTANEAS=2              # teto de MEMÓRIA: ~0,45 GB por busca
 SEI360_ATENDENTE=1                       # 0 desliga o executor de busca neste container
 SEI360_COLETA_SERVIDOR=0                 # 1 liga a coleta diária p/ modo servidor (nasce OFF — §3.7)
 SEI360_ACOMPANHAMENTO_SERVIDOR=1         # 0 desliga SÓ o acompanhamento; por padrão segue a linha acima
+SEI360_LOG_ARQUIVO=1                     # 0 desliga o diário em /dados/log (ver diario.py)
+SEI360_DIAG_TOKEN=<32+ caracteres>       # LIGA a rota /diag?t=… ; sem ela a rota não existe
 SEI360_COLETOR=/app/painel_sesab/coletor_sesab.py
 SEI_PERFIL_DIR=/dados/_perfil_sei        # perfil do navegador, no volume
 SEI_SEM_SANDBOX=1                        # so em container (ver abaixo)
@@ -377,6 +379,20 @@ O laço novo é o de `coleta_servidor.py` com três diferenças que importam, e 
 | quanto custa perguntar | sobe o Chromium para descobrir | um `COUNT(*)` (`acompanhamento.quantos_pendentes`), e a vaga de memória só é tomada depois dele |
 
 **Interruptor: o mesmo da coleta.** `SEI360_COLETA_SERVIDOR` liga os dois, porque a decisão é uma — "este container lê o SEI sozinho, com senha guardada". Um segundo interruptor seria uma segunda coisa para esquecer, e a falha de esquecer é silenciosa (item parado, tela dizendo a verdade). Quem precisar desligar só o acompanhamento tem `SEI360_ACOMPANHAMENTO_SERVIDOR=0`. As defesas de memória são as de lá, não reinventadas: só começa com busca e coleta ociosas, segura uma vaga do MESMO semáforo, no máximo uma leitura por vez, e mora no processo que venceu a eleição do atendente.
+
+### Como saber, de fora, como o servidor está rodando
+
+Em 15/09/2026 a coleta ficou **três dias úteis** sem rodar, e descobrir o motivo dependeu de alguém abrir o painel do provedor e copiar o log do container à mão. Duas coisas faltavam, e as duas existem agora.
+
+**O diário** (`diario.py`). O mesmo texto que vai para o `stdout` — as linhas de `atendente de busca:`, `coleta(servidor):`, `acompanhamento(servidor):`, a ingestão e o log de acesso do gunicorn — também vai para `/dados/log/sei360-AAAA-MM-DD.log`, no volume, que é o que sobrevive a redeploy. Nada é tirado do `stdout`. O arquivo passa por `_sem_segredo` (senha, token, chave de API e `infra_hash` de sessão nunca entram), tem prazo de 14 dias e o **expurgo aplica o prazo** — arquivo no volume é dado guardado como qualquer outro. `SEI360_LOG_ARQUIVO=0` desliga.
+
+**O motivo da decisão.** Os laços da coleta e do acompanhamento imprimem por que NÃO rodaram, uma linha por **mudança** de motivo — não por passada, senão seriam 1.440 linhas iguais por dia, que é a outra forma de não dizer nada.
+
+**A rota `/diag`.** Só existe quando `SEI360_DIAG_TOKEN` tem 24 caracteres ou mais; a comparação é em tempo constante e token errado responde **404**, não 403 — para quem não tem, a rota não existe. Toda consulta e toda recusa ficam no `log_acesso`. Ela devolve: interruptores (só se estão definidos, nunca o valor), estado do motor (executor no container e neste worker, vagas, capacidade), agentes e agendamentos, últimas execuções com motivo, coleta por unidade, alertas, buscas com veredito, acompanhamento agregado, travas de conta e as últimas linhas do diário (teto de 500).
+
+**O que ela NÃO devolve**, e por decisão: valor de variável secreta, texto de processo (especificação, anotação, interessados) e os **filtros** de uma busca — o filtro é a pergunta de uma pessoa e pode citar nome. O que o diagnóstico precisa é do veredito e do motivo.
+
+**O que ela não alcança:** o que acontece antes de o processo subir. Se o container não inicia, só o log do Docker conta.
 
 **O que continua na estação:** modo estação inteiro (senha nunca sai da máquina da pessoa), e qualquer coleta ou acompanhamento enquanto `SEI360_COLETA_SERVIDOR` estiver desligado. As duas rotas do agente continuam de pé e atendem essas contas — `acompanhamento_servidor._candidatos` ignora de propósito quem está em `modo_coleta='estacao'`, porque a senha dessa conta não está aqui.
 
