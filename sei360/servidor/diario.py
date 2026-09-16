@@ -35,6 +35,7 @@ import os
 import re
 import sys
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -54,7 +55,11 @@ _instalado = False
 
 _SEGREDOS = (
     (re.compile(r"(infra_hash=)[^&\s'\"]+", re.I), r"\1…"),
-    (re.compile(r"((?:senha|password|pwd)\W{0,3})\S+", re.I), r"\1…"),
+    # SÓ COM SEPARADOR DE VALOR (`:` ou `=`). A versão anterior apagava a palavra
+    # seguinte a qualquer "senha" — e "Usuário ou senha inválida", que é a frase
+    # que o SEI devolve e o motivo inteiro de guardar a saída do login, virava
+    # "Usuário ou senha …". O diário escondia justamente o diagnóstico.
+    (re.compile(r"((?:senha|password|pwd)\w*[\"']?\s*[:=]\s*[\"']?)[^\s\"'&,;]+", re.I), r"\1…"),
     (re.compile(r"((?:token|bearer|api[_-]?key|chave)\W{0,3})[A-Za-z0-9_\-\.=]{8,}", re.I), r"\1…"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{10,}"), "sk-…"),
 )
@@ -190,10 +195,83 @@ def arquivos():
     return fora
 
 
+# --------------------------------------------------------- saída por execução
+# A SAÍDA INTEIRA DO COLETOR, uma por execução. Até 16/09/2026 ela era capturada
+# por `subprocess.PIPE` e jogada fora: a coleta guardava os ÚLTIMOS 300
+# caracteres em `execucao.log_resumo`, e o /admin mostrava 90. Numa senha
+# recusada, esses 300 caracteres eram o banner do motor JS impresso ao recarregar
+# a tela de login — e o que o SEI respondeu, a mesa que ficou incompleta e o total
+# que a tela declarava ficavam só na memória de um processo que já tinha morrido.
+# Ela não passa pelo `stdout` do servidor (é de um processo filho), então nem o
+# log do Docker a tinha.
+EXECUCOES = PASTA / "execucoes"
+# Teto por arquivo. Uma coleta de 1.200 processos escreve na casa de centenas de
+# KB; o teto existe para o dia em que um laço imprimir sem parar.
+LIMITE_SAIDA = 1_500_000
+# O ENVELOPE NÃO É LOG. `BUSCA_OK` e `ACOMP_OK` carregam o resultado — processos,
+# especificações, o que a pessoa pesquisou — e isso tem dono e tela próprios. O
+# arquivo guarda que o envelope veio e de que tamanho; o conteúdo, não.
+_ENVELOPES = ("BUSCA_OK ", "ACOMP_OK ")
+
+
+def _nome_limpo(texto):
+    return "".join(c for c in str(texto) if c.isalnum() or c in "-_") or "x"
+
+
+def arquivo_saida(tipo, ident):
+    return EXECUCOES / f"{_nome_limpo(tipo)}-{_nome_limpo(ident)}.log"
+
+
+def guardar_saida(tipo, ident, texto):
+    """Grava a saída de uma execução do coletor, sem segredo e sem envelope.
+
+    Devolve o nome do arquivo, ou None. NUNCA levanta: é chamada no `finally` de
+    quem executa, e um log que derruba a execução que ele registra é pior que
+    nenhum.
+    """
+    if not ligado() or not texto:
+        return None
+    try:
+        linhas = []
+        for linha in str(texto).splitlines():
+            prefixo = next((p for p in _ENVELOPES if linha.startswith(p)), None)
+            if prefixo:
+                linha = f"{prefixo}<envelope omitido: {len(linha)} caracteres>"
+            linhas.append(_sem_segredo(linha)[:LIMITE_LINHA])
+        corpo = "\n".join(linhas)
+        if len(corpo) > LIMITE_SAIDA:
+            # O COMEÇO E O FIM. O começo diz em que instalação e com que login; o
+            # fim diz como terminou. O meio é o que se perde.
+            corpo = (corpo[:LIMITE_SAIDA // 5] + "\n[… saída cortada no meio …]\n"
+                     + corpo[-(LIMITE_SAIDA * 4 // 5):])
+        p = arquivo_saida(tipo, ident)
+        with _trava:
+            EXECUCOES.mkdir(parents=True, exist_ok=True)
+            p.write_text(corpo + "\n", encoding="utf-8", errors="replace")
+        return p.name
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+def ler_saida(tipo, ident):
+    """O texto guardado de uma execução, ou None se não houver (ou expirou)."""
+    try:
+        p = arquivo_saida(tipo, ident)
+        return p.read_text(encoding="utf-8", errors="replace") if p.exists() else None
+    except OSError:
+        return None
+
+
 def limpar(dias=None, simular=False):
-    """Apaga diário mais velho que `DIAS`. Devolve (quantos, bytes)."""
+    """Apaga diário e saída de execução mais velhos que `DIAS`.
+
+    Devolve (quantos, bytes). A saída de execução tem o MESMO prazo do diário:
+    as duas servem para diagnosticar o que está acontecendo, e nenhuma para
+    provar o que aconteceu meses atrás.
+    """
     dias = DIAS if dias is None else dias
-    corte = (datetime.now(TZ).date() - timedelta(days=dias)).isoformat()
+    hoje = datetime.now(TZ).date()
+    corte = (hoje - timedelta(days=dias)).isoformat()
     n = tamanho = 0
     for p in PASTA.glob("sei360-*.log") if PASTA.exists() else []:
         dia = p.stem.replace("sei360-", "")
@@ -201,6 +279,20 @@ def limpar(dias=None, simular=False):
             continue
         try:
             tamanho += p.stat().st_size
+            if not simular:
+                p.unlink()
+            n += 1
+        except OSError:
+            continue
+    # Saída de execução não tem data no nome (o nome é a execução); o relógio é
+    # o do próprio arquivo.
+    limite = time.time() - dias * 86400
+    for p in EXECUCOES.glob("*.log") if EXECUCOES.exists() else []:
+        try:
+            st = p.stat()
+            if st.st_mtime >= limite:
+                continue
+            tamanho += st.st_size
             if not simular:
                 p.unlink()
             n += 1

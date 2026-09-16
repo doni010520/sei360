@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SEI360 — Diagnóstico do motor</title>
+{% include '_cabeca.html' %}
+<style>
+  .saida{max-height:620px;overflow:auto;white-space:pre-wrap;word-break:break-word;
+         font-family:var(--mono);font-size:11px;line-height:1.45;padding:12px;
+         background:var(--card);border:1px solid var(--rule);border-radius:var(--r)}
+  .fatos{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+  .fatos div{font-size:12.5px}
+  .fatos b{display:block;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+  .rolar{overflow-x:auto}
+</style>
+</head><body>
+
+{% with pagina='admin' %}{% include '_nav.html' %}{% endwith %}
+{% set m = d.motor if d.motor is mapping else {} %}
+
+<div class="folha">
+  <p style="margin:0 0 6px"><a href="/admin">← Administração</a></p>
+  <h2 class="sec">Diagnóstico do motor</h2>
+  <p style="font-size:12.5px;color:var(--ink-3);margin:-4px 0 12px">
+    Lido agora ({{ (d.agora or '')[:19].replace('T',' ') }}), no processo {{ m.pid or '?' }}.
+    Código no ar: <span class="mono">{{ d.codigo }}</span>. É a mesma leitura do <span class="mono">/diag</span>,
+    sem token: quem vê é quem administra, e a consulta fica no log de acesso.
+  </p>
+
+  <h2 class="sec">O motor</h2>
+  <div class="cartao fatos">
+    <div><b>Executor no container</b><span class="tag {{ 'ok' if m.executor_no_container else 'al' }}">{{ 'sim' if m.executor_no_container else 'NÃO' }}</span></div>
+    <div><b>Neste processo</b>{{ 'sim' if m.executor_neste_worker else 'não (outro worker responde)' }}</div>
+    <div><b>Vagas livres</b><span class="mono">{{ m.vagas_livres }}/{{ m.vagas }}</span></div>
+    <div><b>Trabalho pesado agora</b>{{ 'sim — uma coleta ou leitura em curso' if m.trabalho_pesado_em_curso else 'não' }}</div>
+    <div><b>Capacidade</b>{% if m.capacidade and m.capacidade.pode %}<span class="tag ok">pode executar</span>{% else %}<span class="tag al">não pode</span> {{ (m.capacidade or {}).motivo }}{% endif %}</div>
+    <div><b>Coleta no servidor</b><span class="tag {{ 'ok' if (m.coleta or {}).ligado else 'al' }}">{{ 'ligada' if (m.coleta or {}).ligado else 'desligada' }}</span></div>
+    <div><b>Acompanhamento</b><span class="tag {{ 'ok' if (m.acompanhamento or {}).ligado else 'al' }}">{{ 'ligado' if (m.acompanhamento or {}).ligado else 'desligado' }}</span></div>
+  </div>
+  {% if not m.executor_no_container %}
+  <div class="destaque" style="border-left-color:var(--alerta);background:var(--alerta-soft);margin-top:10px">
+    <b>Não há executor vivo neste container.</b> Sem ele não há busca, coleta nem acompanhamento.
+    Os workers se recandidatam a cada 30 s; se isto persistir por minutos, reinicie o serviço.
+  </div>
+  {% endif %}
+
+  <h2 class="sec">Cada agente do servidor — o que o motor decide agora</h2>
+  <div class="rolar">
+  <table class="grade">
+    <tr><th>Agente</th><th>Dono</th><th>Instalação</th><th>Situação</th><th>Por quê</th><th>Última execução</th></tr>
+    {% for a in (d.situacao_dos_agentes if d.situacao_dos_agentes is not mapping and d.situacao_dos_agentes is not string else []) %}
+    <tr>
+      <td><b>{{ a.agente }}</b></td>
+      <td style="font-size:12px">{{ a.dono or '—' }}</td>
+      <td class="mono" style="font-size:11px">{{ a.instancia or '—' }}</td>
+      <td><span class="tag {{ 'ok' if a.estado in ['pronto','feito','coletando'] else 'al' }}">{{ a.estado }}</span>
+          {% if a.senha_recusada_em %}<br><span class="tag al">senha recusada {{ a.senha_recusada_em[:16].replace('T',' ') }}</span>{% endif %}</td>
+      <td style="font-size:12px;max-width:360px">{{ a.motivo }}</td>
+      <td style="font-size:12px">
+        {% if a.ultima_execucao %}{% set u2 = a.ultima_execucao %}
+          <a href="/admin/execucao/{{ u2.id }}">#{{ u2.id }}</a> · {{ u2.estado }}{% if u2.causa %} · <span class="mono">{{ u2.causa }}</span>{% endif %}
+          <br><span class="mono" style="font-size:10.5px;color:var(--ink-3)">{{ (u2.terminado_em or u2.janela or '')[:16].replace('T',' ') }}</span>
+        {% else %}nunca{% endif %}
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="6" class="vazio-msg">nenhum agente SERVIDOR/*</td></tr>{% endfor %}
+  </table>
+  </div>
+
+  <h2 class="sec">Execuções recentes</h2>
+  <div class="rolar">
+  <table class="grade">
+    <tr><th>#</th><th>Agente</th><th>Janela</th><th>Estado</th><th>Exit</th><th>Causa</th><th>Resumo</th></tr>
+    {% for e in (d.execucoes if d.execucoes is not mapping and d.execucoes is not string else []) %}
+    <tr>
+      <td class="mono"><a href="/admin/execucao/{{ e.id }}">{{ e.id }}</a></td>
+      <td>{{ e.nome_estacao }}</td>
+      <td class="mono" style="font-size:10.5px">{{ (e.janela or '')[:16].replace('T',' ') }}</td>
+      <td><span class="tag {{ 'ok' if e.estado=='concluida' else 'al' if e.estado in ['travada','bloqueada','infra','perdida','sem_dados'] else 'es' }}">{{ e.estado }}</span></td>
+      <td class="mono">{{ e.exit_code if e.exit_code is not none else '—' }}</td>
+      <td class="mono" style="font-size:11px">{{ e.causa or '—' }}</td>
+      <td style="font-size:11.5px;color:var(--ink-3)">{{ (e.resumo or '').split(' ‖ ')[0][:260] }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+
+  <h2 class="sec">Buscas recentes</h2>
+  <div class="rolar">
+  <table class="grade">
+    <tr><th>#</th><th>Quem</th><th>Instalação</th><th>Estado</th><th>Tentativas</th><th>Motivo</th><th>Pedida</th></tr>
+    {% for b in (d.buscas if d.buscas is not mapping and d.buscas is not string else []) %}
+    <tr>
+      <td class="mono">{{ b.id }}</td><td style="font-size:12px">{{ b.email }}</td>
+      <td class="mono" style="font-size:11px">{{ b.instancia }}</td>
+      <td>{{ b.estado }}</td><td class="mono">{{ b.tentativas or 0 }}</td>
+      <td style="font-size:12px">{{ b.motivo or '—' }}</td>
+      <td class="mono" style="font-size:10.5px">{{ (b.pedida_em or '')[:16].replace('T',' ') }}</td>
+    </tr>
+    {% else %}<tr><td colspan="7" class="vazio-msg">nenhuma busca</td></tr>{% endfor %}
+  </table>
+  </div>
+
+  <h2 class="sec">Acompanhamento</h2>
+  <table class="grade">
+    <tr><th>Quem</th><th>Instalação</th><th>Estado</th><th>Processos</th><th>Última leitura</th><th>Tentativas (máx.)</th></tr>
+    {% for a in (d.acompanhamento if d.acompanhamento is not mapping and d.acompanhamento is not string else []) %}
+    <tr><td style="font-size:12px">{{ a.email }}</td><td class="mono" style="font-size:11px">{{ a.instancia }}</td>
+        <td>{{ a.estado }}</td><td class="mono">{{ a.n }}</td>
+        <td class="mono" style="font-size:10.5px">{{ (a.ultima_leitura or '—')[:16].replace('T',' ') }}</td>
+        <td class="mono">{{ a.tentativas }}</td></tr>
+    {% else %}<tr><td colspan="6" class="vazio-msg">ninguém acompanha processo</td></tr>{% endfor %}
+  </table>
+
+  <h2 class="sec">Contas do SEI ocupadas agora</h2>
+  <table class="grade">
+    <tr><th>Instalação</th><th>Conta</th><th>Quem segura</th><th>Até</th></tr>
+    {% for t in (d.travas_de_conta if d.travas_de_conta is not mapping and d.travas_de_conta is not string else []) %}
+    <tr><td class="mono" style="font-size:11px">{{ t.instancia }}</td><td class="mono" style="font-size:11px">{{ t.conta }}</td>
+        <td class="mono" style="font-size:11px">{{ t.dono or ('busca ' ~ t.busca_id) }}</td>
+        <td class="mono" style="font-size:10.5px">{{ (t.ate or '')[:19].replace('T',' ') }}</td></tr>
+    {% else %}<tr><td colspan="4" class="vazio-msg">nenhuma conta travada</td></tr>{% endfor %}
+  </table>
+
+  <h2 class="sec">Interruptores do container</h2>
+  <table class="grade">
+    <tr><th>Variável</th><th>Valor</th></tr>
+    {% for k, v in (d.interruptores.items() if d.interruptores is mapping else []) %}
+    <tr><td class="mono" style="font-size:11px">{{ k }}</td><td class="mono" style="font-size:11px">{{ v if v is not none else '(não definida)' }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2 class="sec">Diário do servidor (últimas linhas)</h2>
+  <p style="font-size:12px;color:var(--ink-3);margin:-4px 0 8px">
+    O mesmo texto do log do container, gravado no volume por dia e sem segredo.
+    {% if d.diario_arquivos is not mapping and d.diario_arquivos %}Arquivos:
+      {% for f in d.diario_arquivos[:7] %}<span class="mono">{{ f.arquivo }}</span> ({{ (f.bytes / 1024)|round(0)|int }} KB){% if not loop.last %}, {% endif %}{% endfor %}.
+    {% else %}Nenhum arquivo de diário ainda — ou o diário está desligado (SEI360_LOG_ARQUIVO=0).{% endif %}
+  </p>
+  <div class="saida">{% for l in (d.diario if d.diario is not mapping and d.diario is not string else []) %}{{ l }}
+{% else %}(vazio){% endfor %}</div>
+</div>
+</body></html>

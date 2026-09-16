@@ -394,6 +394,32 @@ Em 15/09/2026 a coleta ficou **três dias úteis** sem rodar, e descobrir o moti
 
 **O que ela não alcança:** o que acontece antes de o processo subir. Se o container não inicia, só o log do Docker conta.
 
+#### A saída de cada execução, a causa e a senha que o SEI recusou (16/09/2026)
+
+Com o `/admin` aberto, em 16/09/2026, três perguntas continuavam sem resposta — e as três tinham a resposta escrita na saída do coletor, que era **capturada e jogada fora** (`subprocess.PIPE`; a coleta guardava os últimos 300 caracteres, o `/admin` mostrava 90):
+
+* **por que o login de uma conta falhava?** Código 3, e a cauda guardada era o banner do motor JS. O SEI tinha dito o motivo na tela de login. Foram **cinco logins recusados seguidos** na mesma conta em 11 horas — três cliques em "Testar acesso" em três minutos e duas tentativas da coleta das 04:00, a um minuto uma da outra —, e cada um conta para o bloqueio da conta da pessoa no SEI;
+* **a UMA-CMA caiu de 298 para 205 de verdade?** O coletor imprime, por lista, "N linha(s) em P página(s) (a tela declara D)". Era exatamente a prova para decidir o snapshot retido;
+* **por que a coleta da FESF de uma conta parou?** Abrir o passo "sistema" da SESAB na Configuração criou uma linha em modo servidor, sem senha, que virou a "mais recente" — e `_decidir` coletava a mais recente.
+
+O que existe agora:
+
+* **A saída inteira de cada execução** (coleta, teste de acesso, busca, acompanhamento) vai para `/dados/log/execucoes/<tipo>-<id>.log` (`diario.guardar_saida`): sem segredo (o mesmo filtro do diário — que deixou de apagar a palavra seguinte a qualquer "senha", porque apagava "Usuário ou senha **inválida**"), **sem os envelopes** `BUSCA_OK`/`ACOMP_OK` (resultado de uma pessoa, com tela própria), com teto de tamanho e o mesmo prazo de 14 dias do diário, aplicado pelo expurgo.
+* **O coletor registra o que o SEI respondeu no login**: a caixa de alerta do navegador (antes fechada em silêncio pelo Playwright) vira `dialog> …`, e no login que não conclui ele lê a tela e imprime `LOGIN_SEI_DISSE {textos, captcha, codigo}` — a frase de erro e a *estrutura* (campo de código = segundo fator; CAPTCHA). Nunca valor de campo.
+* **A causa vira chave e frase** (`leitura_saida.causa`): `login_recusado`, `conta_bloqueada`, `senha_expirada`, `segundo_fator`, `captcha`, `login_sem_resposta` (incerta: sem mensagem do SEI), `relogio`, `memoria`, `infra`, `sem_dados`, `ok_com_alerta`, `ok`. Vai em `execucao.causa`; o texto abre o `log_resumo`. O texto fixo "Autenticação em dois fatores" da tela de login do SEI Bahia **não** conta como segundo fator — a mesma armadilha que `pedindoCodigo` já documenta.
+* **Recusa certa para todos os motores.** `cofre.marcar_recusa` grava `credencial.recusada_em` e o motivo; a partir daí coleta, acompanhamento, busca e o botão "Testar acesso" **não tentam de novo** com aquela senha, e dizem por quê. Quem desfaz é salvar a senha de novo (`cofre.guardar` apaga a marca) — não há prazo que desfaça sozinho: senha errada não fica certa com o tempo. A pessoa vê o aviso na Configuração, em qualquer passo; o `/admin` ganha **um** alerta `login_falhou` com o nome do agente.
+* **Recusa incerta não marca a senha**, mas não se repete **na mesma janela**: a segunda entrega de uma janela existe para o que é passageiro, e login não é. Salvar a senha de novo reabre a janela.
+* **A instalação coletada é a configurada em modo servidor que TEM senha** (a mais recente entre essas). Sem senha em nenhuma, o motor não grava execução — antes eram duas `bloqueada` por janela, todo dia, por conta.
+* **Agente sem escopo não coleta.** Nada seria publicado, e abrir a mesa no SEI recebe os processos em trânsito em nome da conta. O escopo nasce do vínculo, e o vínculo do "Testar acesso" que deu certo — que agora reaplica o agendamento na hora (antes, o escopo só era atualizado quando a pessoa salvava outro passo).
+* **Janela perdida do agente do servidor passa a existir.** A varredura exigia `token_sha256`, que agente lógico não tem: entre 10 e 15/09/2026 só a conta que já tinha sido estação ganhou "janela perdida"; as outras perderam as mesmas manhãs sem registro. Entra o agente `SERVIDOR/*` que **pode** coletar (`coleta_servidor.motivo_parado` é None), e o texto nomeia o agente e culpa o motor, não "estação desligada".
+
+**Onde ver, sem terminal e sem token:**
+
+* `/admin` → cada agente `SERVIDOR/*` mostra a **situação** que o laço decide agora (`coleta_servidor.situacao`, a mesma `_avaliar` do laço, sem gravar); cada execução tem link; cada snapshot retido mostra **o que a tela do SEI declarou e o que foi lido** — igual, a queda é real; menor, a leitura veio pela metade.
+* `/admin/execucao/<id>` → causa, contagem por mesa, snapshots e alertas da execução, e a saída inteira do coletor.
+* `/admin/diagnostico` → o mesmo recorte do `/diag` (`_diagnostico_dados`), com a situação de cada agente do servidor, pela sessão de admin. Consulta registrada no `log_acesso`.
+* `/saude` → `codigo`: qual entrega está no ar (`CODIGO_NO_AR`, em `app.py`, muda a cada PR que vai para produção). Em 16/09/2026 o PR #3 estava mergeado e fora do ar, e isso só se descobria pedindo uma rota nova e vendo o 404.
+
 **O que continua na estação:** modo estação inteiro (senha nunca sai da máquina da pessoa), e qualquer coleta ou acompanhamento enquanto `SEI360_COLETA_SERVIDOR` estiver desligado. As duas rotas do agente continuam de pé e atendem essas contas — `acompanhamento_servidor._candidatos` ignora de propósito quem está em `modo_coleta='estacao'`, porque a senha dessa conta não está aqui.
 
 **O que continua verdadeiro deste parágrafo:** o único caminho que traz execução para dentro do container **sem** colocar credencial nominal de terceiro num host alugado continua sendo a **conta de serviço institucional criada formalmente pela TIC/PRODEB**, com escopo de leitura, termo de uso e log próprio. Isso deixou de ser pré-requisito e passou a ser **dívida**: enquanto não existir, cada busca feita pelo VPS é imputada, no log do SEI, à pessoa cuja credencial o cofre guardou.

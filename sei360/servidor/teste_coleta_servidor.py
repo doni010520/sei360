@@ -81,10 +81,19 @@ def novo_agendamento(agente_id, ativo=1, horario="00:00", motivo_inativo=None):
                (agente_id, json.dumps([horario]), ativo, motivo_inativo))
 
 
-def config_servidor(uid, sistema="SEI-SESAB"):
+def config_servidor(uid, sistema="SEI-SESAB", senha=False):
     cx.execute("""INSERT INTO config_usuario(usuario_id,sistema,modo_coleta,
                   sei_login,atualizado_em) VALUES(?,?,'servidor',?,?)""",
                (uid, sistema, "fulano.um", agora()))
+    if senha:
+        # SÓ A EXISTÊNCIA DA LINHA: `_decidir` pergunta se HÁ senha guardada e não
+        # a abre (quem abre é o executor). Desde 16/09/2026 a instalação sem senha
+        # não gera entrega — era a origem das execuções 'bloqueada' diárias com
+        # "nenhuma credencial guardada". Blob de mentira de propósito: se alguém
+        # passar a decifrar aqui, o teste acusa.
+        cx.execute("""INSERT OR REPLACE INTO credencial(usuario_id,sistema,login,segredo,
+                      nonce,algo,criado_em,usos) VALUES(?,?,?,?,?,'teste',?,0)""",
+                   (uid, sistema, "fulano.um", b"x", b"x", agora()))
 
 
 print("A. SEM AGENDAMENTO NENHUM")
@@ -108,7 +117,7 @@ checar("recusa por falta de config_usuario em modo servidor",
        r[0] is None and "sem sistema configurado" in r[1], r)
 
 print("\nD. SISTEMA CONFIGURADO, MAS SEM PARSER PROVADO (disponivel_coleta=False)")
-config_servidor(uid2, "SEI-FESF")
+config_servidor(uid2, "SEI-FESF", senha=True)
 _orig_fesf = dict(perfil_sei.INSTANCIAS["SEI-FESF"])
 perfil_sei.INSTANCIAS["SEI-FESF"]["disponivel_coleta"] = False
 try:
@@ -121,7 +130,7 @@ finally:
 print("\nE. JANELA AINDA NÃO CHEGOU")
 uid3 = novo_usuario("t3@sei360.local")
 ag3 = novo_agente_servidor(uid3)
-config_servidor(uid3, "SEI-SESAB")
+config_servidor(uid3, "SEI-SESAB", senha=True)
 futuro = (datetime.now(banco.TZ) + timedelta(hours=2)).strftime("%H:%M")
 novo_agendamento(ag3, ativo=1, horario=futuro)
 r = cs._decidir(cx, ag3)
@@ -131,7 +140,7 @@ checar("recusa com a próxima janela no motivo",
 print("\nF. JANELA DEVIDA — CAMINHO FELIZ")
 uid4 = novo_usuario("t4@sei360.local")
 ag4 = novo_agente_servidor(uid4, unidades=("SEI-TESTE/UNIDADE",))
-config_servidor(uid4, "SEI-SESAB")
+config_servidor(uid4, "SEI-SESAB", senha=True)
 # 2h atrás, não 5 min: `janela_devida` soma um desvio determinístico de até
 # 60 min ao horário-base (`desvio_do_agente`, por agente_id) antes de
 # comparar com agora — 5 min seria flakiness pura, dependente do hash do id.
@@ -579,7 +588,7 @@ print("\nU. DUAS PONTAS, UMA JANELA — o container não coleta o que a estaçã
 # impede duas sessões do SEI na mesma conta, com a mesma credencial nominal, é o
 # carimbo `gatilho` — `max_entregas_janela` é 3 e existe para RETENTATIVA.
 uidF = novo_usuario("acomp.duas.pontas@sei360.local")
-config_servidor(uidF, "SEI-SESAB")
+config_servidor(uidF, "SEI-SESAB", senha=True)
 agF = novo_agente_servidor(uidF)
 # A JANELA É RELATIVA A AGORA, e não "00:00" fixo: com tolerância de 600 min,
 # "00:00" só é devida até as 10h — a cena passava à noite e falhava à tarde.

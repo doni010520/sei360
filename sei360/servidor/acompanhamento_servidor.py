@@ -97,9 +97,15 @@ import atendente
 import banco
 from banco import agora
 import cofre
+import diario
 import janelas
+import leitura_saida
 import perfil_sei
 from coleta import COLETOR
+
+
+def _nome_inst(instancia):
+    return "".join(ch for ch in str(instancia) if ch.isalnum() or ch in "-_")
 
 # Uma leitura por vez neste container, e um par (pessoa, instalação) por
 # passada. Não é `SEI360_BUSCAS_SIMULTANEAS`: aquele é sobre pessoas diferentes
@@ -364,10 +370,22 @@ def _executar(usuario_id, instancia, protocolos):
             # se perdeu. Ver `_ler_envelopes`.
             motivo = f"morto pelo relógio em {SEGUNDOS_TETO // 60} min"
         del pedido, senha
+        # A SAÍDA NO VOLUME, sem os envelopes (a leitura tem tela própria).
+        diario.guardar_saida("acompanhamento",
+                             f"u{usuario_id}-{_nome_inst(instancia)}-{agora()[:19].replace(':', '')}",
+                             saida)
         envelopes, ruins = _ler_envelopes(saida)
         if ruins:
             print(f"acompanhamento(servidor): {ruins} pedaço(s) ilegível(is) "
                   "descartado(s)", flush=True)
+        if not envelopes and proc.returncode == 3:
+            # LOGIN, NÃO OS PROCESSOS. A recusa certa marca a senha — e a próxima
+            # volta deste laço, a coleta e a busca param de tentar com ela.
+            _c = leitura_saida.causa(3, saida)
+            if _c["chave"] in leitura_saida.CAUSAS_DE_LOGIN and _c["certeza"]:
+                cofre.marcar_recusa(cx, usuario_id, instancia, _c["texto"])
+                cx.commit()
+            return 0, 0, _c["texto"], False
         if not envelopes:
             # ENVELOPE VAZIO NÃO É PUBLICADO, pelo motivo que o agente da
             # estação documenta: não há nesta gravação onde carimbar "tentou e
@@ -446,6 +464,13 @@ def rodada(cx=None):
                 continue
             if not acmod.quantos_pendentes(cx, usuario_id, instancia):
                 _dizer(par, "nada a ler hoje (a carteira respondeu ou já foi lido)")
+                continue
+            # SENHA RECUSADA PELO SEI não é tentada de novo — nem para ler um
+            # processo. Cada tentativa conta para o bloqueio da conta da pessoa.
+            _rec = cofre.recusa(cx, usuario_id, instancia)
+            if _rec:
+                _dizer(par, f"o SEI recusou a senha em {str(_rec['recusada_em'])[:16]} — "
+                            "parado até a senha ser salva de novo")
                 continue
             pode, _motivo = _devido(cx, usuario_id, instancia, agora_dt)
             if not pode:

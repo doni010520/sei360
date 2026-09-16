@@ -36,13 +36,31 @@
   {% if candidatos %}
   <h2 class="sec">Snapshots retidos — precisam de decisão</h2>
   <table class="grade">
-    <tr><th>Unidade</th><th>Coletado em</th><th>Processos</th><th>Motivo da retenção</th><th>Decisão</th></tr>
+    <tr><th>Unidade</th><th>Coletado em</th><th>Processos</th><th>Motivo da retenção</th><th>O que a tela do SEI declarou</th><th>Decisão</th></tr>
     {% for s in candidatos %}
+    {% set ev = evidencias.get(s.id) %}
     <tr>
       <td class="mono" style="font-size:11px">{{ s.unidade }}</td>
       <td class="mono" style="font-size:11px">{{ s.coletado_em[:16].replace('T',' ') }}</td>
       <td class="mono">{{ s.unicos }}</td>
       <td>{{ s.motivo or '—' }}</td>
+      <td style="font-size:12px">
+        {# A PROVA: o total que a própria listagem do SEI declarou contra o que foi
+           lido. Igual = a unidade esvaziou mesmo; menor = a leitura veio pela metade. #}
+        {% if ev and ev.declaradas is not none %}
+          <span class="mono">declarou {{ ev.declaradas }} · leu {{ ev.lidas }}</span><br>
+          {% if ev.lidas >= ev.declaradas and not ev.incompleta %}
+            <span class="tag ok">a queda está no SEI — pode promover</span>
+          {% else %}
+            <span class="tag al">leitura incompleta — rejeite</span>
+          {% endif %}
+        {% elif ev %}
+          <span class="mono">leu {{ ev.lidas }}</span> · a tela não declarou total
+        {% else %}
+          <span style="color:var(--ink-3)">sem a saída desta coleta (anterior ao log por execução, ou já expirada)</span>
+        {% endif %}
+        {% if s.execucao_id %}<br><a href="/admin/execucao/{{ s.execucao_id }}">ver a execução {{ s.execucao_id }}</a>{% endif %}
+      </td>
       <td style="display:flex;gap:6px">
         <form method="post" action="/admin/snapshot"><input type="hidden" name="csrf" class="csrf">
           <input type="hidden" name="acao" value="promover"><input type="hidden" name="id" value="{{ s.id }}">
@@ -56,8 +74,9 @@
   </table>
   <div style="font-size:12px;color:var(--ink-3);margin:-6px 0 4px">
     Retido porque a coleta trouxe menos de 90% dos processos da vez anterior. Promover
-    só depois de conferir no SEI que a unidade esvaziou mesmo — a alternativa é a coleta
-    ter vindo pela metade, e aí o painel passaria a esconder processo que existe.
+    só depois de conferir que a unidade esvaziou mesmo — a alternativa é a coleta ter
+    vindo pela metade, e aí o painel passaria a esconder processo que existe. Enquanto
+    um snapshot está retido, o painel continua mostrando o anterior, com a idade dele.
   </div>
   {% endif %}
 
@@ -144,15 +163,24 @@
 
   <h2 class="sec">Agentes de coleta</h2>
   <div class="destaque" style="border-left-color:var(--espera);background:var(--espera-soft)">
-    O agente roda <b>na estação de quem tem a credencial do SEI</b> e apenas empurra o resultado.
-    Nenhuma senha do SEI existe neste servidor — a ausência é decisão de arquitetura, não lacuna.
+    Dois tipos de agente. O de <b>estação</b> roda na máquina de quem tem a credencial e só
+    empurra o resultado. O <b>SERVIDOR/…</b> roda neste container, com a senha da pessoa
+    cifrada no cofre — cada um mostra abaixo a situação que o motor vê agora.
+    <a href="/admin/diagnostico">Diagnóstico completo do motor →</a>
   </div>
   <table class="grade">
     <tr><th>Estação</th><th>Unidades</th><th>Credencial</th><th>Dono</th><th>Versão</th><th>Último contato</th><th>Agendamento</th></tr>
     {% for a in agentes %}
     <tr>
       <td><b>{{ a.nome_estacao }}</b>
-        {% if not a.token_sha256 %}<br><span class="tag es">aguardando vínculo</span>{% endif %}
+        {% set sit = situacoes.get(a.id) %}
+        {% if sit %}
+        {# A MESMA DECISÃO DO LAÇO, sem gravar nada: por que este agente coleta ou
+           não coleta agora. Antes, a resposta exigia ler `_decidir` com o banco
+           aberto ao lado. #}
+        <br><span class="tag {{ 'ok' if sit.estado in ['pronto','feito','coletando'] else 'al' }}">{{ sit.estado }}</span>
+        <div style="font-size:11.5px;color:var(--ink-2);max-width:260px;margin-top:3px">{{ sit.texto }}{% if sit.instancia %} · {{ sit.instancia }}{% endif %}</div>
+        {% elif not a.token_sha256 %}<br><span class="tag es">aguardando vínculo</span>{% endif %}
         {# Escopo vazio recusa TODA publicação. É falha fechada e está certo, mas
            precisa aparecer: sem este selo o agente fica mudo e o sintoma só
            surge na janela seguinte, como coleta que não chegou. #}
@@ -250,13 +278,15 @@
     <tr><th>#</th><th>Estação</th><th>Janela</th><th>Estado</th><th>Exit</th><th>Duração</th><th>Resumo</th></tr>
     {% for e in execs %}
     <tr>
-      <td class="mono">{{ e.id }}</td>
+      <td class="mono"><a href="/admin/execucao/{{ e.id }}" title="Causa, mesas e a saída inteira do coletor">{{ e.id }}</a></td>
       <td>{{ e.nome_estacao or '—' }}</td>
       <td class="mono" style="font-size:10.5px">{{ (e.janela or '')[:16].replace('T',' ') }}</td>
       <td><span class="tag {{ 'ok' if e.estado=='concluida' else 'al' if e.estado in ['travada','bloqueada','infra','perdida'] else 'es' }}">{{ e.estado }}</span></td>
       <td class="mono">{{ e.exit_code if e.exit_code is not none else '—' }}</td>
       <td class="mono">{{ (e.duracao_s ~ ' s') if e.duracao_s else '—' }}</td>
-      <td style="font-size:12px;color:var(--ink-3)">{{ (e.log_resumo or '')[:90] }}</td>
+      {# O COMEÇO DO RESUMO É A CAUSA desde o log por execução; antes era "não
+         publicado · " seguido do banner do motor JS, cortado em 90 caracteres. #}
+      <td style="font-size:12px;color:var(--ink-3)">{{ (e.log_resumo or '').split(' ‖ ')[0][:220] }}</td>
     </tr>
     {% else %}<tr><td colspan="7" class="vazio-msg">nenhuma execução</td></tr>{% endfor %}
   </table>

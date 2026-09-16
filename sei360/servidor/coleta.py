@@ -230,7 +230,10 @@ def testar_acesso(usuario_id, ip=None):
         login, senha = cofre.abrir(cx, usuario_id, motivo="teste_de_acesso", ip=ip,
                                    sistema=instancia)
     except ValueError as ex:
-        return False, str(ex)
+        # TRÊS valores, como todo retorno desta função: a rota desempacota três,
+        # e com dois a recusa explicada virava 500.
+        cx.close()
+        return False, str(ex), ""
     if not login:
         cx.close()
         return False, "Nenhuma credencial guardada.", ""
@@ -255,6 +258,8 @@ def testar_acesso(usuario_id, ip=None):
     linha = next((l for l in saida.splitlines() if l.startswith("TESTE_OK ")), None)
     cx = conectar()
     if codigo == 0 and linha:
+        import diario
+        diario.guardar_saida("teste", f"u{usuario_id}-{agora()[:19].replace(':', '')}", saida)
         quem = json.loads(linha[len("TESTE_OK "):])
         mesas = [m for m in (quem.get("mesas") or []) if m]
         # O QUE O SEI MOSTROU vira o vínculo. A fronteira do SEI360 passa a ser
@@ -287,8 +292,23 @@ def testar_acesso(usuario_id, ip=None):
             # forma. Dizer isso é melhor que deixar a tela vazia sem explicação.
             detalhe += " · não consegui listar as mesas desta conta"
         return True, "Acesso confirmado no SEI.", detalhe
-    registrar(cx, usuario_id, "teste_acesso_falhou", alvo=f"exit {codigo}", ip=ip)
+    # O QUE O SEI RESPONDEU, e não a cauda do log. Em 15/09/2026 uma pessoa clicou
+    # três vezes em três minutos e viu três vezes "O SEI não aceitou o login" com
+    # a cauda — que era o banner do motor JS. A frase do SEI existia na tela de
+    # login e não era lida.
+    import diario
+    import leitura_saida
+    c = leitura_saida.causa(codigo, saida)
+    arquivo = diario.guardar_saida("teste", f"u{usuario_id}-{agora()[:19].replace(':', '')}", saida)
+    registrar(cx, usuario_id, "teste_acesso_falhou",
+              alvo=f"exit {codigo} · {c['chave']} · {c['texto'][:160]}", ip=ip)
+    if c["chave"] in leitura_saida.CAUSAS_DE_LOGIN and c["certeza"] and instancia:
+        import cofre as _cofre
+        _cofre.marcar_recusa(cx, usuario_id, instancia, c["texto"])
     cx.commit(); cx.close()
+    print(f"teste de acesso: usuário {usuario_id} · {instancia} · código {codigo} · "
+          f"{c['texto'][:240]}" + (f" · saída em log/execucoes/{arquivo}" if arquivo else ""),
+          flush=True)
     motivos = {
         3: "O SEI não aceitou o login. Confira o e-mail e a senha — e lembre que "
            "trocar a senha no SEI exige atualizá-la aqui também.",
@@ -296,10 +316,11 @@ def testar_acesso(usuario_id, ip=None):
         5: "O SEI não respondeu a tempo. Pode ser a rede do órgão ou o próprio SEI fora do ar.",
         2: "Entrou, mas não devolveu dados.",
     }
-    # As últimas linhas do log ajudam quem for diagnosticar; a senha não aparece
-    # nelas porque o coletor nunca a imprime.
-    cauda = " · ".join(l.strip() for l in saida.splitlines()[-3:] if l.strip())
-    return False, motivos.get(codigo, f"Falhou com código {codigo}."), cauda[:300]
+    detalhe = c["texto"][:1].upper() + c["texto"][1:]
+    if c["chave"] in leitura_saida.CAUSAS_DE_LOGIN and c["certeza"]:
+        detalhe += (" Antes de testar de novo, salve a senha outra vez em Acesso: cada "
+                    "tentativa com a senha errada conta para o bloqueio da sua conta no SEI.")
+    return False, motivos.get(codigo, f"Falhou com código {codigo}."), detalhe[:600]
 
 
 # ---------------------------------------------------------------------------
